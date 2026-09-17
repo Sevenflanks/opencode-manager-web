@@ -31,7 +31,7 @@ test("installed OpenCode survives its launcher, proves directory identity, and s
     assert.ok(health.version)
     assert.equal(path.resolve(health.directory).toLowerCase(), path.resolve(project).toLowerCase())
     const observed = await runtime.inspect(asRecord(launch, port))
-    assert.deepEqual(observed, { running: true, matched: true, portOwnerMatched: true, portOwnedByOther: false })
+    assert.deepEqual(observed, { processState: "running", running: true, matched: true, portOwnerMatched: true, portOwnedByOther: false })
   } finally {
     if (launch) {
       const stopped = await runtime.stop(asRecord(launch, port))

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
+import { spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
+import { realpathSync } from "node:fs"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import { tmpdir } from "node:os"
@@ -14,6 +16,86 @@ const enabled = process.env.OMW_REAL_OPENCODE_TEST === "1"
 const authority = { hostname: "127.0.0.1", port: 4174 }
 const readHeaders = { host: "127.0.0.1:4174" }
 const mutationHeaders = { ...readHeaders, origin: "http://127.0.0.1:4174", "x-omw-csrf": "1" }
+
+test("Manager restart releases a real exited Windows child allocation for reuse", { skip: process.platform !== "win32", timeout: 20_000 }, async () => {
+  const sandbox = path.join(tmpdir(), `omw-real-reclaim-${randomUUID()}`)
+  const project = path.join(sandbox, "project")
+  const database = path.join(sandbox, "manager.sqlite")
+  const nodeExecutable = realpathSync(process.execPath)
+  await mkdir(project, { recursive: true })
+  const port = await freePort()
+  const child = spawn(nodeExecutable, ["-e", `require("node:net").createServer().listen(${port}, "127.0.0.1")`], {
+    stdio: "ignore",
+    windowsHide: true,
+  })
+  assert.ok(child.pid)
+  let repository: ManagerRepository | null = null
+
+  try {
+    await waitForPort(port, true, 5_000)
+    const runtime = new OpenCodeRuntime({ executable: nodeExecutable, dataDirectory: path.join(sandbox, "data") })
+    const id = randomUUID()
+    const identity = await runtime.adoptLocal!(project, port, id, child.pid).catch((error: unknown) => {
+      throw new Error("real child identity setup failed", { cause: error })
+    })
+    repository = new ManagerRepository(database)
+    const allocation = {
+      id,
+      kind: "headless" as const,
+      clientInvocationId: null,
+      projectDirectory: project,
+      port,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+      instanceId: null,
+    }
+    assert.equal(repository.tryCreateAllocation(allocation), true)
+    repository.createReservedInstance(id, {
+      id,
+      kind: "headless",
+      clientInvocationId: null,
+      projectName: path.basename(project),
+      projectDirectory: project,
+      state: "ready",
+      endpoint: identity.endpoint,
+      port,
+      pid: identity.pid,
+      creationTimeUtc: identity.creationTimeUtc,
+      creationTimeTicks: identity.creationTimeTicks,
+      executable: identity.executable,
+      launchedAt: new Date().toISOString(),
+      healthVersion: null,
+      stoppedAt: null,
+      error: null,
+      stderrSummary: null,
+    })
+    repository.close()
+    repository = null
+
+    child.kill()
+    await waitForExit(child)
+    await waitForPort(port, false, 5_000)
+
+    repository = new ManagerRepository(database)
+    const restarted = new ManagerService(repository, new OpenCodeRuntime({ executable: nodeExecutable, dataDirectory: path.join(sandbox, "data") }), { min: port, max: port })
+    await restarted.reconcile().catch((error: unknown) => {
+      throw new Error("restart reconciliation failed", { cause: error })
+    })
+    assert.equal(repository.getInstance(id)?.state, "stopped")
+    assert.equal(repository.getAllocation(id), null)
+    const reservation = await restarted.reserveLocal({
+      clientInvocationId: randomUUID(),
+      directory: project,
+      requestedPort: port,
+    })
+    assert.equal(reservation.port, port)
+  } finally {
+    if (child.exitCode === null) child.kill()
+    await waitForExit(child).catch(() => undefined)
+    repository?.close()
+    await rm(sandbox, { recursive: true, force: true })
+  }
+})
 
 test("Manager restart reconciles two real OpenCode processes and refuses stale identity or port reuse", { skip: !enabled, timeout: 90_000 }, async () => {
   const executable = process.env.OMW_OPENCODE_EXECUTABLE
@@ -140,6 +222,28 @@ function listen(server: net.Server): Promise<number> {
 
 function closeServer(server: net.Server): Promise<void> {
   return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+}
+
+function waitForExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    child.once("exit", () => resolve())
+    child.once("error", reject)
+  })
+}
+
+function freePort(): Promise<number> {
+  const server = net.createServer()
+  return listen(server).then((port) => closeServer(server).then(() => port))
+}
+
+async function waitForPort(port: number, expectedOpen: boolean, timeout: number): Promise<void> {
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline) {
+    if (await portReachable(port) === expectedOpen) return
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error(`Port ${port} did not become ${expectedOpen ? "open" : "closed"} within ${timeout} ms`)
 }
 
 function portReachable(port: number): Promise<boolean> {

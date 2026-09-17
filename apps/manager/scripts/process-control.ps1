@@ -68,7 +68,22 @@ try {
         exit 0
     }
 
-    $process = [Diagnostics.Process]::GetProcessById($ProcessId)
+    try {
+        $process = [Diagnostics.Process]::GetProcessById($ProcessId)
+    }
+    catch {
+        $processNotFound = $_.Exception -is [System.ArgumentException] -or
+            $_.Exception.InnerException -is [System.ArgumentException]
+        if ($Action -ne 'Inspect' -or -not $processNotFound) { throw }
+        [Console]::Out.WriteLine(([ordered]@{
+            processState = 'not-found'
+            running = $false
+            matched = $false
+            portOwnerMatched = $false
+            portOwnedByOther = $false
+        } | ConvertTo-Json -Compress))
+        exit 0
+    }
     $identity = Get-Identity $process
     $matched = Test-Expected $identity
     $portOwners = @(Get-PortOwners)
@@ -76,6 +91,7 @@ try {
     $portOwnedByOther = @($portOwners | Where-Object { $_ -ne $ProcessId }).Count -gt 0
     if ($Action -eq 'Inspect') {
         [Console]::Out.WriteLine(([ordered]@{
+            processState = 'running'
             running = $true
             matched = $matched
             portOwnerMatched = $portOwnerMatched

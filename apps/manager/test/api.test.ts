@@ -24,6 +24,11 @@ class FakeRuntime implements RuntimePort {
   portOwnerMatched = true
   portOwnedByOther = false
   inspectFails = false
+  processState: "running" | "not-found" | "unknown" = "running"
+  inspectDelayMs = 0
+  inspectCalls = 0
+  activeInspects = 0
+  maxActiveInspects = 0
   reachable = true
   cleanupCount = 0
   cleanupSucceeds = true
@@ -77,12 +82,21 @@ class FakeRuntime implements RuntimePort {
   }
 
   async inspect() {
-    if (this.inspectFails) throw new Error("identity probe unavailable")
-    return {
-      matched: this.identityMatches,
-      portOwnerMatched: this.portOwnerMatched,
-      portOwnedByOther: this.portOwnedByOther,
-      running: true,
+    this.inspectCalls++
+    this.activeInspects++
+    this.maxActiveInspects = Math.max(this.maxActiveInspects, this.activeInspects)
+    try {
+      if (this.inspectDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.inspectDelayMs))
+      if (this.inspectFails) throw new Error("identity probe unavailable")
+      return {
+        processState: this.processState,
+        matched: this.identityMatches,
+        portOwnerMatched: this.portOwnerMatched,
+        portOwnedByOther: this.portOwnedByOther,
+        running: this.processState === "running",
+      }
+    } finally {
+      this.activeInspects--
     }
   }
 
@@ -475,6 +489,39 @@ test("each Start creates a new Instance and overview exposes independent summary
   })
 })
 
+test("overlapping overview requests share a bounded probe round while another API request remains responsive", async (t) => {
+  const { app, project, runtime } = await fixture(t, { portPool: { min: 42_000, max: 42_007 } })
+  let firstInstanceId = ""
+  for (let index = 0; index < 6; index++) {
+    const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+    assert.equal(started.statusCode, 201)
+    if (index === 0) firstInstanceId = started.json().id
+  }
+  runtime.inspectCalls = 0
+  runtime.maxActiveInspects = 0
+  runtime.inspectDelayMs = 250
+
+  const firstOverview = app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  await waitFor(() => runtime.activeInspects > 0, 500)
+  const secondOverview = app.inject({ method: "GET", url: "/api/v1/overview?filter=active", headers: readHeaders })
+  const browse = await Promise.race([
+    app.inject({ method: "GET", url: `/api/v1/directories?path=${encodeURIComponent(project)}`, headers: readHeaders }),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("another API request was blocked by overview probes")), 150)),
+  ])
+  const stopped = await Promise.race([
+    app.inject({ method: "POST", url: `/api/v1/instances/${firstInstanceId}/stop`, headers: mutationHeaders }),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Stop was queued behind overview probes")), 150)),
+  ])
+
+  assert.equal(browse.statusCode, 200)
+  assert.equal(stopped.statusCode, 200)
+  const overviews = await Promise.all([firstOverview, secondOverview])
+  assert.equal(overviews[0].statusCode, 200)
+  assert.equal(overviews[1].statusCode, 200)
+  assert.equal(runtime.inspectCalls, 6)
+  assert.ok(runtime.maxActiveInspects <= 4, `expected at most 4 concurrent probes, saw ${runtime.maxActiveInspects}`)
+})
+
 test("API preserves partial status failures, distinct request counts, and Project-scoped metadata", async (t) => {
   const { app, project, childDirectory, runtime } = await fixture(t)
   runtime.sessionMetadata.set(project, [{ id: "session-a", title: "Alpha Session" }])
@@ -790,6 +837,47 @@ test("reconcile releases an old free allocation without ever trusting incomplete
   assert.equal(repository.getAllocation(allocation.id), null)
 })
 
+test("reconcile releases an explicitly exited process only when its port is free and the next Start can reuse it", async (t) => {
+  const port = await freePort()
+  const { project, repository, runtime, service } = await fixture(t, { portPool: { min: port, max: port } })
+  const first = await service.start(project)
+  runtime.processState = "not-found"
+
+  await service.reconcile()
+
+  const stopped = repository.getInstance(first.id)
+  assert.equal(stopped?.state, "stopped")
+  assert.equal(stopped?.pid, null)
+  assert.equal(stopped?.creationTimeTicks, null)
+  assert.equal(stopped?.executable, null)
+  assert.equal(repository.getAllocation(first.id), null)
+
+  runtime.processState = "running"
+  const second = await service.start(project)
+  assert.equal(second.port, port)
+  assert.notEqual(second.id, first.id)
+})
+
+test("reconcile quarantines an explicitly exited process while its recorded port is occupied", async (t) => {
+  const listener = net.createServer()
+  const port = await freePort()
+  const { project, repository, runtime, service } = await fixture(t, { portPool: { min: port, max: port } })
+  const instance = await service.start(project)
+  await new Promise<void>((resolve, reject) => {
+    listener.once("error", reject)
+    listener.listen(port, "127.0.0.1", resolve)
+  })
+  t.after(() => new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())))
+  runtime.processState = "not-found"
+
+  await service.reconcile()
+
+  assert.equal(repository.getInstance(instance.id)?.state, "unreachable")
+  assert.notEqual(repository.getAllocation(instance.id), null)
+  const overview = await service.overview()
+  assert.equal(overview.instances[0]?.stopAllowed, false)
+})
+
 test("a fresh repository and service re-check persisted identity and health before restoring ready", async (t) => {
   const { project, repository, runtime } = await fixture(t)
   const firstService = new ManagerService(repository, runtime)
@@ -809,3 +897,26 @@ test("a fresh repository and service re-check persisted identity and health befo
     reopened.close()
   }
 })
+
+function waitFor(predicate: () => boolean, timeout: number): Promise<void> {
+  const deadline = Date.now() + timeout
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (predicate()) return resolve()
+      if (Date.now() >= deadline) return reject(new Error(`Condition was not met within ${timeout} ms`))
+      setTimeout(check, 10)
+    }
+    check()
+  })
+}
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address()
+      server.close((error) => error ? reject(error) : resolve(typeof address === "object" && address ? address.port : 0))
+    })
+  })
+}

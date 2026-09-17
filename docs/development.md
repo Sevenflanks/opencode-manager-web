@@ -43,6 +43,8 @@ unknown，不部分計數。成功取得空 status map
 時 `activity="none-reported"`；合法的 idle／retry entry 為 `reported-non-busy`；未知 type、無效
 shape 或查詢失敗為 `activity="unknown"`，不得猜 idle 或 latest Session。
 四個 OpenCode 查詢獨立保留成功結果；例如 question 失敗不會抹除已成功取得的 status 或 permission。
+Overview 的 process helper 與 summary probe 全程使用非阻塞 I/O，每輪最多同時處理四個 Instance；重疊的
+poll 共用同一輪結果，避免慢 probe 持續堆積。Start／Stop 等 mutation 不排在 overview probe 佇列後方。
 每次 registry 驅動的 summary、Session、children 與 Open URL 都會先重新核對 exact process identity 與
 port owner；不符時不查詢該 endpoint、不顯示其 metadata，也不產生 URL。Health 失聯但 identity 仍
 吻合時保留安全 Stop authority。
@@ -123,6 +125,9 @@ Manager 正常退出不停止背景 Instance。啟動時所有未停止紀錄都
 real executable、port owner、health 與 `/path.directory`；舊 `ready` 不會直接恢復。
 若 identity 仍吻合但 endpoint 已失聯，Instance 保持 unreachable 且仍可安全 Stop；若 port 已由
 其他 PID 使用則拒絕 Stop。
+若 process inspector 明確回報 PID 不存在，且 recorded loopback port 已可 bind，reconcile 會標記
+Instance stopped、清除 Stop authority 並釋放 allocation。Inspector 失敗、identity mismatch、PID reuse
+或 port 仍被占用都維持 quarantine，不可推論 process 已退出，也不可 Stop foreign process。
 
 Start 後先保留原生 `ChildProcess` handle，但這不會單憑 PID 授予 tree Stop authority。Describe
 只有在原 spawn handle 仍存活，且 PID 與明示的 real executable 都吻合時，才保存 creation time

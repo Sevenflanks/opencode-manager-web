@@ -32,8 +32,11 @@ const EMPTY_SUMMARY = {
 }
 const RESERVATION_TTL_MS = 10_000
 const INCOMPLETE_IDENTITY_GRACE_MS = 15_000
+const OVERVIEW_CONCURRENCY = 4
 
 export class ManagerService {
+  private overviewInFlight: Promise<ManagedInstance[]> | null = null
+
   constructor(
     private readonly repository: ManagerRepository,
     private readonly runtime: RuntimePort,
@@ -42,7 +45,7 @@ export class ManagerService {
 
   async overview(query = "", filter: OverviewFilter = "all"): Promise<OverviewResponse> {
     const normalizedQuery = query.trim().toLocaleLowerCase("zh-TW")
-    const instances = await Promise.all(this.repository.listInstances().map(async (record) => this.present(record)))
+    const instances = await this.loadOverviewInstances()
     return {
       shortcuts: this.repository.listShortcuts(),
       instances: instances.filter((instance) => matchesFilter(instance, filter) && matchesQuery(instance, normalizedQuery)),
@@ -304,6 +307,23 @@ export class ManagerService {
         this.repository.saveInstance(record)
         continue
       }
+      if (identity.processState === "not-found") {
+        if (await loopbackPortAvailable(record.port)) {
+          record.state = "stopped"
+          record.stoppedAt = new Date().toISOString()
+          record.error = null
+          record.pid = null
+          record.creationTimeUtc = null
+          record.creationTimeTicks = null
+          record.executable = null
+          this.repository.saveInstance(record)
+          this.repository.releaseAllocationForInstance(record.id)
+        } else {
+          record.error = "INSTANCE_IDENTITY_UNVERIFIED"
+          this.repository.saveInstance(record)
+        }
+        continue
+      }
       if (!identity.running || !identity.matched || identity.portOwnedByOther) {
         record.error = "INSTANCE_IDENTITY_UNVERIFIED"
         this.repository.saveInstance(record)
@@ -331,6 +351,17 @@ export class ManagerService {
     const record = this.repository.getInstance(id)
     if (!record) throw new ManagerError("INSTANCE_NOT_FOUND", "找不到 Instance。", 404)
     return record
+  }
+
+  private async loadOverviewInstances(): Promise<ManagedInstance[]> {
+    if (this.overviewInFlight) return await this.overviewInFlight
+    const request = mapWithConcurrency(this.repository.listInstances(), OVERVIEW_CONCURRENCY, async (record) => await this.present(record))
+    this.overviewInFlight = request
+    try {
+      return await request
+    } finally {
+      if (this.overviewInFlight === request) this.overviewInFlight = null
+    }
   }
 
   private requireLocalAllocation(id: string, clientInvocationId: string): PortAllocation {
@@ -490,6 +521,19 @@ export class ManagerService {
     }
     return identity
   }
+}
+
+async function mapWithConcurrency<T, U>(values: T[], concurrency: number, mapper: (value: T) => Promise<U>): Promise<U[]> {
+  const results = new Array<U>(values.length)
+  let nextIndex = 0
+  const worker = async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex++
+      results[index] = await mapper(values[index]!)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, async () => await worker()))
+  return results
 }
 
 function newInstanceRecord(allocation: PortAllocation, directory: string, clientInvocationId: string | null): InstanceRecord {

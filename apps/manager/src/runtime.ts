@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
 import { existsSync, realpathSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
@@ -22,6 +22,7 @@ export interface LaunchResult {
 }
 
 export interface InspectResult {
+  processState?: "running" | "not-found" | "unknown"
   running: boolean
   matched: boolean
   portOwnerMatched: boolean
@@ -97,7 +98,7 @@ export class OpenCodeRuntime implements RuntimePort {
       if (!spawnHandleIsAlive(child)) {
         throw new ManagerError("PROCESS_EXITED_BEFORE_IDENTITY", `OpenCode root PID ${child.pid} 在 identity 建立前已退出。`, 502)
       }
-      identity = this.helper<HelperIdentity>([
+      identity = await this.helper<HelperIdentity>([
         "-Action", "Describe",
         "-ProcessId", String(child.pid),
         "-ExpectedExecutable", this.executable,
@@ -130,7 +131,7 @@ export class OpenCodeRuntime implements RuntimePort {
   }
 
   async adoptLocal(directory: string, port: number, instanceId: string, pid: number): Promise<LaunchResult> {
-    const identity = this.helper<HelperIdentity>([
+    const identity = await this.helper<HelperIdentity>([
       "-Action", "Describe",
       "-ProcessId", String(pid),
       "-ExpectedExecutable", this.executable,
@@ -151,7 +152,7 @@ export class OpenCodeRuntime implements RuntimePort {
     if (!tracked?.child.pid) return { stopped: false, reason: "same-run launch authority unavailable" }
     if (!tracked.identity) return await cleanupUnidentifiedRoot(tracked.child)
     try {
-      const result = this.helper<StopResult>([
+      const result = await this.helper<StopResult>([
         "-Action", "Stop",
         "-ProcessId", String(tracked.identity.pid),
         "-ExpectedCreationTicks", tracked.identity.creationTimeTicks,
@@ -190,19 +191,15 @@ export class OpenCodeRuntime implements RuntimePort {
   async inspect(instance: InstanceRecord | LaunchResult): Promise<InspectResult> {
     const identity = requireIdentity(instance)
     if (!sameWindowsPath(identity.executable, this.executable)) {
-      return { running: false, matched: false, portOwnerMatched: false, portOwnedByOther: true }
+      return { processState: "unknown", running: false, matched: false, portOwnerMatched: false, portOwnedByOther: true }
     }
-    try {
-      return this.helper<InspectResult>([
-        "-Action", "Inspect",
-        "-ProcessId", String(identity.pid),
-        "-ExpectedCreationTicks", identity.creationTimeTicks,
-        "-ExpectedExecutable", identity.executable,
-        "-Port", String("port" in instance ? instance.port : Number(new URL(instance.endpoint).port)),
-      ])
-    } catch {
-      return { running: false, matched: false, portOwnerMatched: false, portOwnedByOther: true }
-    }
+    return await this.helper<InspectResult>([
+      "-Action", "Inspect",
+      "-ProcessId", String(identity.pid),
+      "-ExpectedCreationTicks", identity.creationTimeTicks,
+      "-ExpectedExecutable", identity.executable,
+      "-Port", String("port" in instance ? instance.port : Number(new URL(instance.endpoint).port)),
+    ])
   }
 
   async stop(instance: InstanceRecord): Promise<StopResult> {
@@ -210,7 +207,7 @@ export class OpenCodeRuntime implements RuntimePort {
     if (!sameWindowsPath(identity.executable, this.executable)) {
       return { stopped: false, reason: "recorded executable does not match the configured OpenCode executable" }
     }
-    const result = this.helper<StopResult>([
+    const result = await this.helper<StopResult>([
       "-Action", "Stop",
       "-ProcessId", String(identity.pid),
       "-ExpectedCreationTicks", identity.creationTimeTicks,
@@ -310,27 +307,74 @@ export class OpenCodeRuntime implements RuntimePort {
     }
   }
 
-  private helper<T>(arguments_: string[]): T {
-    const result = spawnSync(this.powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", this.helperPath, ...arguments_], {
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: PROCESS_HELPER_TIMEOUT_MS,
-      maxBuffer: MAX_HELPER_OUTPUT,
-    })
-    if (result.status !== 0 || result.error) {
-      throw new ManagerError("PROCESS_CONTROL_FAILED", "Windows process helper 執行失敗。", 500)
-    }
-    try {
-      return JSON.parse(result.stdout.trim()) as T
-    } catch {
-      throw new ManagerError("PROCESS_CONTROL_INVALID_RESPONSE", "Windows process helper 回傳無效資料。", 500)
-    }
+  private async helper<T>(arguments_: string[]): Promise<T> {
+    return await runProcessHelper<T>(this.powershell, [
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-File", this.helperPath,
+      ...arguments_,
+    ])
   }
 
   private sanitized(error: unknown): string {
     const generic = safeMessage(error)
     return this.auth?.redact(generic) ?? generic
   }
+}
+
+export function runProcessHelper<T>(
+  command: string,
+  arguments_: string[],
+  options: { timeoutMs?: number; maxOutputBytes?: number } = {},
+): Promise<T> {
+  const timeoutMs = options.timeoutMs ?? PROCESS_HELPER_TIMEOUT_MS
+  const maxOutputBytes = options.maxOutputBytes ?? MAX_HELPER_OUTPUT
+  const child = spawn(command, arguments_, {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  })
+  return new Promise((resolve, reject) => {
+    const stdoutChunks: Buffer[] = []
+    let stdoutBytes = 0
+    let stderrBytes = 0
+    let settled = false
+    const timer = setTimeout(() => fail("Windows process helper 執行逾時。"), timeoutMs)
+
+    const fail = (message: string) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try {
+        child.kill()
+      } catch {
+        // kill 失敗不覆蓋既定錯誤，也不代表 helper 已確認終止。
+      }
+      reject(new ManagerError("PROCESS_CONTROL_FAILED", message, 500))
+    }
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdoutBytes += chunk.length
+      if (stdoutBytes > maxOutputBytes) return fail("Windows process helper 輸出超過限制。")
+      stdoutChunks.push(chunk)
+    })
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrBytes += chunk.length
+      if (stderrBytes > maxOutputBytes) fail("Windows process helper 輸出超過限制。")
+    })
+    child.once("error", () => fail("Windows process helper 執行失敗。"))
+    child.once("close", (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (code !== 0) {
+        reject(new ManagerError("PROCESS_CONTROL_FAILED", "Windows process helper 執行失敗。", 500))
+        return
+      }
+      try {
+        const stdout = Buffer.concat(stdoutChunks, stdoutBytes).toString("utf8")
+        resolve(JSON.parse(stdout.trim()) as T)
+      } catch {
+        reject(new ManagerError("PROCESS_CONTROL_INVALID_RESPONSE", "Windows process helper 回傳無效資料。", 500))
+      }
+    })
+  })
 }
 
 function spawnBackground(

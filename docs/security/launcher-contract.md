@@ -47,7 +47,9 @@ port 只有一個候選。
 未登錄 reservation 的 TTL 是 10,000 ms。到期不代表可直接重用：Manager 先重新 bind-probe；
 若仍有 listener，就延長 10,000 ms 作隔離。registered allocation 只會在 reconcile/finalize
 確認 endpoint 不再監聽後釋放。若 startup 沒留下 exact identity，reconcile 不會退化成 PID-only；
-startup grace 後 endpoint 仍為 free 才標記 offline 並釋放。
+startup grace 後 endpoint 仍為 free 才標記 offline 並釋放。已保存 exact identity 的 Instance 只在
+inspector 明確確認 PID 不存在且 loopback port 可 bind 時標記 stopped 並釋放 allocation。Inspector
+failure、identity mismatch、PID reuse 或 occupied port 一律保留 quarantine，且不能 Stop foreign process。
 
 ## Launcher API
 

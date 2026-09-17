@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { OpenCodeAuthAdapter } from "../src/auth.js"
-import { OpenCodeRuntime } from "../src/runtime.js"
+import { OpenCodeRuntime, runProcessHelper } from "../src/runtime.js"
 import type { InstanceRecord } from "../src/repository.js"
 
 test("summary keeps successful endpoint signals when one endpoint fails", async (t) => {
@@ -49,6 +49,45 @@ test("summary keeps successful endpoint signals when one endpoint fails", async 
   assert.equal(summary.pendingPermissions, 1)
   assert.deepEqual(summary.sessions.map((session) => session.id), ["ses_root"])
   assert.match(summary.error ?? "", /question/)
+})
+
+test("multiple slow process helpers do not block the event loop", async () => {
+  const helpers = Array.from({ length: 4 }, () => runProcessHelper<{ ok: boolean }>(
+    process.execPath,
+    ["-e", "setTimeout(() => process.stdout.write(JSON.stringify({ ok: true })), 250)"],
+  ))
+
+  const timerWon = await Promise.race([
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 50)),
+    Promise.all(helpers).then(() => false),
+  ])
+
+  assert.equal(timerWon, true)
+  assert.deepEqual(await Promise.all(helpers), Array.from({ length: 4 }, () => ({ ok: true })))
+})
+
+test("process helper bounds its deadline and captured output", async () => {
+  await assert.rejects(
+    runProcessHelper(process.execPath, ["-e", "setTimeout(() => {}, 1000)"], { timeoutMs: 50 }),
+    /執行逾時/,
+  )
+  await assert.rejects(
+    runProcessHelper(process.execPath, ["-e", "process.stdout.write('x'.repeat(2048))"], { maxOutputBytes: 1024 }),
+    /輸出超過限制/,
+  )
+})
+
+test("process helper decodes UTF-8 only after split output chunks are complete", async () => {
+  const fixture = [
+    "const output = Buffer.from(JSON.stringify({ path: 'C:\\\\workspace\\\\專案' }))",
+    "const splitAt = output.indexOf(Buffer.from('專')) + 1",
+    "process.stdout.write(output.subarray(0, splitAt))",
+    "setTimeout(() => process.stdout.write(output.subarray(splitAt)), 10)",
+  ].join(";")
+
+  const result = await runProcessHelper<{ path: string }>(process.execPath, ["-e", fixture])
+
+  assert.equal(result.path, "C:\\workspace\\專案")
 })
 
 test("OpenCode 1.18.31 Web URLs use its URL-safe directory route", async (t) => {
