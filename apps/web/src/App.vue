@@ -44,6 +44,9 @@ const listing = ref<DirectoryListing | null>(null)
 const sessions = ref<SessionRootsResponse>({ roots: [], unknownParent: [] })
 const sessionsLoading = ref(false)
 let pollTimer: number | undefined
+// Root 請求可能亂序完成；只有最新選取的 Instance 可更新 data、error 與 loading state。
+let sessionsGeneration = 0
+let sessionsInstanceId = ""
 
 const selected = computed(() => overview.value.instances.find((instance) => instance.id === selectedId.value) ?? null)
 
@@ -51,7 +54,10 @@ onMounted(async () => {
   await loadOverview()
   pollTimer = window.setInterval(() => void loadOverview(false), 5_000)
 })
-onBeforeUnmount(() => window.clearInterval(pollTimer))
+onBeforeUnmount(() => {
+  window.clearInterval(pollTimer)
+  sessionsGeneration++
+})
 
 async function loadOverview(showLoading = true): Promise<void> {
   if (showLoading) loading.value = true
@@ -75,15 +81,29 @@ async function choose(instance: ManagedInstance): Promise<void> {
 }
 
 async function loadSessions(): Promise<void> {
-  if (!selectedId.value) return
+  const instanceId = selectedId.value
+  const generation = ++sessionsGeneration
+  if (!instanceId) {
+    sessionsInstanceId = ""
+    sessions.value = { roots: [], unknownParent: [] }
+    sessionsLoading.value = false
+    return
+  }
+  if (sessionsInstanceId !== instanceId) {
+    sessionsInstanceId = instanceId
+    sessions.value = { roots: [], unknownParent: [] }
+  }
   sessionsLoading.value = true
   try {
-    sessions.value = await managerApi.sessions(selectedId.value)
+    const next = await managerApi.sessions(instanceId)
+    if (generation !== sessionsGeneration || selectedId.value !== instanceId) return
+    sessions.value = next
   } catch (cause) {
+    if (generation !== sessionsGeneration || selectedId.value !== instanceId) return
     sessions.value = { roots: [], unknownParent: [] }
     error.value = message(cause)
   } finally {
-    sessionsLoading.value = false
+    if (generation === sessionsGeneration && selectedId.value === instanceId) sessionsLoading.value = false
   }
 }
 

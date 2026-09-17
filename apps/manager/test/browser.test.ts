@@ -39,7 +39,8 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
   const childDirectory = path.join(projectA, "child-folder")
   await Promise.all([mkdir(childDirectory, { recursive: true }), mkdir(projectB)])
   const repository = new ManagerRepository(path.join(sandbox, "omw.sqlite"))
-  const service = new ManagerService(repository, new BrowserRuntime())
+  const runtime = new BrowserRuntime()
+  const service = new ManagerService(repository, runtime)
   const port = await freePort()
   const origin = `http://127.0.0.1:${port}`
   const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist")
@@ -120,7 +121,7 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     const instanceA = page.locator(".instance-row").filter({ hasText: "project-a" })
     const instanceB = page.locator(".instance-row").filter({ hasText: "project-b" })
     await instanceA.click()
-    await page.getByText("共用根", { exact: true }).waitFor()
+    await page.getByText("Root A", { exact: true }).waitFor()
     await page.getByRole("button", { name: "載入 Child Session" }).click()
     await page.getByText("Child A", { exact: true }).waitFor()
     const childA = page.locator(".session-node").filter({ hasText: "Child A" }).first()
@@ -135,12 +136,45 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     assert.equal(await page.getByText("Nested A", { exact: true }).count(), 0)
 
     await instanceA.click()
-    await page.getByText("共用根", { exact: true }).waitFor()
+    await page.getByText("Root A", { exact: true }).waitFor()
     assert.equal(await page.getByText("Child B", { exact: true }).count(), 0)
     await page.getByRole("button", { name: "載入 Child Session" }).click()
     await instanceB.click()
     await page.waitForTimeout(300)
     assert.equal(await page.getByText("Child A", { exact: true }).count(), 0)
+
+    runtime.queueSessions("project-a", { delayMs: 220, title: "Stale Root A" })
+    runtime.queueSessions("project-b", { delayMs: 30, title: "Current Root B" })
+    await instanceA.click()
+    await page.waitForTimeout(10)
+    assert.equal(await page.getByText("Root B", { exact: true }).count(), 0, "switching Instance clears the old root tree immediately")
+    await instanceB.click()
+    await page.getByText("Current Root B", { exact: true }).waitFor()
+    await page.waitForTimeout(240)
+    assert.equal(await page.getByText("Stale Root A", { exact: true }).count(), 0)
+
+    runtime.queueSessions("project-b",
+      { delayMs: 180, title: "Stale B Refresh" },
+      { delayMs: 20, title: "Current B Refresh" },
+    )
+    const reloadSessions = page.getByRole("button", { name: "重新載入" })
+    await reloadSessions.click()
+    await page.waitForTimeout(10)
+    await reloadSessions.click()
+    await page.getByText("Current B Refresh", { exact: true }).waitFor()
+    await page.waitForTimeout(190)
+    assert.equal(await page.getByText("Stale B Refresh", { exact: true }).count(), 0)
+
+    runtime.queueSessions("project-a", { delayMs: 80, error: "stale root failure fixture" })
+    runtime.queueSessions("project-b", { delayMs: 220, title: "Current B After Error" })
+    await instanceA.click()
+    await page.waitForTimeout(10)
+    await instanceB.click()
+    await page.waitForTimeout(100)
+    assert.equal(await page.getByText("stale root failure fixture", { exact: true }).count(), 0)
+    assert.equal(await page.locator(".sessions-panel .spin").count(), 1, "stale error must not clear the current loading state")
+    await page.getByText("Current B After Error", { exact: true }).waitFor()
+    assert.equal(await page.locator(".sessions-panel .spin").count(), 0)
 
     page.once("dialog", (dialog) => dialog.accept())
     await page.getByRole("button", { name: "安全停止" }).click()
@@ -237,6 +271,12 @@ test("mobile UI drives real Manager API Start, official Open URL, and safe Stop"
 })
 
 class BrowserRuntime implements RuntimePort {
+  private readonly queuedSessions = new Map<string, SessionFixture[]>()
+
+  queueSessions(projectName: string, ...responses: SessionFixture[]): void {
+    this.queuedSessions.set(projectName, responses)
+  }
+
   async launch(directory: string, port: number, instanceId: string): Promise<LaunchResult> {
     return {
       pid: 48001,
@@ -253,7 +293,15 @@ class BrowserRuntime implements RuntimePort {
   async cleanupLaunch() { return { stopped: true, reason: null } }
   async inspect() { return { running: true, matched: true, portOwnerMatched: true, portOwnedByOther: false } }
   async stop() { return { stopped: false, reason: "fixture identity mismatch" } }
-  async sessions() { return [{ id: "ses_shared", title: "共用根" }] }
+  async sessions(instance: InstanceRecord) {
+    const queued = this.queuedSessions.get(instance.projectName)?.shift()
+    if (queued) {
+      await new Promise((resolve) => setTimeout(resolve, queued.delayMs))
+      if (queued.error) throw new Error(queued.error)
+      return [{ id: "ses_shared", title: queued.title ?? "Fixture Root" }]
+    }
+    return [{ id: "ses_shared", title: instance.projectName === "project-a" ? "Root A" : "Root B" }]
+  }
   async children(instance: InstanceRecord, sessionId: string) {
     await new Promise((resolve) => setTimeout(resolve, instance.projectName === "project-a" ? 200 : 20))
     if (instance.projectName === "project-a" && sessionId === "ses_shared") {
@@ -289,6 +337,12 @@ class BrowserRuntime implements RuntimePort {
   }
 
   openUrl(instance: Pick<InstanceRecord, "endpoint">): string { return instance.endpoint }
+}
+
+interface SessionFixture {
+  delayMs: number
+  title?: string
+  error?: string
 }
 
 function freePort(): Promise<number> {
