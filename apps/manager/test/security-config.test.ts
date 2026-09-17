@@ -1,7 +1,10 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import type { ChildProcessWithoutNullStreams } from "node:child_process"
+import { EventEmitter } from "node:events"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { PassThrough } from "node:stream"
 import test from "node:test"
 import { SeparateRequestAuthenticator, type StoredCredentials } from "../src/auth.js"
 import { readInstancePortPoolConfig, readRemoteAccessConfig } from "../src/config.js"
@@ -90,6 +93,46 @@ test("DPAPI store atomically replaces and round-trips only temporary fake creden
     }
     await store.save(rotated)
     assert.deepEqual(await store.load(), rotated)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("DPAPI store rejects a helper that never closes within a bounded deadline", { skip: process.platform !== "win32" }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-dpapi-deadline-test-"))
+  const child = new EventEmitter() as unknown as ChildProcessWithoutNullStreams
+  const stdin = new PassThrough()
+  const stdout = new PassThrough()
+  const stderr = new PassThrough()
+  let kills = 0
+  Object.assign(child, {
+    stdin,
+    stdout,
+    stderr,
+    kill: () => { kills++; return true },
+  })
+  const store = new DpapiCredentialStore({
+    dataDirectory: root,
+    powershell: "fixture-pwsh",
+    dpapiTimeoutMs: 30,
+    spawnDpapi: () => child,
+  })
+  try {
+    await writeFile(store.filename, "fixture-ciphertext", "utf8")
+    stderr.write("fixture-password-must-not-appear")
+    const startedAt = Date.now()
+    const error = await store.load().catch((cause: unknown) => cause)
+    assert.ok(error instanceof Error)
+    assert.match(error.message, /DPAPI helper.*deadline/)
+    assert.doesNotMatch(error.message, /fixture-password/)
+    const elapsedMs = Date.now() - startedAt
+    assert.ok(elapsedMs >= 20, "a never-closing helper should settle through the deadline")
+    assert.ok(elapsedMs < 500, "helper deadline should reject promptly")
+    assert.equal(kills, 1)
+    assert.equal(child.listenerCount("error"), 0)
+    assert.equal(child.listenerCount("close"), 0)
+    assert.equal(stdout.listenerCount("data"), 0)
+    assert.equal(stderr.listenerCount("data"), 0)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

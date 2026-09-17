@@ -1,4 +1,8 @@
-import { spawn } from "node:child_process"
+import {
+  spawn,
+  type ChildProcessWithoutNullStreams,
+  type SpawnOptionsWithoutStdio,
+} from "node:child_process"
 import { randomBytes } from "node:crypto"
 import { existsSync } from "node:fs"
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
@@ -7,6 +11,13 @@ import { fileURLToPath } from "node:url"
 import type { StoredCredentials } from "./auth.js"
 
 const MAX_DPAPI_OUTPUT = 64 * 1024
+const DPAPI_TIMEOUT_MS = 5_000
+
+type DpapiSpawn = (
+  command: string,
+  args: string[],
+  options: SpawnOptionsWithoutStdio,
+) => ChildProcessWithoutNullStreams
 
 export interface CredentialStore {
   exists(): boolean
@@ -18,11 +29,20 @@ export class DpapiCredentialStore implements CredentialStore {
   readonly filename: string
   private readonly powershell: string
   private readonly helperPath: string
+  private readonly spawnDpapi: DpapiSpawn
+  private readonly dpapiTimeoutMs: number
 
-  constructor(options: { dataDirectory: string; powershell?: string }) {
+  constructor(options: {
+    dataDirectory: string
+    powershell?: string
+    spawnDpapi?: DpapiSpawn
+    dpapiTimeoutMs?: number
+  }) {
     this.filename = path.join(options.dataDirectory, "credentials.dpapi")
     this.powershell = options.powershell ?? "pwsh.exe"
     this.helperPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../scripts/credential-store.ps1")
+    this.spawnDpapi = options.spawnDpapi ?? spawn
+    this.dpapiTimeoutMs = options.dpapiTimeoutMs ?? DPAPI_TIMEOUT_MS
   }
 
   exists(): boolean {
@@ -32,7 +52,7 @@ export class DpapiCredentialStore implements CredentialStore {
   async load(): Promise<StoredCredentials> {
     if (!this.exists()) throw new Error(`Remote access credential store 不存在：${this.filename}`)
     const ciphertext = await readFile(this.filename, "utf8")
-    const plaintext = await runDpapi(this.powershell, this.helperPath, "Unprotect", ciphertext)
+    const plaintext = await runDpapi(this.powershell, this.helperPath, "Unprotect", ciphertext, this.spawnDpapi, this.dpapiTimeoutMs)
     try {
       return validateCredentials(JSON.parse(plaintext) as unknown)
     } finally {
@@ -42,7 +62,7 @@ export class DpapiCredentialStore implements CredentialStore {
 
   async save(credentials: StoredCredentials): Promise<void> {
     const validated = validateCredentials(credentials)
-    const ciphertext = await runDpapi(this.powershell, this.helperPath, "Protect", JSON.stringify(validated))
+    const ciphertext = await runDpapi(this.powershell, this.helperPath, "Protect", JSON.stringify(validated), this.spawnDpapi, this.dpapiTimeoutMs)
     await mkdir(path.dirname(this.filename), { recursive: true })
     const temporary = `${this.filename}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`
     try {
@@ -79,27 +99,80 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function runDpapi(powershell: string, helperPath: string, action: "Protect" | "Unprotect", input: string): Promise<string> {
+function runDpapi(
+  powershell: string,
+  helperPath: string,
+  action: "Protect" | "Unprotect",
+  input: string,
+  spawnProcess: DpapiSpawn,
+  timeoutMs: number,
+): Promise<string> {
   if (process.platform !== "win32") return Promise.reject(new Error("DPAPI credential store 只支援 Windows current user。"))
   return new Promise((resolve, reject) => {
-    const child = spawn(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", helperPath, "-Action", action], {
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    })
-    let stdout = ""
-    let stderr = ""
-    const append = (current: string, chunk: Buffer): string => {
-      const next = current + chunk.toString("utf8")
-      if (Buffer.byteLength(next, "utf8") > MAX_DPAPI_OUTPUT) child.kill()
-      return next.slice(0, MAX_DPAPI_OUTPUT)
+    let child: ChildProcessWithoutNullStreams
+    try {
+      child = spawnProcess(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", helperPath, "-Action", action], {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      })
+    } catch {
+      reject(new Error("無法啟動 Windows DPAPI helper。"))
+      return
     }
-    child.stdout.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk) })
-    child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk) })
-    child.once("error", () => reject(new Error("無法啟動 Windows DPAPI helper。")))
-    child.once("close", (code) => {
-      if (code !== 0) return reject(new Error(stderr.trim() || "Windows DPAPI helper 失敗。"))
-      resolve(stdout)
-    })
-    child.stdin.end(input, "utf8")
+
+    const stdout: Buffer[] = []
+    let outputBytes = 0
+    let settled = false
+    let deadline: NodeJS.Timeout | undefined
+    const cleanup = (): void => {
+      if (deadline) clearTimeout(deadline)
+      child.stdout.off("data", onStdout)
+      child.stderr.off("data", onStderr)
+      child.stdin.off("error", onInputError)
+      child.off("error", onError)
+      child.off("close", onClose)
+    }
+    const fail = (error: Error, kill: boolean): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (kill) {
+        try { child.kill() } catch { /* 仍以既定的 bounded rejection 為準。 */ }
+      }
+      child.stdin.destroy()
+      reject(error)
+    }
+    const accept = (chunk: Buffer, capture: boolean): void => {
+      outputBytes += chunk.byteLength
+      if (outputBytes > MAX_DPAPI_OUTPUT) {
+        fail(new Error("Windows DPAPI helper exceeded the output limit."), true)
+        return
+      }
+      if (capture) stdout.push(chunk)
+    }
+    const onStdout = (chunk: Buffer): void => accept(chunk, true)
+    const onStderr = (chunk: Buffer): void => accept(chunk, false)
+    const onInputError = (): void => fail(new Error("Windows DPAPI helper input failed."), true)
+    const onError = (): void => fail(new Error("無法啟動 Windows DPAPI helper。"), false)
+    const onClose = (code: number | null): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      child.stdin.destroy()
+      if (code === 0) resolve(Buffer.concat(stdout).toString("utf8"))
+      else reject(new Error(`Windows DPAPI helper 失敗（exit code ${code ?? "unknown"}）。`))
+    }
+
+    child.stdout.on("data", onStdout)
+    child.stderr.on("data", onStderr)
+    child.stdin.once("error", onInputError)
+    child.once("error", onError)
+    child.once("close", onClose)
+    deadline = setTimeout(() => fail(new Error(`Windows DPAPI helper exceeded its ${timeoutMs}ms deadline.`), true), timeoutMs)
+    try {
+      child.stdin.end(input, "utf8")
+    } catch {
+      fail(new Error("Windows DPAPI helper input failed."), true)
+    }
   })
 }

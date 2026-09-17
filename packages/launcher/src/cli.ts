@@ -1,5 +1,10 @@
 #!/usr/bin/env node
-import { spawn, type SpawnOptions } from "node:child_process"
+import {
+  spawn,
+  type ChildProcessWithoutNullStreams,
+  type SpawnOptions,
+  type SpawnOptionsWithoutStdio,
+} from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import { readFile, realpath } from "node:fs/promises"
@@ -14,6 +19,7 @@ import type {
 } from "@omw/contracts"
 
 const HTTP_TIMEOUT_MS = 1_500
+const DPAPI_TIMEOUT_MS = 5_000
 const MAX_DPAPI_OUTPUT = 64 * 1024
 const KNOWN_SUBCOMMANDS = new Set([
   "acp", "agent", "attach", "auth", "completion", "db", "debug", "export", "generate", "github", "import",
@@ -38,6 +44,12 @@ interface ChildResult {
   pid: number
   completion: Promise<number>
 }
+
+export type DpapiSpawn = (
+  command: string,
+  args: string[],
+  options: SpawnOptionsWithoutStdio,
+) => ChildProcessWithoutNullStreams
 
 export interface LauncherDependencies {
   loadCredentials(environment: NodeJS.ProcessEnv, cwd: string): Promise<LauncherCredentials>
@@ -229,24 +241,79 @@ async function loadCredentials(environment: NodeJS.ProcessEnv, cwd: string): Pro
   }
 }
 
-function runDpapi(powershell: string, helper: string, ciphertext: string): Promise<string> {
+export function runDpapi(
+  powershell: string,
+  helper: string,
+  ciphertext: string,
+  options: { spawnProcess?: DpapiSpawn; timeoutMs?: number } = {},
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", helper, "-Action", "Unprotect"], {
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    })
-    let stdout = ""
-    let stderr = ""
-    const append = (current: string, chunk: Buffer): string => {
-      const next = current + chunk.toString("utf8")
-      if (Buffer.byteLength(next, "utf8") > MAX_DPAPI_OUTPUT) child.kill()
-      return next.slice(0, MAX_DPAPI_OUTPUT)
+    let child: ChildProcessWithoutNullStreams
+    try {
+      child = (options.spawnProcess ?? spawn)(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", helper, "-Action", "Unprotect"], {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      })
+    } catch {
+      reject(new Error("無法啟動 Windows DPAPI helper。"))
+      return
     }
-    child.stdout.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk) })
-    child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk) })
-    child.once("error", () => reject(new Error("無法啟動 Windows DPAPI helper。")))
-    child.once("close", (code) => code === 0 ? resolve(stdout) : reject(new Error(stderr.trim() || "Windows DPAPI helper 失敗。")))
-    child.stdin.end(ciphertext, "utf8")
+
+    const stdout: Buffer[] = []
+    let outputBytes = 0
+    let settled = false
+    let deadline: NodeJS.Timeout | undefined
+    const cleanup = (): void => {
+      if (deadline) clearTimeout(deadline)
+      child.stdout.off("data", onStdout)
+      child.stderr.off("data", onStderr)
+      child.stdin.off("error", onInputError)
+      child.off("error", onError)
+      child.off("close", onClose)
+    }
+    const fail = (error: Error, kill: boolean): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (kill) {
+        try { child.kill() } catch { /* 仍以既定的 bounded rejection 為準。 */ }
+      }
+      child.stdin.destroy()
+      reject(error)
+    }
+    const accept = (chunk: Buffer, capture: boolean): void => {
+      outputBytes += chunk.byteLength
+      if (outputBytes > MAX_DPAPI_OUTPUT) {
+        fail(new Error("Windows DPAPI helper exceeded the output limit."), true)
+        return
+      }
+      if (capture) stdout.push(chunk)
+    }
+    const onStdout = (chunk: Buffer): void => accept(chunk, true)
+    const onStderr = (chunk: Buffer): void => accept(chunk, false)
+    const onInputError = (): void => fail(new Error("Windows DPAPI helper input failed."), true)
+    const onError = (): void => fail(new Error("無法啟動 Windows DPAPI helper。"), false)
+    const onClose = (code: number | null): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      child.stdin.destroy()
+      if (code === 0) resolve(Buffer.concat(stdout).toString("utf8"))
+      else reject(new Error(`Windows DPAPI helper 失敗（exit code ${code ?? "unknown"}）。`))
+    }
+
+    child.stdout.on("data", onStdout)
+    child.stderr.on("data", onStderr)
+    child.stdin.once("error", onInputError)
+    child.once("error", onError)
+    child.once("close", onClose)
+    const timeoutMs = options.timeoutMs ?? DPAPI_TIMEOUT_MS
+    deadline = setTimeout(() => fail(new Error(`Windows DPAPI helper exceeded its ${timeoutMs}ms deadline.`), true), timeoutMs)
+    try {
+      child.stdin.end(ciphertext, "utf8")
+    } catch {
+      fail(new Error("Windows DPAPI helper input failed."), true)
+    }
   })
 }
 

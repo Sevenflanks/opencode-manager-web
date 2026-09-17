@@ -1,8 +1,17 @@
 import assert from "node:assert/strict"
-import type { SpawnOptions } from "node:child_process"
+import type { ChildProcessWithoutNullStreams, SpawnOptions } from "node:child_process"
+import { EventEmitter } from "node:events"
 import path from "node:path"
+import { PassThrough } from "node:stream"
 import test from "node:test"
-import { managedArguments, planInvocation, runLauncher, type LauncherDependencies } from "../src/cli.js"
+import {
+  managedArguments,
+  planInvocation,
+  runDpapi,
+  runLauncher,
+  type DpapiSpawn,
+  type LauncherDependencies,
+} from "../src/cli.js"
 
 const credentials = {
   launcherToken: "launcher-test-token-with-at-least-thirty-two-characters",
@@ -104,6 +113,62 @@ test("OMW_REQUIRED fails closed and finalize failure cannot change TUI exit", as
   assert.equal(await runLauncher([], environment(), "C:\\project", "C:\\launcher.js", finalizeFixture.value), 23)
 })
 
+test("credential helper failure preserves exact argv when fail-open and exits 70 when required", async () => {
+  const args = ["--port=42004", "C:\\project with spaces"]
+  const failOpen = dependencies({ credentialError: new Error("Windows DPAPI helper 超過 30ms deadline。") })
+  assert.equal(await runLauncher(args, environment(), "C:\\project", "C:\\launcher.js", failOpen.value), 23)
+  assert.deepEqual(failOpen.spawns[0]?.args, args)
+
+  const required = dependencies({ credentialError: new Error("Windows DPAPI helper 超過 30ms deadline。") })
+  assert.equal(await runLauncher(args, { ...environment(), OMW_REQUIRED: "1" }, "C:\\project", "C:\\launcher.js", required.value), 70)
+  assert.equal(required.spawns.length, 0)
+})
+
+test("DPAPI helper has a bounded deadline and cleans up a child that never closes", async () => {
+  const fixture = fakeDpapiChild()
+  const startedAt = Date.now()
+  await assert.rejects(
+    runDpapi("fixture-pwsh", "fixture-helper.ps1", "fixture-ciphertext", {
+      spawnProcess: fixture.spawn,
+      timeoutMs: 30,
+    }),
+    /DPAPI helper.*deadline/,
+  )
+  const elapsedMs = Date.now() - startedAt
+  assert.ok(elapsedMs >= 20, "a never-closing helper should settle through the deadline")
+  assert.ok(elapsedMs < 500, "helper deadline should reject promptly")
+  assert.equal(fixture.kills, 1)
+  assert.equal(fixture.child.listenerCount("error"), 0)
+  assert.equal(fixture.child.listenerCount("close"), 0)
+  assert.equal(fixture.stdout.listenerCount("data"), 0)
+  assert.equal(fixture.stderr.listenerCount("data"), 0)
+})
+
+test("DPAPI helper bounds output without exposing stderr credentials and clears a successful deadline", async () => {
+  const oversized = fakeDpapiChild()
+  const rejected = runDpapi("fixture-pwsh", "fixture-helper.ps1", "input-password-fixture", {
+    spawnProcess: oversized.spawn,
+    timeoutMs: 200,
+  })
+  oversized.stderr.write(`stderr-password-fixture-${"x".repeat(70 * 1024)}`)
+  const error = await rejected.catch((cause: unknown) => cause)
+  assert.ok(error instanceof Error)
+  assert.match(error.message, /output limit/)
+  assert.doesNotMatch(error.message, /input-password|stderr-password/)
+  assert.equal(oversized.kills, 1)
+
+  const successful = fakeDpapiChild()
+  const resolved = runDpapi("fixture-pwsh", "fixture-helper.ps1", "fixture-ciphertext", {
+    spawnProcess: successful.spawn,
+    timeoutMs: 30,
+  })
+  successful.stdout.write("fixture-plaintext")
+  successful.child.emit("close", 0, null)
+  assert.equal(await resolved, "fixture-plaintext")
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(successful.kills, 0, "settled helper must not retain its deadline timer")
+})
+
 function environment(): NodeJS.ProcessEnv {
   return {
     OMW_OPENCODE_EXECUTABLE: "C:\\tools\\opencode.exe",
@@ -111,11 +176,14 @@ function environment(): NodeJS.ProcessEnv {
   }
 }
 
-function dependencies(options: { reserveError?: Error; finalizeError?: Error } = {}) {
+function dependencies(options: { reserveError?: Error; finalizeError?: Error; credentialError?: Error } = {}) {
   const spawns: Array<{ executable: string; args: string[]; options: SpawnOptions }> = []
   const requests: Array<{ pathname: string; body: unknown }> = []
   const value: LauncherDependencies = {
-    async loadCredentials() { return credentials },
+    async loadCredentials() {
+      if (options.credentialError) throw options.credentialError
+      return credentials
+    },
     async resolveExecutable(value) { return value },
     async request<T>(_origin: string, pathname: string, _token: string, body: unknown): Promise<T> {
       requests.push({ pathname, body })
@@ -134,4 +202,31 @@ function dependencies(options: { reserveError?: Error; finalizeError?: Error } =
     diagnostic() {},
   }
   return { value, spawns, requests }
+}
+
+function fakeDpapiChild(): {
+  child: ChildProcessWithoutNullStreams
+  stdout: PassThrough
+  stderr: PassThrough
+  spawn: DpapiSpawn
+  readonly kills: number
+} {
+  const child = new EventEmitter() as unknown as ChildProcessWithoutNullStreams
+  const stdin = new PassThrough()
+  const stdout = new PassThrough()
+  const stderr = new PassThrough()
+  let kills = 0
+  Object.assign(child, {
+    stdin,
+    stdout,
+    stderr,
+    kill: () => { kills++; return true },
+  })
+  return {
+    child,
+    stdout,
+    stderr,
+    spawn: () => child,
+    get kills() { return kills },
+  }
 }
