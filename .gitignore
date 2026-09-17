@@ -1,0 +1,23 @@
+# 本機探索、設定與 runtime 資料不是產品原始碼。
+/.scratch/
+/.serena/
+/opencode.json
+/opencode.jsonc
+/OMW_PROJECT_HANDOFF.md
+/docs/research/
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+.env
+.env.*
+!.env.example
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+/.omw/
