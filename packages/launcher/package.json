@@ -1,0 +1,17 @@
+{
+  "name": "@omw/launcher",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "omw-opencode": "dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@omw/contracts": "0.1.0"
+  }
+}
