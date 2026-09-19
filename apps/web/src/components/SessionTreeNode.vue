@@ -5,7 +5,9 @@ import { ref, watch } from "vue"
 import { managerApi } from "@/api"
 import { Button } from "@/components/ui/button"
 
-const props = defineProps<{ instanceId: string; session: SessionMetadata; depth?: number }>()
+const props = withDefaults(defineProps<{ instanceId: string; session: SessionMetadata; depth?: number; openDisabled?: boolean }>(), {
+  openDisabled: false,
+})
 const emit = defineEmits<{ open: [sessionId: string] }>()
 const expanded = ref(false)
 const loaded = ref(false)
@@ -55,11 +57,11 @@ async function toggle(): Promise<void> {
         <LoaderCircleIcon v-if="loading" class="spin" />
         <ChevronRightIcon v-else :class="{ rotated: expanded }" />
       </Button>
-      <button class="session-copy" type="button" @click="emit('open', session.id)">
+      <button class="session-copy" type="button" :disabled="openDisabled" @click="emit('open', session.id)">
         <strong>{{ session.title }}</strong>
         <code>{{ session.id }}</code>
       </button>
-      <Button variant="ghost" size="icon" aria-label="在 OpenCode Web 開啟 Session" @click="emit('open', session.id)">
+      <Button variant="ghost" size="icon" aria-label="在 OpenCode Web 開啟 Session" :disabled="openDisabled" @click="emit('open', session.id)">
         <ExternalLinkIcon />
       </Button>
     </div>
@@ -72,6 +74,7 @@ async function toggle(): Promise<void> {
         :instance-id="instanceId"
         :session="child"
         :depth="(depth ?? 0) + 1"
+        :open-disabled="openDisabled"
         @open="emit('open', $event)"
       />
     </ul>
