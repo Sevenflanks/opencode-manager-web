@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream"
 import test from "node:test"
 import {
   managedArguments,
+  decodeLauncherCredentials,
   planInvocation,
   runDpapi,
   runLauncher,
@@ -15,7 +16,6 @@ import {
 
 const credentials = {
   launcherToken: "launcher-test-token-with-at-least-thirty-two-characters",
-  openCode: { username: "opencode-user", password: "opencode-test-password" },
 }
 
 test("root TUI recognizes both explicit port forms without rewriting them", () => {
@@ -30,6 +30,17 @@ test("root TUI recognizes both explicit port forms without rewriting them", () =
     managedArguments(["--port", "42001", "--hostname=127.0.0.1", "--", "--port"], 42009),
     ["--port", "42001", "--hostname=127.0.0.1", "--", "--port"],
   )
+})
+
+test("root TUI recognizes supported session option forms but not -s=value", () => {
+  for (const args of [
+    ["-s", "ses_demo", "C:\\work\\project"],
+    ["--session", "ses_demo", "C:\\work\\project"],
+    ["--session=ses_demo", "C:\\work\\project"],
+  ]) {
+    assert.deepEqual(planInvocation(args), { managed: true, projectArgument: "C:\\work\\project" })
+  }
+  assert.equal(planInvocation(["-s=ses_demo", "C:\\work\\project"]).managed, false)
 })
 
 test("managed flags stay before the delimiter and delimiter positionals are never parsed as flags", () => {
@@ -62,9 +73,11 @@ test("known subcommands and non-loopback hostnames bypass with exact argv", asyn
   assert.equal(planInvocation(["--hostname=0.0.0.0"]).managed, false)
   const fixture = dependencies()
   const args = ["run", "--model", "test/model", "hello"]
-  const code = await runLauncher(args, environment(), "C:\\project", "C:\\launcher.js", fixture.value)
+  const parentEnvironment = environmentWithOpenCodeAuth()
+  const code = await runLauncher(args, parentEnvironment, "C:\\project", "C:\\launcher.js", fixture.value)
   assert.equal(code, 23)
   assert.deepEqual(fixture.spawns[0]?.args, args)
+  assert.strictEqual(fixture.spawns[0]?.options.env, parentEnvironment)
   assert.equal(fixture.requests.length, 0)
 })
 
@@ -72,7 +85,7 @@ test("managed launch reserves before spawn, forwards cwd and terminal, then pres
   const fixture = dependencies()
   const invocationCwd = "C:\\invocation"
   const project = "project with spaces & [fixture]"
-  const code = await runLauncher(["--", project], environment(), invocationCwd, "C:\\launcher.js", fixture.value)
+  const code = await runLauncher(["--", project], environmentWithOpenCodeAuth(), invocationCwd, "C:\\launcher.js", fixture.value)
   assert.equal(code, 23)
   assert.equal(fixture.requests[0]?.pathname, "/api/v1/launcher/reservations")
   assert.deepEqual(fixture.requests[0]?.body, {
@@ -83,7 +96,39 @@ test("managed launch reserves before spawn, forwards cwd and terminal, then pres
   assert.equal(fixture.spawns[0]?.options.cwd, invocationCwd)
   assert.equal(fixture.spawns[0]?.options.stdio, "inherit")
   assert.equal(fixture.spawns[0]?.options.shell, false)
-  assert.equal((fixture.spawns[0]?.options.env as NodeJS.ProcessEnv).OPENCODE_SERVER_PASSWORD, credentials.openCode.password)
+  assert.equal((fixture.spawns[0]?.options.env as NodeJS.ProcessEnv).OPENCODE_SERVER_USERNAME, undefined)
+  assert.equal((fixture.spawns[0]?.options.env as NodeJS.ProcessEnv).OPENCODE_SERVER_PASSWORD, undefined)
+  assert.match(fixture.requests[1]?.pathname ?? "", /\/register$/)
+  assert.match(fixture.requests[2]?.pathname ?? "", /\/finalize$/)
+})
+
+test("managed launch without a project uses the invocation cwd and only adds network flags", async () => {
+  const fixture = dependencies()
+  const invocationCwd = "C:\\work\\project with spaces & [fixture]"
+  const code = await runLauncher([], environment(), invocationCwd, "C:\\launcher.js", fixture.value)
+
+  assert.equal(code, 23)
+  assert.deepEqual(fixture.requests[0]?.body, {
+    clientInvocationId: "11111111-1111-4111-8111-111111111111",
+    directory: invocationCwd,
+  })
+  assert.deepEqual(fixture.spawns[0]?.args, ["--hostname", "127.0.0.1", "--port", "42004"])
+  assert.equal(fixture.spawns[0]?.options.cwd, invocationCwd)
+  assert.match(fixture.requests[1]?.pathname ?? "", /\/register$/)
+  assert.match(fixture.requests[2]?.pathname ?? "", /\/finalize$/)
+})
+
+test("session TUI reserves before spawn and injects only the reserved port", async () => {
+  const fixture = dependencies()
+  const args = ["-s", "ses_demo", "C:\\work\\project"]
+  const code = await runLauncher(args, environment(), "C:\\invocation", "C:\\launcher.js", fixture.value)
+
+  assert.equal(code, 23)
+  assert.deepEqual(fixture.requests[0]?.body, {
+    clientInvocationId: "11111111-1111-4111-8111-111111111111",
+    directory: path.resolve("C:\\invocation", "C:\\work\\project"),
+  })
+  assert.deepEqual(fixture.spawns[0]?.args, ["-s", "ses_demo", "C:\\work\\project", "--hostname", "127.0.0.1", "--port", "42004"])
   assert.match(fixture.requests[1]?.pathname ?? "", /\/register$/)
   assert.match(fixture.requests[2]?.pathname ?? "", /\/finalize$/)
 })
@@ -92,16 +137,34 @@ test("Manager offline or explicit-port collision fails open with untouched argv"
   for (const message of ["connect ECONNREFUSED", "PORT_UNAVAILABLE: Explicit port 42004 is occupied"]) {
     const fixture = dependencies({ reserveError: new Error(message) })
     const args = ["--port=42004", "C:\\project"]
-    const code = await runLauncher(args, environment(), "C:\\project", "C:\\launcher.js", fixture.value)
+    const parentEnvironment = environmentWithOpenCodeAuth()
+    const code = await runLauncher(args, parentEnvironment, "C:\\project", "C:\\launcher.js", fixture.value)
     assert.equal(code, 23)
     assert.deepEqual(fixture.spawns[0]?.args, args)
-    assert.equal((fixture.spawns[0]?.options.env as NodeJS.ProcessEnv).OPENCODE_SERVER_PASSWORD, undefined)
+    assert.strictEqual(fixture.spawns[0]?.options.env, parentEnvironment)
+    assert.equal((fixture.spawns[0]?.options.env as NodeJS.ProcessEnv).OPENCODE_SERVER_PASSWORD, "native-password-sentinel")
   }
 
   const delimiterFixture = dependencies({ reserveError: new Error("connect ECONNREFUSED") })
   const delimiterArgs = ["--port=42004", "--", "project with spaces & [fixture]"]
   assert.equal(await runLauncher(delimiterArgs, environment(), "C:\\project", "C:\\launcher.js", delimiterFixture.value), 23)
   assert.deepEqual(delimiterFixture.spawns[0]?.args, delimiterArgs)
+
+  const noArgsEnvironment = environment()
+  const noArgsFixture = dependencies({ reserveError: new Error("connect ECONNREFUSED") })
+  const noArgsCwd = "C:\\work\\project with spaces"
+  assert.equal(await runLauncher([], noArgsEnvironment, noArgsCwd, "C:\\launcher.js", noArgsFixture.value), 23)
+  assert.deepEqual(noArgsFixture.spawns[0]?.args, [])
+  assert.equal(noArgsFixture.spawns[0]?.options.cwd, noArgsCwd)
+  assert.strictEqual(noArgsFixture.spawns[0]?.options.env, noArgsEnvironment)
+})
+
+test("launcher accepts both current and legacy DPAPI payloads but only returns its token", () => {
+  assert.deepEqual(decodeLauncherCredentials(JSON.stringify(credentials)), credentials)
+  assert.deepEqual(decodeLauncherCredentials(JSON.stringify({
+    ...credentials,
+    openCode: { username: "legacy-user", password: "legacy-password" },
+  })), credentials)
 })
 
 test("OMW_REQUIRED fails closed and finalize failure cannot change TUI exit", async () => {
@@ -173,6 +236,14 @@ function environment(): NodeJS.ProcessEnv {
   return {
     OMW_OPENCODE_EXECUTABLE: "C:\\tools\\opencode.exe",
     OMW_MANAGER_ORIGIN: "http://127.0.0.1:4174",
+  }
+}
+
+function environmentWithOpenCodeAuth(): NodeJS.ProcessEnv {
+  return {
+    ...environment(),
+    OPENCODE_SERVER_USERNAME: "native-user-sentinel",
+    OPENCODE_SERVER_PASSWORD: "native-password-sentinel",
   }
 }
 

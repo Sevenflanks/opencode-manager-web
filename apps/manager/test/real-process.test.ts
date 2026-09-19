@@ -21,7 +21,15 @@ test("installed OpenCode survives its launcher, proves directory identity, and s
   await writeFile(path.join(config, "opencode.json"), "{\"plugin\":[]}\n", "utf8")
   isolateEnvironment(sandbox, config)
 
-  const runtime = new OpenCodeRuntime({ executable, dataDirectory: data })
+  const runtime = new OpenCodeRuntime({
+    executable,
+    dataDirectory: data,
+    environment: {
+      ...process.env,
+      OPENCODE_SERVER_USERNAME: "inherited-user-sentinel",
+      OPENCODE_SERVER_PASSWORD: "inherited-password-sentinel",
+    },
+  })
   const instanceId = randomUUID()
   const port = await freePort()
   let launch: LaunchResult | null = null
@@ -30,8 +38,14 @@ test("installed OpenCode survives its launcher, proves directory identity, and s
     const health = await runtime.readiness(launch)
     assert.ok(health.version)
     assert.equal(path.resolve(health.directory).toLowerCase(), path.resolve(project).toLowerCase())
+    const unauthenticatedHealth = await fetch(`http://127.0.0.1:${port}/global/health`, { redirect: "error" })
+    assert.equal(unauthenticatedHealth.status, 200)
     const observed = await runtime.inspect(asRecord(launch, port))
     assert.deepEqual(observed, { processState: "running", running: true, matched: true, portOwnerMatched: true, portOwnedByOther: false })
+    const created = await runtime.createSession(asRecord(launch, port))
+    assert.ok(created.id)
+    assert.equal(created.parentID, undefined)
+    assert.ok((await runtime.sessions(asRecord(launch, port))).some((session) => session.id === created.id))
   } finally {
     if (launch) {
       const stopped = await runtime.stop(asRecord(launch, port))

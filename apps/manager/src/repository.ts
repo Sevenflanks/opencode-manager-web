@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs"
 import path from "node:path"
 import { DatabaseSync } from "node:sqlite"
-import type { DirectoryShortcut, InstanceKind, InstanceState } from "@omw/contracts"
+import type { DirectoryShortcut, InstanceKind, InstanceState, PrimarySession } from "@omw/contracts"
 
 export interface InstanceRecord {
   id: string
@@ -21,6 +21,7 @@ export interface InstanceRecord {
   stoppedAt: string | null
   error: string | null
   stderrSummary: string | null
+  trackingHidden?: boolean
 }
 
 interface ShortcutRow {
@@ -49,6 +50,14 @@ interface InstanceRow {
   stopped_at: string | null
   error: string | null
   stderr_summary: string | null
+  tracking_hidden: number
+}
+
+interface PrimarySessionRow {
+  session_id: string
+  title: string
+  source: PrimarySession["source"]
+  bound_at: string
 }
 
 export interface PortAllocation {
@@ -109,7 +118,8 @@ export class ManagerRepository {
         health_version TEXT,
         stopped_at TEXT,
         error TEXT,
-        stderr_summary TEXT
+        stderr_summary TEXT,
+        tracking_hidden INTEGER NOT NULL DEFAULT 0 CHECK (tracking_hidden IN (0, 1))
       ) STRICT;
       CREATE TABLE IF NOT EXISTS port_allocations (
         id TEXT PRIMARY KEY,
@@ -121,11 +131,19 @@ export class ManagerRepository {
         expires_at TEXT,
         instance_id TEXT UNIQUE
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS instance_primary_sessions (
+        instance_id TEXT PRIMARY KEY REFERENCES managed_instances(id),
+        session_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        source TEXT NOT NULL CHECK (source IN ('activity', 'new-session', 'manual')),
+        bound_at TEXT NOT NULL
+      ) STRICT;
       CREATE UNIQUE INDEX IF NOT EXISTS port_allocations_client_invocation
         ON port_allocations(client_invocation_id) WHERE client_invocation_id IS NOT NULL;
     `)
     this.ensureManagedInstanceColumn("kind", "TEXT NOT NULL DEFAULT 'headless'")
     this.ensureManagedInstanceColumn("client_invocation_id", "TEXT")
+    this.ensureManagedInstanceColumn("tracking_hidden", "INTEGER NOT NULL DEFAULT 0")
     this.database.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS managed_instances_client_invocation
         ON managed_instances(client_invocation_id) WHERE client_invocation_id IS NOT NULL;
@@ -172,13 +190,13 @@ export class ManagerRepository {
       INSERT INTO managed_instances (
         id, kind, client_invocation_id, project_name, project_directory, state, endpoint, port, pid,
         creation_time_utc, creation_time_ticks, executable, launched_at,
-        health_version, stopped_at, error, stderr_summary
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        health_version, stopped_at, error, stderr_summary, tracking_hidden
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       instance.id, instance.kind ?? "headless", instance.clientInvocationId ?? null, instance.projectName, instance.projectDirectory, instance.state,
       instance.endpoint, instance.port, instance.pid, instance.creationTimeUtc,
       instance.creationTimeTicks, instance.executable, instance.launchedAt,
-      instance.healthVersion, instance.stoppedAt, instance.error, null,
+      instance.healthVersion, instance.stoppedAt, instance.error, null, instance.trackingHidden ? 1 : 0,
     )
     return instance
   }
@@ -207,6 +225,78 @@ export class ManagerRepository {
   listInstances(): InstanceRecord[] {
     const rows = this.database.prepare("SELECT * FROM managed_instances ORDER BY launched_at DESC, id").all() as unknown as InstanceRow[]
     return rows.map(mapInstance)
+  }
+
+  setTrackingHidden(instanceId: string, hidden: boolean): InstanceRecord | null {
+    const result = this.database.prepare("UPDATE managed_instances SET tracking_hidden = ? WHERE id = ?").run(hidden ? 1 : 0, instanceId)
+    return result.changes === 0 ? null : this.getInstance(instanceId)
+  }
+
+  getPrimarySession(instanceId: string): PrimarySession | null {
+    const row = this.database.prepare(`
+      SELECT session_id, title, source, bound_at FROM instance_primary_sessions WHERE instance_id = ?
+    `).get(instanceId) as unknown as PrimarySessionRow | undefined
+    return row ? mapPrimarySession(row) : null
+  }
+
+  replacePrimarySession(instanceId: string, session: PrimarySession): void {
+    this.database.prepare(`
+      INSERT INTO instance_primary_sessions (instance_id, session_id, title, source, bound_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(instance_id) DO UPDATE SET
+        session_id = excluded.session_id,
+        title = excluded.title,
+        source = excluded.source,
+        bound_at = excluded.bound_at
+    `).run(instanceId, session.sessionId, session.title, session.source, session.boundAt)
+  }
+
+  bindPrimarySessionIfAbsent(instanceId: string, session: PrimarySession): boolean {
+    const result = this.database.prepare(`
+      INSERT OR IGNORE INTO instance_primary_sessions (instance_id, session_id, title, source, bound_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(instanceId, session.sessionId, session.title, session.source, session.boundAt)
+    return result.changes === 1
+  }
+
+  updatePrimarySessionTitle(instanceId: string, expected: PrimarySession, title: string): boolean {
+    const result = this.database.prepare(`
+      UPDATE instance_primary_sessions SET title = ?
+      WHERE instance_id = ? AND session_id = ? AND source = ? AND bound_at = ?
+    `).run(title, instanceId, expected.sessionId, expected.source, expected.boundAt)
+    return result.changes === 1
+  }
+
+  getAllocationForInstance(instanceId: string): PortAllocation | null {
+    const row = this.database.prepare("SELECT * FROM port_allocations WHERE instance_id = ?").get(instanceId) as unknown as PortAllocationRow | undefined
+    return row ? mapAllocation(row) : null
+  }
+
+  deleteStoppedInstance(instanceId: string): "deleted" | "not-found" | "not-stopped" | "allocated" {
+    this.database.exec("BEGIN IMMEDIATE")
+    try {
+      const instance = this.getInstance(instanceId)
+      if (!instance) {
+        this.database.exec("COMMIT")
+        return "not-found"
+      }
+      if (instance.state !== "stopped") {
+        this.database.exec("COMMIT")
+        return "not-stopped"
+      }
+      if (this.getAllocationForInstance(instanceId)) {
+        this.database.exec("COMMIT")
+        return "allocated"
+      }
+      this.database.prepare("DELETE FROM instance_primary_sessions WHERE instance_id = ?").run(instanceId)
+      const deleted = this.database.prepare("DELETE FROM managed_instances WHERE id = ? AND state = 'stopped'").run(instanceId)
+      if (deleted.changes !== 1) throw new Error("Stopped Instance deletion race detected.")
+      this.database.exec("COMMIT")
+      return "deleted"
+    } catch (error) {
+      this.database.exec("ROLLBACK")
+      throw error
+    }
   }
 
   getInstanceByInvocation(clientInvocationId: string): InstanceRecord | null {
@@ -315,6 +405,7 @@ function mapInstance(row: InstanceRow): InstanceRecord {
     stoppedAt: row.stopped_at,
     error: row.error,
     stderrSummary: null,
+    trackingHidden: row.tracking_hidden === 1,
   }
 }
 
@@ -329,4 +420,8 @@ function mapAllocation(row: PortAllocationRow): PortAllocation {
     expiresAt: row.expires_at,
     instanceId: row.instance_id,
   }
+}
+
+function mapPrimarySession(row: PrimarySessionRow): PrimarySession {
+  return { sessionId: row.session_id, title: row.title, source: row.source, boundAt: row.bound_at }
 }

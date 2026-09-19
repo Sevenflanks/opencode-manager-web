@@ -15,12 +15,9 @@ if (!process.stdin.isTTY || !process.stdout.isTTY || typeof process.stdin.setRaw
 
 const managerUsername = await promptVisible("OMW Basic auth username [omw]: ") || "omw"
 const managerPassword = await confirmedPassword("OMW Basic auth password (至少 16 字元): ")
-const openCodeUsername = await promptVisible("OpenCode Basic auth username [opencode]: ") || "opencode"
-const openCodePassword = await confirmedPassword("OpenCode Basic auth password (至少 16 字元): ")
 
 await store.save({
   manager: { username: managerUsername, password: managerPassword },
-  openCode: { username: openCodeUsername, password: openCodePassword },
   launcherToken: randomBytes(32).toString("base64url"),
 })
 process.stdout.write(`Credential store 已更新：${store.filename}\n密碼與 launcher token 未顯示；請停止並重新啟動 OMW 與既有 OpenCode instances。\n`)

@@ -35,9 +35,30 @@ function Test-Expected([object]$Identity) {
         [string]::Equals((Get-NormalizedPath $Identity.executable), (Get-NormalizedPath $ExpectedExecutable), [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Test-ListenerOverlapsManagerEndpoint([string]$LocalAddress) {
+    try {
+        $address = [Net.IPAddress]::Parse($LocalAddress)
+    }
+    catch {
+        return $false
+    }
+
+    if ($address.Equals([Net.IPAddress]::Loopback) -or
+        $address.Equals([Net.IPAddress]::Any) -or
+        $address.Equals([Net.IPAddress]::IPv6Any)) {
+        return $true
+    }
+    return $address.IsIPv4MappedToIPv6 -and $address.MapToIPv4().Equals([Net.IPAddress]::Loopback)
+}
+
 function Get-PortOwners {
     # Query failure must not look like a free port, or Stop could be granted without port-reuse evidence.
-    $listeners = @(Get-NetTCPConnection -ErrorAction Stop | Where-Object { $_.State -eq 'Listen' -and $_.LocalPort -eq $Port })
+    # Manager 只 probe 127.0.0.1；具體 Tailnet 或其他 loopback 位址的同 port listener 不會重疊。
+    $listeners = @(Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+        $_.State -eq 'Listen' -and
+        $_.LocalPort -eq $Port -and
+        (Test-ListenerOverlapsManagerEndpoint $_.LocalAddress)
+    })
     return @($listeners | ForEach-Object { [int]$_.OwningProcess } | Select-Object -Unique)
 }
 

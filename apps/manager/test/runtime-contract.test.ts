@@ -4,8 +4,7 @@ import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { OpenCodeAuthAdapter } from "../src/auth.js"
-import { OpenCodeRuntime, runProcessHelper } from "../src/runtime.js"
+import { managedServerEnvironment, OpenCodeRuntime, runProcessHelper } from "../src/runtime.js"
 import type { InstanceRecord } from "../src/repository.js"
 
 test("summary keeps successful endpoint signals when one endpoint fails", async (t) => {
@@ -14,7 +13,7 @@ test("summary keeps successful endpoint signals when one endpoint fails", async 
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
     assert.equal(url.searchParams.get("directory"), directory)
     response.setHeader("content-type", "application/json")
-    if (url.pathname === "/session") return response.end(JSON.stringify([{ id: "ses_root", title: "主工作" }]))
+    if (url.pathname === "/session") return response.end(JSON.stringify([{ id: "ses_root", title: "主工作", directory }]))
     if (url.pathname === "/session/status") return response.end("{}")
     if (url.pathname === "/question") {
       response.statusCode = 503
@@ -102,11 +101,10 @@ test("OpenCode 1.18.31 Web URLs use its URL-safe directory route", async (t) => 
   assert.equal(new URL(runtime.openUrl(instance, "ses_1")).search, "")
 })
 
-test("OpenCode auth adapter protects internal API calls and only opens configured HTTPS mappings", async (t) => {
+test("OpenCode internal API calls are unauthenticated and only open configured HTTPS mappings", async (t) => {
   const directory = "C:\\workspace\\secure"
-  const authorization = `Basic ${Buffer.from("opencode-user:opencode-test-password").toString("base64")}`
   const server = createServer((request, response) => {
-    assert.equal(request.headers.authorization, authorization)
+    assert.equal(request.headers.authorization, undefined)
     response.setHeader("content-type", "application/json")
     response.end("[]")
   })
@@ -124,7 +122,6 @@ test("OpenCode auth adapter protects internal API calls and only opens configure
   const runtime = new OpenCodeRuntime({
     executable: process.execPath,
     dataDirectory,
-    credentials: { username: "opencode-user", password: "opencode-test-password" },
     publicOriginForPort: (port) => `https://device.example.ts.net:${port}`,
   })
   const instance = record(directory, address.port)
@@ -134,11 +131,107 @@ test("OpenCode auth adapter protects internal API calls and only opens configure
   assert.equal(new URL(runtime.openUrl(instance)).pathname, `/${Buffer.from(directory).toString("base64url")}/session`)
 })
 
-test("OpenCode auth adapter redacts exact loaded credentials and Authorization headers", () => {
-  const adapter = new OpenCodeAuthAdapter({ username: "fixture-user", password: "fixture-password" })
-  const authorization = adapter.headers().authorization
-  const redacted = adapter.redact(`OPENCODE_SERVER_PASSWORD=fixture-password Authorization: ${authorization} user=fixture-user`)
-  assert.doesNotMatch(redacted, /fixture-password|fixture-user|Basic [A-Za-z0-9+/=]+/)
+test("activity evidence keeps exact busy IDs and session creation is a directory-scoped empty root", async (t) => {
+  const directory = "C:\\workspace\\activity"
+  const requests: Array<{ method: string; pathname: string; directory: string | null; body: string }> = []
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    let body = ""
+    request.setEncoding("utf8")
+    request.on("data", (chunk) => { body += chunk })
+    request.on("end", () => {
+      requests.push({ method: request.method ?? "", pathname: url.pathname, directory: url.searchParams.get("directory"), body })
+      response.setHeader("content-type", "application/json")
+      if (url.pathname === "/session/status") return response.end(JSON.stringify({ busy: { type: "busy" }, idle: { type: "idle" } }))
+      if (url.pathname === "/session" && request.method === "POST") {
+        return response.end(JSON.stringify({ id: "created", title: "New session", directory, time: { created: 1, updated: 1 } }))
+      }
+      if (url.pathname === "/session" && request.method === "GET") {
+        return response.end(JSON.stringify([{ id: "foreign", title: "Foreign", directory: "C:\\workspace\\other" }]))
+      }
+      response.statusCode = 404
+      return response.end("{}")
+    })
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  t.after(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())))
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  const dataDirectory = await mkdtemp(path.join(tmpdir(), "omw-runtime-activity-"))
+  t.after(() => rm(dataDirectory, { recursive: true, force: true }))
+  const runtime = new OpenCodeRuntime({ executable: process.execPath, dataDirectory })
+  const instance = record(directory, address.port)
+
+  assert.deepEqual(await runtime.activity(instance), { busySessionIds: ["busy"] })
+  assert.deepEqual(await runtime.createSession(instance), { id: "created", title: "New session", updatedAt: 1 })
+  await assert.rejects(runtime.sessions(instance), /directory 與 Instance 不符/)
+  assert.deepEqual(requests.map((request) => [request.method, request.pathname, request.directory, request.body]), [
+    ["GET", "/session/status", directory, ""],
+    ["POST", "/session", directory, "{}"],
+    ["GET", "/session", directory, ""],
+  ])
+})
+
+test("project-scoped SSE preserves a short busy ID even when the connected snapshot is already idle", async (t) => {
+  const directory = "C:\\workspace\\events"
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    assert.equal(url.searchParams.get("directory"), directory)
+    if (url.pathname === "/session/status") {
+      response.setHeader("content-type", "application/json")
+      return response.end("{}")
+    }
+    if (url.pathname === "/event") {
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.write(`data: ${JSON.stringify({ type: "server.connected", properties: {} })}\n\n`)
+      response.write(`data: ${JSON.stringify({ type: "session.status", properties: { sessionID: "short-work", status: { type: "busy" } } })}\n\n`)
+      response.write(`data: ${JSON.stringify({ type: "session.created", properties: { info: { id: "new-root", title: "New root", directory } } })}\n\n`)
+      return
+    }
+    response.statusCode = 404
+    return response.end("{}")
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  t.after(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())))
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  const dataDirectory = await mkdtemp(path.join(tmpdir(), "omw-runtime-events-"))
+  t.after(() => rm(dataDirectory, { recursive: true, force: true }))
+  const runtime = new OpenCodeRuntime({ executable: process.execPath, dataDirectory })
+  const events: unknown[] = []
+  const observer = runtime.observeActivity(record(directory, address.port), (event) => { events.push(event) })
+  t.after(() => observer.close())
+
+  await waitFor(() => events.length === 3, 1_000)
+  assert.deepEqual(events, [
+    { type: "activity", source: "snapshot", sessionIds: [] },
+    { type: "activity", source: "event", sessionIds: ["short-work"] },
+    { type: "session-created", sessionId: "new-root" },
+  ])
+  observer.close()
+  await observer.done
+})
+
+test("managed headless environment removes inherited OpenCode server auth", () => {
+  const parent = {
+    PATH: "fixture-path",
+    OPENCODE_SERVER_USERNAME: "inherited-user-sentinel",
+    OPENCODE_SERVER_PASSWORD: "inherited-password-sentinel",
+  }
+  const child = managedServerEnvironment(parent)
+
+  assert.deepEqual(child, { PATH: "fixture-path" })
+  assert.deepEqual(parent, {
+    PATH: "fixture-path",
+    OPENCODE_SERVER_USERNAME: "inherited-user-sentinel",
+    OPENCODE_SERVER_PASSWORD: "inherited-password-sentinel",
+  })
 })
 
 test("an unrecognized or malformed Session status keeps activity unknown", async (t) => {
@@ -304,5 +397,13 @@ function record(projectDirectory: string, port: number): InstanceRecord {
     stoppedAt: null,
     error: null,
     stderrSummary: null,
+  }
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("condition was not met before timeout")
+    await new Promise((resolve) => setTimeout(resolve, 10))
   }
 }

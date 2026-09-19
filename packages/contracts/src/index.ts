@@ -38,6 +38,13 @@ export interface InstanceSummary {
   error: string | null
 }
 
+export interface PrimarySession {
+  sessionId: string
+  title: string
+  source: "activity" | "new-session" | "manual"
+  boundAt: string
+}
+
 export interface ManagedInstance {
   id: string
   kind: InstanceKind
@@ -54,6 +61,14 @@ export interface ManagedInstance {
   error: string | null
   summary: InstanceSummary
   sessions: SessionMetadata[]
+  primarySession: PrimarySession | null
+  trackingHidden: boolean
+  recovery: {
+    recheckAllowed: boolean
+    resumeAllowed: boolean
+    hideAllowed: boolean
+    removeAllowed: boolean
+  }
 }
 
 export interface OverviewResponse { shortcuts: DirectoryShortcut[]; instances: ManagedInstance[] }
@@ -87,4 +102,23 @@ export interface LauncherRegistrationRequest {
 export interface LauncherRegistrationResponse {
   instanceId: string
   state: "starting" | "ready" | "stopped"
+}
+
+export interface ConnectivityInfo {
+  checkedAt: string
+  mode: "loopback" | "tailnet"
+  manager: { localUrl: string; publicUrl: string | null }
+  tailscale: {
+    state: "connected" | "offline" | "needs-login" | "unavailable" | "unknown"
+    dnsName: string | null
+    version: string | null
+  }
+  serve: {
+    state: "verified" | "mismatch" | "unknown" | "not-configured"
+    managerMapped: boolean | null
+    mappedInstancePorts: number | null
+    expectedInstancePorts: number
+    funnel: "disabled" | "enabled" | "unknown"
+  }
+  nodeVersion: string
 }

@@ -5,7 +5,6 @@ import path from "node:path"
 import type { InstanceSummary, SessionMetadata } from "@omw/contracts"
 import type { InstanceRecord } from "./repository.js"
 import { ManagerError } from "./errors.js"
-import { OpenCodeAuthAdapter, type BasicCredential } from "./auth.js"
 
 const HTTP_TIMEOUT_MS = 2_000
 const PROCESS_HELPER_TIMEOUT_MS = 12_000
@@ -30,6 +29,11 @@ export interface InspectResult {
 }
 export interface StopResult { stopped: boolean; reason: string | null }
 export interface RuntimeSummary extends InstanceSummary { sessions: SessionMetadata[] }
+export interface RuntimeActivityEvidence { busySessionIds: string[] }
+export type RuntimeActivityEvent =
+  | { type: "activity"; source: "snapshot" | "event"; sessionIds: string[] }
+  | { type: "session-created"; sessionId: string }
+export interface RuntimeActivityObserver { close(): void; done: Promise<void> }
 
 export interface RuntimePort {
   launch(directory: string, port: number, instanceId: string): Promise<LaunchResult>
@@ -41,6 +45,9 @@ export interface RuntimePort {
   sessions(instance: InstanceRecord): Promise<SessionMetadata[]>
   children(instance: InstanceRecord, sessionId: string): Promise<SessionMetadata[]>
   summary(instance: InstanceRecord): Promise<RuntimeSummary>
+  activity?(instance: InstanceRecord): Promise<RuntimeActivityEvidence>
+  observeActivity?(instance: InstanceRecord, onEvent: (event: RuntimeActivityEvent) => Promise<void> | void): RuntimeActivityObserver
+  createSession?(instance: InstanceRecord): Promise<SessionMetadata>
   openUrl(instance: Pick<InstanceRecord, "endpoint" | "projectDirectory" | "port">, sessionId?: string): string
   remoteUrlUnavailableReason?(instance: Pick<InstanceRecord, "port">): string | null
 }
@@ -62,7 +69,6 @@ export class OpenCodeRuntime implements RuntimePort {
   private readonly executable: string
   private readonly powershell: string
   private readonly helperPath: string
-  private readonly auth: OpenCodeAuthAdapter | null
   private readonly publicOriginForPort: ((port: number) => string) | null
   private readonly environment: NodeJS.ProcessEnv
   private readonly sameRunChildren = new Map<string, TrackedLaunch>()
@@ -71,7 +77,6 @@ export class OpenCodeRuntime implements RuntimePort {
     executable: string
     dataDirectory: string
     powershell?: string
-    credentials?: BasicCredential
     publicOriginForPort?: (port: number) => string
     environment?: NodeJS.ProcessEnv
   }) {
@@ -80,13 +85,12 @@ export class OpenCodeRuntime implements RuntimePort {
     this.executable = realpathSync(options.executable)
     this.powershell = options.powershell ?? "pwsh.exe"
     this.helperPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../scripts/process-control.ps1")
-    this.auth = options.credentials ? new OpenCodeAuthAdapter(options.credentials) : null
     this.publicOriginForPort = options.publicOriginForPort ?? null
     this.environment = options.environment ?? process.env
   }
 
   async launch(directory: string, port: number, instanceId: string): Promise<LaunchResult> {
-    const child = spawnBackground(this.executable, directory, port, this.auth, this.environment)
+    const child = spawnBackground(this.executable, directory, port, this.environment)
     await waitForSpawn(child)
     if (!child.pid) throw new ManagerError("PROCESS_DID_NOT_START", "OpenCode 未回報 PID。", 502)
     const tracked: TrackedLaunch = { child, port }
@@ -172,11 +176,11 @@ export class OpenCodeRuntime implements RuntimePort {
     const deadline = Date.now() + 15_000
     while (Date.now() < deadline) {
       try {
-        const health = await requestJson(endpoint, "/global/health", this.auth) as { healthy?: unknown; version?: unknown }
+        const health = await requestJson(endpoint, "/global/health") as { healthy?: unknown; version?: unknown }
         if (health.healthy !== true || typeof health.version !== "string" || !health.version) {
           throw new Error("health response 缺少 healthy/version")
         }
-        const pathResult = await requestJson(endpoint, "/path", this.auth) as { directory?: unknown }
+        const pathResult = await requestJson(endpoint, "/path") as { directory?: unknown }
         if (typeof pathResult.directory !== "string" || !sameWindowsPath(pathResult.directory, expectedDirectory)) {
           throw new Error("endpoint 回報的 Project directory 不符")
         }
@@ -219,26 +223,56 @@ export class OpenCodeRuntime implements RuntimePort {
   }
 
   async sessions(instance: InstanceRecord): Promise<SessionMetadata[]> {
-    const value = await requestJson(checkedEndpoint(instance.endpoint, instance.port), routed("/session", instance.projectDirectory), this.auth)
-    return parseSessions(value)
+    const value = await requestJson(checkedEndpoint(instance.endpoint, instance.port), routed("/session", instance.projectDirectory))
+    return parseSessions(value, instance.projectDirectory)
   }
 
   async children(instance: InstanceRecord, sessionId: string): Promise<SessionMetadata[]> {
     const value = await requestJson(
       checkedEndpoint(instance.endpoint, instance.port),
       routed(`/session/${encodeURIComponent(sessionId)}/children`, instance.projectDirectory),
-      this.auth,
     )
-    return parseSessions(value).filter((session) => session.parentID === sessionId)
+    return parseSessions(value, instance.projectDirectory).filter((session) => session.parentID === sessionId)
+  }
+
+  async activity(instance: InstanceRecord): Promise<RuntimeActivityEvidence> {
+    const value = await requestJson(
+      checkedEndpoint(instance.endpoint, instance.port),
+      routed("/session/status", instance.projectDirectory),
+    )
+    if (!isObject(value)) throw new Error("OpenCode status response 不是 object")
+    return { busySessionIds: parseStatusMap(value).busySessionIds }
+  }
+
+  observeActivity(
+    instance: InstanceRecord,
+    onEvent: (event: RuntimeActivityEvent) => Promise<void> | void,
+  ): RuntimeActivityObserver {
+    const controller = new AbortController()
+    const done = this.consumeActivityEvents(instance, onEvent, controller).catch((error: unknown) => {
+      if (!controller.signal.aborted) throw error
+    })
+    return { close: () => controller.abort(), done }
+  }
+
+  async createSession(instance: InstanceRecord): Promise<SessionMetadata> {
+    const value = await requestJson(
+      checkedEndpoint(instance.endpoint, instance.port),
+      routed("/session", instance.projectDirectory),
+      { method: "POST", body: {} },
+    )
+    const session = parseSessions([value], instance.projectDirectory)[0]
+    if (!session) throw new Error("OpenCode create Session response 無效")
+    return session
   }
 
   async summary(instance: InstanceRecord): Promise<RuntimeSummary> {
     const endpoint = checkedEndpoint(instance.endpoint, instance.port)
     const [sessionsResult, statusesResult, questionsResult, permissionsResult] = await Promise.allSettled([
       this.sessions(instance),
-      requestJson(endpoint, routed("/session/status", instance.projectDirectory), this.auth),
-      requestJson(endpoint, routed("/question", instance.projectDirectory), this.auth),
-      requestJson(endpoint, routed("/permission", instance.projectDirectory), this.auth),
+      requestJson(endpoint, routed("/session/status", instance.projectDirectory)),
+      requestJson(endpoint, routed("/question", instance.projectDirectory)),
+      requestJson(endpoint, routed("/permission", instance.projectDirectory)),
     ])
     const errors: string[] = []
     const sessions = sessionsResult.status === "fulfilled" ? sessionsResult.value : []
@@ -307,6 +341,87 @@ export class OpenCodeRuntime implements RuntimePort {
     }
   }
 
+  private async consumeActivityEvents(
+    instance: InstanceRecord,
+    onEvent: (event: RuntimeActivityEvent) => Promise<void> | void,
+    controller: AbortController,
+  ): Promise<void> {
+    const endpoint = checkedEndpoint(instance.endpoint, instance.port)
+    const connectionTimer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS)
+    let response: Response
+    try {
+      response = await fetch(`${endpoint}${routed("/event", instance.projectDirectory)}`, {
+        headers: { accept: "text/event-stream" },
+        redirect: "error",
+        signal: controller.signal,
+      })
+    } finally {
+      clearTimeout(connectionTimer)
+    }
+    if (!response.ok || !response.headers.get("content-type")?.toLowerCase().includes("text/event-stream") || !response.body) {
+      throw new Error(`OpenCode event stream 回傳 HTTP ${response.status}`)
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+    try {
+      while (!controller.signal.aborted) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        buffer += decoder.decode(chunk.value, { stream: true })
+        if (buffer.length > 64 * 1024) throw new Error("OpenCode event stream frame 過大")
+        let boundary = sseBoundary(buffer)
+        while (boundary) {
+          const frame = buffer.slice(0, boundary.index)
+          buffer = buffer.slice(boundary.index + boundary.length)
+          await this.consumeActivityFrame(instance, frame, onEvent)
+          boundary = sseBoundary(buffer)
+        }
+      }
+    } finally {
+      reader.releaseLock()
+    }
+    if (!controller.signal.aborted) throw new Error("OpenCode event stream unexpected EOF")
+  }
+
+  private async consumeActivityFrame(
+    instance: InstanceRecord,
+    frame: string,
+    onEvent: (event: RuntimeActivityEvent) => Promise<void> | void,
+  ): Promise<void> {
+    const data = frame.split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+    if (!data) return
+    const event = JSON.parse(data) as unknown
+    if (!isObject(event) || typeof event.type !== "string" || !isObject(event.properties)) return
+    if (event.type === "server.connected") {
+      const snapshot = await this.activity(instance)
+      await onEvent({ type: "activity", source: "snapshot", sessionIds: snapshot.busySessionIds })
+      return
+    }
+    if (event.type === "session.status") {
+      const sessionId = event.properties.sessionID
+      const status = event.properties.status
+      if (typeof sessionId !== "string" || !sessionId || !isObject(status) || typeof status.type !== "string") {
+        throw new Error("OpenCode session.status event 無效")
+      }
+      parseStatusMap({ [sessionId]: status })
+      if (status.type === "busy") await onEvent({ type: "activity", source: "event", sessionIds: [sessionId] })
+      return
+    }
+    if (event.type === "session.created") {
+      const info = event.properties.info
+      if (!isObject(info) || typeof info.id !== "string" || !info.id || typeof info.directory !== "string"
+        || !sameWindowsPath(info.directory, instance.projectDirectory)) {
+        throw new Error("OpenCode session.created event directory/metadata 無效")
+      }
+      await onEvent({ type: "session-created", sessionId: info.id })
+    }
+  }
+
   private async helper<T>(arguments_: string[]): Promise<T> {
     return await runProcessHelper<T>(this.powershell, [
       "-NoLogo", "-NoProfile", "-NonInteractive", "-File", this.helperPath,
@@ -315,8 +430,7 @@ export class OpenCodeRuntime implements RuntimePort {
   }
 
   private sanitized(error: unknown): string {
-    const generic = safeMessage(error)
-    return this.auth?.redact(generic) ?? generic
+    return safeMessage(error)
   }
 }
 
@@ -381,7 +495,6 @@ function spawnBackground(
   executable: string,
   directory: string,
   port: number,
-  auth: OpenCodeAuthAdapter | null,
   environment: NodeJS.ProcessEnv,
 ): ChildProcess {
   return spawn(executable, ["serve", "--hostname", "127.0.0.1", "--port", String(port), "--pure", "--log-level", "INFO"], {
@@ -389,8 +502,15 @@ function spawnBackground(
     detached: true,
     windowsHide: true,
     stdio: "ignore",
-    env: auth ? { ...environment, ...auth.environment() } : environment,
+    env: managedServerEnvironment(environment),
   })
+}
+
+export function managedServerEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const childEnvironment = { ...environment }
+  delete childEnvironment.OPENCODE_SERVER_USERNAME
+  delete childEnvironment.OPENCODE_SERVER_PASSWORD
+  return childEnvironment
 }
 
 function waitForSpawn(child: ChildProcess): Promise<void> {
@@ -465,9 +585,15 @@ function checkedEndpoint(value: string, expectedPort: number): string {
   return url.origin
 }
 
-async function requestJson(endpoint: string, pathname: string, auth: OpenCodeAuthAdapter | null): Promise<unknown> {
+async function requestJson(
+  endpoint: string,
+  pathname: string,
+  options: { method?: "POST"; body?: unknown } = {},
+): Promise<unknown> {
   const response = await fetch(`${endpoint}${pathname}`, {
-    headers: { accept: "application/json", ...auth?.headers() },
+    headers: { accept: "application/json", ...(options.body === undefined ? {} : { "content-type": "application/json" }) },
+    ...(options.method ? { method: options.method } : {}),
+    ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
     redirect: "error",
     signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
   })
@@ -491,16 +617,30 @@ function routed(pathname: string, directory: string): string {
   return `${pathname}${separator}directory=${encodeURIComponent(directory)}`
 }
 
-function parseSessions(value: unknown): SessionMetadata[] {
+function parseSessions(value: unknown, expectedDirectory?: string): SessionMetadata[] {
   if (!Array.isArray(value)) throw new Error("OpenCode Session response 不是 array")
-  return value.flatMap((item) => {
-    if (!isObject(item) || typeof item.id !== "string") return []
+  const ids = new Set<string>()
+  return value.map((item, index) => {
+    if (!isObject(item) || typeof item.id !== "string" || item.id.trim().length === 0) {
+      throw new Error(`OpenCode Session entry ${index + 1} 缺少合法 id`)
+    }
+    if (ids.has(item.id)) throw new Error(`OpenCode Session metadata 重複 id ${item.id}`)
+    ids.add(item.id)
+    if (expectedDirectory
+      && (typeof item.directory !== "string" || !sameWindowsPath(item.directory, expectedDirectory))) {
+      throw new Error("OpenCode Session metadata directory 與 Instance 不符")
+    }
     const session: SessionMetadata = { id: item.id, title: typeof item.title === "string" ? item.title : item.id }
-    if (typeof item.parentID === "string" && item.parentID) session.parentID = item.parentID
+    if (item.parentID !== undefined) {
+      if (typeof item.parentID !== "string" || item.parentID.trim().length === 0) {
+        throw new Error(`OpenCode Session ${item.id} parentID 無效`)
+      }
+      session.parentID = item.parentID
+    }
     if (typeof item.time === "object" && item.time && "updated" in item.time && typeof item.time.updated === "number") {
       session.updatedAt = item.time.updated
     }
-    return [session]
+    return session
   })
 }
 
@@ -523,15 +663,17 @@ function uniqueRequestCount(value: unknown): number {
 function parseStatusMap(value: Record<string, unknown>): {
   activity: RuntimeSummary["activity"]
   busySessions: number
+  busySessionIds: string[]
 } {
-  let busySessions = 0
+  const busySessionIds: string[] = []
   for (const [sessionId, status] of Object.entries(value)) {
+    if (!sessionId) throw new Error("Session status 缺少合法 session ID")
     if (!isObject(status) || typeof status.type !== "string") {
       throw new Error(`Session ${sessionId} status 缺少合法 type`)
     }
     if (status.type === "busy" || status.type === "idle") {
       if (!hasOnlyKeys(status, ["type"])) throw new Error(`Session ${sessionId} ${status.type} status shape 無效`)
-      if (status.type === "busy") busySessions++
+      if (status.type === "busy") busySessionIds.push(sessionId)
       continue
     }
     if (status.type === "retry") {
@@ -547,9 +689,15 @@ function parseStatusMap(value: Record<string, unknown>): {
     throw new Error(`Session ${sessionId} status type ${status.type} 尚未支援`)
   }
   return {
-    busySessions,
-    activity: busySessions > 0 ? "busy" : Object.keys(value).length > 0 ? "reported-non-busy" : "none-reported",
+    busySessions: busySessionIds.length,
+    busySessionIds,
+    activity: busySessionIds.length > 0 ? "busy" : Object.keys(value).length > 0 ? "reported-non-busy" : "none-reported",
   }
+}
+
+function sseBoundary(value: string): { index: number; length: number } | null {
+  const match = /\r?\n\r?\n/.exec(value)
+  return match ? { index: match.index, length: match[0].length } : null
 }
 
 function isRetryAction(value: unknown): boolean {

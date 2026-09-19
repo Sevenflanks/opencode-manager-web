@@ -14,14 +14,16 @@ import type {
   OpenUrlResponse,
   OverviewFilter,
   OverviewResponse,
+  PrimarySession,
   SessionChildrenResponse,
+  SessionMetadata,
   SessionRootsResponse,
 } from "@omw/contracts"
 import type { InstancePortPoolConfig } from "./config.js"
 import { ManagerError } from "./errors.js"
 import type { InstanceRecord, PortAllocation } from "./repository.js"
 import { ManagerRepository } from "./repository.js"
-import type { InspectResult, RuntimePort, RuntimeSummary } from "./runtime.js"
+import type { InspectResult, RuntimeActivityEvent, RuntimeActivityObserver, RuntimePort, RuntimeSummary } from "./runtime.js"
 
 const EMPTY_SUMMARY = {
   activity: "unknown" as const,
@@ -31,11 +33,20 @@ const EMPTY_SUMMARY = {
   error: null,
 }
 const RESERVATION_TTL_MS = 10_000
-const INCOMPLETE_IDENTITY_GRACE_MS = 15_000
 const OVERVIEW_CONCURRENCY = 4
+const OBSERVER_RETRY_DELAYS_MS = [250, 1_000, 2_000] as const
+
+interface ActivityObserverState {
+  attempts: number
+  observer: RuntimeActivityObserver | null
+  retryTimer: NodeJS.Timeout | null
+}
 
 export class ManagerService {
-  private overviewInFlight: Promise<ManagedInstance[]> | null = null
+  private readonly overviewInFlight = new Map<boolean, Promise<ManagedInstance[]>>()
+  private readonly activityObservers = new Map<string, ActivityObserverState>()
+  private readonly instanceMutations = new Map<string, Promise<void>>()
+  private shuttingDown = false
 
   constructor(
     private readonly repository: ManagerRepository,
@@ -43,9 +54,9 @@ export class ManagerService {
     private readonly portPool: InstancePortPoolConfig = { min: 42_000, max: 42_099 },
   ) {}
 
-  async overview(query = "", filter: OverviewFilter = "all"): Promise<OverviewResponse> {
+  async overview(query = "", filter: OverviewFilter = "all", includeHidden = false): Promise<OverviewResponse> {
     const normalizedQuery = query.trim().toLocaleLowerCase("zh-TW")
-    const instances = await this.loadOverviewInstances()
+    const instances = await this.loadOverviewInstances(includeHidden)
     return {
       shortcuts: this.repository.listShortcuts(),
       instances: instances.filter((instance) => matchesFilter(instance, filter) && matchesQuery(instance, normalizedQuery)),
@@ -100,7 +111,7 @@ export class ManagerService {
     if (!this.repository.deleteShortcut(id)) throw new ManagerError("SHORTCUT_NOT_FOUND", "找不到 Directory Shortcut。", 404)
   }
 
-  async start(directoryInput: string): Promise<ManagedInstance> {
+  async start(directoryInput: string, observeActivity = true): Promise<ManagedInstance> {
     const directory = await canonicalDirectory(directoryInput)
     const allocation = await this.reservePort("headless", directory, null)
     const record = newInstanceRecord(allocation, directory, null)
@@ -118,24 +129,25 @@ export class ManagerService {
       })
       this.repository.saveInstance(record)
       const identity = await this.runtime.inspect(record)
-      if (!identity.running || !identity.matched || !identity.portOwnerMatched) {
+      if (!identity.running || !identity.matched || !identity.portOwnerMatched || identity.portOwnedByOther) {
         throw new ManagerError("INSTANCE_IDENTITY_UNVERIFIED", "OpenCode process identity 或 port owner 無法核對。", 409)
       }
       const health = await this.runtime.readiness(launch)
       record.state = "ready"
       record.healthVersion = health.version
       this.repository.saveInstance(record)
+      if (observeActivity) this.ensureActivityObserver(record)
       return await this.present(record)
     } catch (error) {
       const failure = safeRuntimeCode(error, "INSTANCE_START_FAILED")
       let cleanupError: string | null = null
-      if (record.pid != null) {
-        try {
-          const cleanup = await this.runtime.cleanupLaunch(record.id)
-          if (!cleanup.stopped) cleanupError = "STARTUP_CLEANUP_UNRESOLVED"
-        } catch (cleanupFailure) {
-          cleanupError = safeRuntimeCode(cleanupFailure, "STARTUP_CLEANUP_FAILED").code
-        }
+      let cleanupStopped = false
+      try {
+        const cleanup = await this.runtime.cleanupLaunch(allocation.id)
+        cleanupStopped = cleanup.stopped
+        if (!cleanup.stopped) cleanupError = "STARTUP_CLEANUP_UNRESOLVED"
+      } catch (cleanupFailure) {
+        cleanupError = safeRuntimeCode(cleanupFailure, "STARTUP_CLEANUP_FAILED").code
       }
       record.state = "failed"
       record.error = [
@@ -144,7 +156,7 @@ export class ManagerService {
       ].filter(Boolean).join("；")
       record.stderrSummary = null
       this.repository.saveInstance(record)
-      if (cleanupError === null && await loopbackPortAvailable(record.port)) {
+      if (cleanupStopped) {
         this.repository.releaseAllocationForInstance(record.id)
       }
       throw new ManagerError(failure.code, "OpenCode Instance 啟動失敗。", failure.statusCode)
@@ -217,6 +229,7 @@ export class ManagerService {
       record.stoppedAt = new Date().toISOString()
       record.error = null
       this.repository.saveInstance(record)
+      this.closeActivityObserver(record.id)
       this.repository.releaseAllocationForInstance(record.id)
       return { instanceId: record.id, state: "stopped" }
     }
@@ -227,10 +240,17 @@ export class ManagerService {
   }
 
   async stop(id: string): Promise<ManagedInstance> {
+    return await this.withInstanceMutation(id, async () => await this.stopUnlocked(id))
+  }
+
+  private async stopUnlocked(id: string): Promise<ManagedInstance> {
     const record = this.requireInstance(id)
     if (record.state === "stopped") return await this.present(record)
     if ((record.kind ?? "headless") !== "headless") {
       throw new ManagerError("LOCAL_TUI_OBSERVE_ONLY", "Local TUI Instance 僅可觀察與開啟，不提供 Stop authority。", 409)
+    }
+    if (!hasExactIdentity(record)) {
+      throw new ManagerError("PROCESS_IDENTITY_INCOMPLETE", "Instance 缺少可安全核對的 process identity。", 409)
     }
     const result = await this.runtime.stop(record)
     if (!result.stopped) {
@@ -240,8 +260,84 @@ export class ManagerService {
     record.stoppedAt = new Date().toISOString()
     record.error = null
     this.repository.saveInstance(record)
+    this.closeActivityObserver(record.id)
     if (await loopbackPortAvailable(record.port)) this.repository.releaseAllocationForInstance(record.id)
     return await this.present(record)
+  }
+
+  async recheck(id: string): Promise<ManagedInstance> {
+    return await this.withInstanceMutation(id, async () => await this.recheckUnlocked(id))
+  }
+
+  async setTrackingHidden(id: string, hidden: boolean): Promise<ManagedInstance> {
+    return await this.withInstanceMutation(id, async () => {
+      let record = this.requireInstance(id)
+      if (hidden && record.state !== "unreachable" && record.state !== "failed") {
+        await this.recheckUnlocked(id)
+        record = this.requireInstance(id)
+      }
+      if (hidden && record.state !== "unreachable" && record.state !== "failed") {
+        throw new ManagerError("INSTANCE_TRACKING_HIDE_UNAVAILABLE", "只有 unreachable 或 failed Instance 可停止追蹤。", 409)
+      }
+      if (hidden) this.closeActivityObserver(id)
+      const updated = this.repository.setTrackingHidden(id, hidden)
+      if (!updated) throw new ManagerError("INSTANCE_NOT_FOUND", "找不到 Instance。", 404)
+      if (!hidden && updated.state === "ready") this.ensureActivityObserver(updated)
+      return await this.present(updated)
+    })
+  }
+
+  async deleteInstance(id: string): Promise<void> {
+    await this.withInstanceMutation(id, async () => {
+      const record = this.requireInstance(id)
+      if (record.state !== "stopped") {
+        throw new ManagerError("INSTANCE_REMOVAL_UNSAFE", "只有確認 stopped 的 Instance 可移除追蹤紀錄。", 409)
+      }
+      if (this.repository.getAllocationForInstance(id)) {
+        throw new ManagerError("INSTANCE_REMOVAL_UNSAFE", "Instance port allocation 尚未安全釋放；請隱藏追蹤而非刪除。", 409)
+      }
+      this.closeActivityObserver(id)
+      const result = this.repository.deleteStoppedInstance(id)
+      if (result === "not-found") throw new ManagerError("INSTANCE_NOT_FOUND", "找不到 Instance。", 404)
+      if (result === "not-stopped") {
+        throw new ManagerError("INSTANCE_REMOVAL_UNSAFE", "只有確認 stopped 的 Instance 可移除追蹤紀錄。", 409)
+      }
+      if (result === "allocated") {
+        throw new ManagerError("INSTANCE_REMOVAL_UNSAFE", "Instance port allocation 尚未安全釋放；請隱藏追蹤而非刪除。", 409)
+      }
+    })
+  }
+
+  async resume(id: string): Promise<ManagedInstance> {
+    return await this.withInstanceMutation(id, async () => {
+      let original = this.requireInstance(id)
+      if (original.state === "unreachable") {
+        await this.recheckUnlocked(id)
+        original = this.requireInstance(id)
+      }
+      if (original.state !== "unreachable" && original.state !== "stopped") {
+        throw new ManagerError("INSTANCE_RESUME_UNAVAILABLE", "只有 unreachable 或 stopped Instance 可接續。", 409)
+      }
+      const primary = this.repository.getPrimarySession(id)
+      if (!primary) throw new ManagerError("INSTANCE_PRIMARY_SESSION_REQUIRED", "接續需要既有 primary Session。", 409)
+
+      const launched = await this.start(original.projectDirectory, false)
+      const created = this.requireInstance(launched.id)
+      try {
+        const sessions = dedupeSessions(await this.runtime.sessions(created))
+        const root = sessions.find((session) => session.id === primary.sessionId && !session.parentID)
+        if (!root) throw new Error("primary root Session missing")
+        this.repository.replacePrimarySession(created.id, { ...primary, title: root.title })
+      } catch {
+        throw new ManagerError(
+          "INSTANCE_RESUME_BIND_FAILED",
+          "新 Instance 已啟動但未接續，勿重複啟動。",
+          409,
+          { newInstanceId: created.id, retrySafe: false },
+        )
+      }
+      return await this.present(created)
+    })
   }
 
   async sessionRoots(id: string): Promise<SessionRootsResponse> {
@@ -266,15 +362,86 @@ export class ManagerService {
   async openUrl(id: string, sessionId?: string): Promise<OpenUrlResponse> {
     const record = this.requireInstance(id)
     await this.requireFreshEndpointIdentity(record)
-    const unavailableReason = this.runtime.remoteUrlUnavailableReason?.(record) ?? null
-    if (unavailableReason) throw new ManagerError("REMOTE_URL_UNAVAILABLE", unavailableReason, 409)
-    if (sessionId) {
+    this.requireRemoteUrl(record)
+    const selectedSessionId = sessionId ?? this.repository.getPrimarySession(id)?.sessionId
+    if (selectedSessionId) {
       const sessions = await this.runtime.sessions(record)
-      if (!sessions.some((session) => session.id === sessionId)) {
+      if (!sessions.some((session) => session.id === selectedSessionId)) {
         throw new ManagerError("SESSION_NOT_FOUND", "所選 Session 不存在於此 Project metadata。", 404)
       }
     }
-    return { url: this.runtime.openUrl(record, sessionId), instanceId: id, sessionId: sessionId ?? null }
+    return {
+      url: this.runtime.openUrl(record, selectedSessionId),
+      instanceId: id,
+      sessionId: selectedSessionId ?? null,
+    }
+  }
+
+  async createSession(id: string): Promise<OpenUrlResponse> {
+    const record = this.requireInstance(id)
+    await this.requireFreshEndpointIdentity(record)
+    this.requireRemoteUrl(record)
+    this.runtime.openUrl(record)
+    if (!this.runtime.createSession) {
+      throw new ManagerError("SESSION_CREATE_UNAVAILABLE", "Runtime 不支援建立 Session。", 501)
+    }
+    let session: SessionMetadata
+    try {
+      session = await this.runtime.createSession(record)
+    } catch (error) {
+      throw new ManagerError("SESSION_CREATE_FAILED", "OpenCode Session 建立失敗或回應無效；原綁定保持不變。", 502, {
+        retrySafe: false,
+        cause: safeMessage(error),
+      })
+    }
+    if (session.parentID) {
+      throw new ManagerError("SESSION_CREATE_RESPONSE_INVALID", "OpenCode 未回傳新 root Session；原綁定保持不變。", 502, {
+        sessionId: session.id,
+        retrySafe: false,
+      })
+    }
+    const primarySession = primarySessionFrom(session, "new-session")
+    this.repository.replacePrimarySession(id, primarySession)
+    this.invalidateOverviewSnapshots()
+    this.closeActivityObserver(id)
+    try {
+      return { url: this.runtime.openUrl(record, session.id), instanceId: id, sessionId: session.id }
+    } catch (error) {
+      throw new ManagerError("SESSION_CREATED_URL_FAILED", "Session 已建立並設為 primary，但 URL 產生失敗；請勿重複建立。", 502, {
+        sessionId: session.id,
+        cause: safeMessage(error),
+      })
+    }
+  }
+
+  async selectPrimarySession(id: string, sessionId: string): Promise<OpenUrlResponse> {
+    const record = this.requireInstance(id)
+    await this.requireFreshEndpointIdentity(record)
+    this.requireRemoteUrl(record)
+    const sessions = dedupeSessions(await this.runtime.sessions(record))
+    const session = sessions.find((candidate) => candidate.id === sessionId)
+    if (!session) throw new ManagerError("SESSION_NOT_FOUND", "所選 Session 不存在於此 Project metadata。", 404)
+    if (session.parentID) throw new ManagerError("SESSION_NOT_ROOT", "Primary Session 必須是 root Session。", 409)
+    const url = this.runtime.openUrl(record, session.id)
+    this.repository.replacePrimarySession(id, primarySessionFrom(session, "manual"))
+    this.invalidateOverviewSnapshots()
+    this.closeActivityObserver(id)
+    return { url, instanceId: id, sessionId: session.id }
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.shuttingDown) return
+    this.shuttingDown = true
+    const observers = [...this.activityObservers.values()]
+    for (const state of observers) {
+      if (state.retryTimer) clearTimeout(state.retryTimer)
+      state.observer?.close()
+    }
+    this.activityObservers.clear()
+    await Promise.allSettled(observers.map(async (state) => {
+      if (!state.observer) return
+      await Promise.race([state.observer.done, delay(2_500)])
+    }))
   }
 
   async reconcile(): Promise<void> {
@@ -285,18 +452,9 @@ export class ManagerService {
       record.error = "Manager 已重啟，正在重新核對 Instance。"
       this.repository.saveInstance(record)
       if (!hasExactIdentity(record)) {
-        const launchAge = Date.now() - Date.parse(record.launchedAt)
-        if (launchAge >= INCOMPLETE_IDENTITY_GRACE_MS && await loopbackPortAvailable(record.port)) {
-          record.state = "stopped"
-          record.stoppedAt = new Date().toISOString()
-          record.error = "Instance 未留下 exact process identity，且 startup grace 後 endpoint 仍未監聽。"
-          this.repository.saveInstance(record)
-          this.repository.releaseAllocationForInstance(record.id)
-        } else {
-          // 沒有 creation time/executable 就不以 PID 猜 ownership；occupied port 也維持隔離。
-          record.error = "Instance 未留下 exact process identity；保留 allocation，不授予 Stop authority。"
-          this.repository.saveInstance(record)
-        }
+        // 沒有 exact identity 就無法證明 process tree 已消失；port 是否空閒不能替代 cleanup 證據。
+        record.error = "Instance 未留下 exact process identity；保留 allocation，不授予 Stop authority。"
+        this.repository.saveInstance(record)
         continue
       }
       let identity
@@ -317,6 +475,7 @@ export class ManagerService {
           record.creationTimeTicks = null
           record.executable = null
           this.repository.saveInstance(record)
+          this.closeActivityObserver(record.id)
           this.repository.releaseAllocationForInstance(record.id)
         } else {
           record.error = "INSTANCE_IDENTITY_UNVERIFIED"
@@ -344,7 +503,71 @@ export class ManagerService {
         record.error = safeRuntimeCode(error, "INSTANCE_READINESS_FAILED").code
       }
       this.repository.saveInstance(record)
+      if (record.state === "ready") this.ensureActivityObserver(record)
     }
+  }
+
+  private async recheckUnlocked(id: string): Promise<ManagedInstance> {
+    const record = this.requireInstance(id)
+    if (record.state === "stopped") return await this.present(record)
+    record.state = "unreachable"
+    record.healthVersion = null
+    record.error = "INSTANCE_IDENTITY_UNVERIFIED"
+
+    if (!hasExactIdentity(record)) {
+      this.repository.saveInstance(record)
+      this.closeActivityObserver(id)
+      return await this.present(record)
+    }
+
+    let identity: InspectResult
+    try {
+      identity = await this.runtime.inspect(record)
+    } catch {
+      record.error = "INSTANCE_IDENTITY_CHECK_FAILED"
+      this.repository.saveInstance(record)
+      this.closeActivityObserver(id)
+      return await this.present(record)
+    }
+
+    if (identity.processState === "not-found") {
+      if (await loopbackPortAvailable(record.port)) {
+        record.state = "stopped"
+        record.stoppedAt = new Date().toISOString()
+        record.error = null
+        record.pid = null
+        record.creationTimeUtc = null
+        record.creationTimeTicks = null
+        record.executable = null
+        this.repository.saveInstance(record)
+        this.closeActivityObserver(id)
+        this.repository.releaseAllocationForInstance(id)
+      } else {
+        this.repository.saveInstance(record)
+        this.closeActivityObserver(id)
+      }
+      return await this.present(record)
+    }
+
+    if (!identity.running || !identity.matched || !identity.portOwnerMatched || identity.portOwnedByOther) {
+      this.repository.saveInstance(record)
+      this.closeActivityObserver(id)
+      return await this.present(record)
+    }
+
+    try {
+      const health = await this.runtime.readiness(record)
+      record.state = "ready"
+      record.healthVersion = health.version
+      record.error = null
+      this.repository.saveInstance(record)
+      this.ensureActivityObserver(record)
+    } catch {
+      record.error = "INSTANCE_READINESS_FAILED"
+      this.repository.saveInstance(record)
+      this.closeActivityObserver(id)
+    }
+    return await this.present(record)
   }
 
   private requireInstance(id: string): InstanceRecord {
@@ -353,15 +576,40 @@ export class ManagerService {
     return record
   }
 
-  private async loadOverviewInstances(): Promise<ManagedInstance[]> {
-    if (this.overviewInFlight) return await this.overviewInFlight
-    const request = mapWithConcurrency(this.repository.listInstances(), OVERVIEW_CONCURRENCY, async (record) => await this.present(record))
-    this.overviewInFlight = request
+  private async loadOverviewInstances(includeHidden: boolean): Promise<ManagedInstance[]> {
+    const inFlight = this.overviewInFlight.get(includeHidden)
+    if (inFlight) return await inFlight
+    const records = this.repository.listInstances().filter((record) => includeHidden || !record.trackingHidden)
+    const request = mapWithConcurrency(records, OVERVIEW_CONCURRENCY, async (record) => await this.present(record))
+    this.overviewInFlight.set(includeHidden, request)
     try {
-      return await request
+      const instances = await request
+      return instances.filter((instance) => this.repository.getInstance(instance.id) !== null)
     } finally {
-      if (this.overviewInFlight === request) this.overviewInFlight = null
+      if (this.overviewInFlight.get(includeHidden) === request) this.overviewInFlight.delete(includeHidden)
     }
+  }
+
+  private async withInstanceMutation<T>(id: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.instanceMutations.get(id) ?? Promise.resolve()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const tail = previous.catch(() => undefined).then(async () => await gate)
+    this.instanceMutations.set(id, tail)
+    await previous.catch(() => undefined)
+    try {
+      const result = await action()
+      this.invalidateOverviewSnapshots()
+      return result
+    } finally {
+      release()
+      if (this.instanceMutations.get(id) === tail) this.instanceMutations.delete(id)
+    }
+  }
+
+  private invalidateOverviewSnapshots(): void {
+    // 成功 mutation 後的 refresh 不可共用 mutation 前的 snapshot；舊 request 的 identity check 會保留後來的新 entry。
+    this.overviewInFlight.clear()
   }
 
   private requireLocalAllocation(id: string, clientInvocationId: string): PortAllocation {
@@ -443,6 +691,7 @@ export class ManagerService {
       current.healthVersion = health.version
       current.error = null
       this.repository.saveInstance(current)
+      this.ensureActivityObserver(current)
     } catch (error) {
       const current = this.repository.getInstance(id)
       if (!current || current.state === "stopped") return
@@ -452,11 +701,105 @@ export class ManagerService {
     }
   }
 
+  private ensureActivityObserver(record: InstanceRecord): void {
+    if (this.shuttingDown || record.trackingHidden || record.state !== "ready" || this.repository.getPrimarySession(record.id)
+      || !this.runtime.activity || !this.runtime.observeActivity || this.activityObservers.has(record.id)) return
+    const state: ActivityObserverState = { attempts: 0, observer: null, retryTimer: null }
+    this.activityObservers.set(record.id, state)
+    this.startActivityObserver(record.id, state)
+  }
+
+  private startActivityObserver(id: string, state: ActivityObserverState): void {
+    if (this.shuttingDown || this.activityObservers.get(id) !== state) return
+    const record = this.repository.getInstance(id)
+    if (!record || record.trackingHidden || record.state !== "ready" || this.repository.getPrimarySession(id) || !this.runtime.observeActivity) {
+      this.closeActivityObserver(id)
+      return
+    }
+    let observer: RuntimeActivityObserver
+    try {
+      observer = this.runtime.observeActivity(record, async (event) => await this.handleActivityEvent(id, state, event))
+    } catch {
+      this.activityObserverEnded(id, state)
+      return
+    }
+    state.observer = observer
+    void observer.done.then(
+      () => this.activityObserverEnded(id, state),
+      () => this.activityObserverEnded(id, state),
+    )
+  }
+
+  private activityObserverEnded(id: string, state: ActivityObserverState): void {
+    if (this.activityObservers.get(id) !== state) return
+    state.observer = null
+    if (this.shuttingDown || this.repository.getPrimarySession(id)) {
+      this.closeActivityObserver(id)
+      return
+    }
+    const retryDelay = OBSERVER_RETRY_DELAYS_MS[state.attempts++]
+    if (retryDelay === undefined) {
+      this.activityObservers.delete(id)
+      return
+    }
+    state.retryTimer = setTimeout(() => {
+      state.retryTimer = null
+      this.startActivityObserver(id, state)
+    }, retryDelay)
+  }
+
+  private async handleActivityEvent(id: string, observerState: ActivityObserverState, event: RuntimeActivityEvent): Promise<void> {
+    if (event.type !== "activity" || event.sessionIds.length === 0 || this.shuttingDown
+      || this.activityObservers.get(id) !== observerState
+      || this.repository.getPrimarySession(id)) return
+    try {
+      const record = this.repository.getInstance(id)
+      if (!record || record.state !== "ready") return
+      await this.requireFreshEndpointIdentity(record)
+      const evidenceIds = new Set(event.sessionIds)
+      if (event.source === "event" && this.runtime.activity) {
+        for (const sessionId of (await this.runtime.activity(record)).busySessionIds) evidenceIds.add(sessionId)
+      }
+      const root = resolveActivityRoot([...evidenceIds], await this.runtime.sessions(record))
+      if (!root || this.shuttingDown || this.activityObservers.get(id) !== observerState
+        || this.repository.getPrimarySession(id)) return
+      const current = this.repository.getInstance(id)
+      if (!current || current.state !== "ready") return
+      await this.requireFreshEndpointIdentity(current)
+      // Await 後先淘汰 shutdown/disposed observer，避免 repository 關閉後仍讀寫。
+      if (this.shuttingDown || this.activityObservers.get(id) !== observerState) return
+      const latest = this.repository.getInstance(id)
+      if (!latest || latest.state !== "ready" || !sameInstanceIdentity(latest, current)
+        || this.repository.getPrimarySession(id)) return
+      // Metadata/identity checks是非同步的；CAS再防止最後同步區段與 explicit choice 競爭。
+      if (this.repository.bindPrimarySessionIfAbsent(id, primarySessionFrom(root, "activity"))) {
+        this.closeActivityObserver(id)
+      }
+    } catch {
+      // Unknown, conflicting, or stale evidence deliberately leaves the binding null.
+    }
+  }
+
+  private closeActivityObserver(id: string): void {
+    const state = this.activityObservers.get(id)
+    if (!state) return
+    this.activityObservers.delete(id)
+    if (state.retryTimer) clearTimeout(state.retryTimer)
+    state.observer?.close()
+  }
+
+  private requireRemoteUrl(record: InstanceRecord): void {
+    const unavailableReason = this.runtime.remoteUrlUnavailableReason?.(record) ?? null
+    if (unavailableReason) throw new ManagerError("REMOTE_URL_UNAVAILABLE", unavailableReason, 409)
+  }
+
   private async present(record: InstanceRecord): Promise<ManagedInstance> {
+    const primaryBeforeProbe = this.repository.getPrimarySession(record.id)
     let summary: RuntimeSummary = { ...EMPTY_SUMMARY, sessions: [] }
     let stopAllowed = false
     let state = record.state
-    if (record.state !== "stopped" && record.pid != null) {
+    let metadataVerified = false
+    if (!record.trackingHidden && record.state !== "stopped" && record.pid != null) {
       let identity: InspectResult | null = null
       try {
         identity = await this.runtime.inspect(record)
@@ -476,6 +819,7 @@ export class ManagerService {
               ...result,
               error: result.error === null ? null : "INSTANCE_SUMMARY_PARTIAL",
             }
+            metadataVerified = true
           } catch {
             state = "unreachable"
             summary = { ...EMPTY_SUMMARY, error: "INSTANCE_SUMMARY_FAILED", sessions: [] }
@@ -484,6 +828,15 @@ export class ManagerService {
       }
       if (record.state === "ready" && summary.activity === "unknown") state = "unreachable"
     }
+    if (metadataVerified && primaryBeforeProbe) {
+      const currentMetadata = summary.sessions.find((session) => session.id === primaryBeforeProbe.sessionId)
+      if (currentMetadata && currentMetadata.title !== primaryBeforeProbe.title) {
+        this.repository.updatePrimarySessionTitle(record.id, primaryBeforeProbe, currentMetadata.title)
+      }
+    }
+    const primarySession = this.repository.getPrimarySession(record.id)
+    const trackingHidden = record.trackingHidden ?? false
+    const removeAllowed = state === "stopped" && this.repository.getAllocationForInstance(record.id) === null
     return {
       id: record.id,
       kind: record.kind ?? "headless",
@@ -497,6 +850,14 @@ export class ManagerService {
       healthVersion: record.healthVersion,
       stopAllowed,
       remoteUrlUnavailableReason: this.runtime.remoteUrlUnavailableReason?.(record) ?? null,
+      primarySession,
+      trackingHidden,
+      recovery: {
+        recheckAllowed: state === "unreachable" || state === "failed",
+        resumeAllowed: primarySession !== null && (state === "unreachable" || state === "stopped"),
+        hideAllowed: trackingHidden || state === "unreachable" || state === "failed",
+        removeAllowed,
+      },
       error: summary.error ?? safeStoredError(record.error),
       summary: {
         activity: summary.activity,
@@ -510,6 +871,9 @@ export class ManagerService {
   }
 
   private async requireFreshEndpointIdentity(record: InstanceRecord): Promise<InspectResult> {
+    if (record.state === "stopped") {
+      throw new ManagerError("INSTANCE_STOPPED", "Stopped Instance 不可開啟或變更 primary Session。", 409)
+    }
     let identity: InspectResult
     try {
       identity = await this.runtime.inspect(record)
@@ -521,6 +885,43 @@ export class ManagerService {
     }
     return identity
   }
+}
+
+function primarySessionFrom(session: SessionMetadata, source: PrimarySession["source"]): PrimarySession {
+  return {
+    sessionId: session.id,
+    title: session.title,
+    source,
+    boundAt: new Date().toISOString(),
+  }
+}
+
+function resolveActivityRoot(sessionIds: string[], sessions: SessionMetadata[]): SessionMetadata | null {
+  const byId = new Map<string, SessionMetadata>()
+  for (const session of sessions) {
+    if (!session.id || byId.has(session.id)) return null
+    byId.set(session.id, session)
+  }
+  const roots = new Set<string>()
+  for (const sessionId of new Set(sessionIds)) {
+    let current = byId.get(sessionId)
+    if (!current) return null
+    const visited = new Set<string>()
+    while (current.parentID) {
+      if (visited.has(current.id)) return null
+      visited.add(current.id)
+      current = byId.get(current.parentID)
+      if (!current) return null
+    }
+    if (visited.has(current.id)) return null
+    roots.add(current.id)
+  }
+  if (roots.size !== 1) return null
+  return byId.get([...roots][0]!) ?? null
+}
+
+async function delay(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
 }
 
 async function mapWithConcurrency<T, U>(values: T[], concurrency: number, mapper: (value: T) => Promise<U>): Promise<U[]> {
@@ -634,6 +1035,17 @@ function hasExactIdentity(record: InstanceRecord): boolean {
     && record.creationTimeUtc !== null
     && record.creationTimeTicks !== null
     && record.executable !== null
+}
+
+function sameInstanceIdentity(left: InstanceRecord, right: InstanceRecord): boolean {
+  return left.id === right.id
+    && left.projectDirectory === right.projectDirectory
+    && left.endpoint === right.endpoint
+    && left.port === right.port
+    && left.pid === right.pid
+    && left.creationTimeUtc === right.creationTimeUtc
+    && left.creationTimeTicks === right.creationTimeTicks
+    && left.executable === right.executable
 }
 
 function safeMessage(error: unknown): string {

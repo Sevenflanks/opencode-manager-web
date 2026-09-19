@@ -1,7 +1,8 @@
 import { createReadStream, existsSync } from "node:fs"
 import path from "node:path"
+import process from "node:process"
 import Fastify, { type FastifyInstance } from "fastify"
-import type { LauncherRegistrationRequest, LauncherReservationRequest, OverviewFilter } from "@omw/contracts"
+import type { ConnectivityInfo, LauncherRegistrationRequest, LauncherReservationRequest, OverviewFilter } from "@omw/contracts"
 import type { RequestAuthenticator } from "./auth.js"
 import { ManagerError } from "./errors.js"
 import type { ManagerService } from "./service.js"
@@ -23,6 +24,7 @@ export function buildApp(options: {
   publicOrigin?: string
   authenticator?: RequestAuthenticator
   launcherAuthenticator?: RequestAuthenticator
+  connectivity?: { get(): Promise<ConnectivityInfo> }
   webRoot?: string
 }): FastifyInstance {
   const app = Fastify({
@@ -75,12 +77,21 @@ export function buildApp(options: {
     return reply.code(500).send({ error: { code: "INTERNAL_ERROR", message: "Manager 發生未預期錯誤。" } })
   })
 
-  app.get<{ Querystring: { q?: string; filter?: OverviewFilter } }>("/api/v1/overview", async (request) => {
+  app.get<{ Querystring: { q?: string; filter?: OverviewFilter; includeHidden?: string } }>("/api/v1/overview", async (request) => {
     const filter = request.query.filter ?? "all"
     if (!["all", "active", "attention", "unreachable"].includes(filter)) {
       throw new ManagerError("FILTER_INVALID", "filter 必須是 all、active、attention 或 unreachable。", 400)
     }
-    return await options.service.overview(request.query.q, filter)
+    if (request.query.includeHidden !== undefined && !["true", "false"].includes(request.query.includeHidden)) {
+      throw new ManagerError("INCLUDE_HIDDEN_INVALID", "includeHidden 必須是 true 或 false。", 400)
+    }
+    return await options.service.overview(request.query.q, filter, request.query.includeHidden === "true")
+  })
+
+  app.get("/api/v1/connectivity", async () => {
+    return options.connectivity
+      ? await options.connectivity.get()
+      : fallbackConnectivity(options.authority.port, options.publicOrigin)
   })
 
   app.get<{ Querystring: { path?: string } }>("/api/v1/directories", async (request) => {
@@ -116,8 +127,36 @@ export function buildApp(options: {
     return await options.service.stop(request.params.id)
   })
 
+  app.post<{ Params: { id: string } }>("/api/v1/instances/:id/recheck", async (request) => {
+    return await options.service.recheck(request.params.id)
+  })
+
+  app.post<{ Params: { id: string } }>("/api/v1/instances/:id/resume", async (request) => {
+    return await options.service.resume(request.params.id)
+  })
+
+  app.post<{ Params: { id: string }; Body: { hidden: boolean } }>("/api/v1/instances/:id/tracking", {
+    schema: {
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["hidden"],
+        properties: { hidden: { type: "boolean" } },
+      },
+    },
+  }, async (request) => await options.service.setTrackingHidden(request.params.id, request.body.hidden))
+
+  app.delete<{ Params: { id: string } }>("/api/v1/instances/:id", async (request, reply) => {
+    await options.service.deleteInstance(request.params.id)
+    return reply.code(204).send()
+  })
+
   app.get<{ Params: { id: string } }>("/api/v1/instances/:id/sessions", async (request) => {
     return await options.service.sessionRoots(request.params.id)
+  })
+
+  app.post<{ Params: { id: string } }>("/api/v1/instances/:id/sessions", async (request, reply) => {
+    return reply.code(201).send(await options.service.createSession(request.params.id))
   })
 
   app.get<{ Params: { id: string; sessionId: string } }>("/api/v1/instances/:id/sessions/:sessionId/children", async (request) => {
@@ -133,6 +172,17 @@ export function buildApp(options: {
       },
     },
   }, async (request) => await options.service.openUrl(request.params.id, request.body.sessionId))
+
+  app.post<{ Params: { id: string }; Body: { sessionId: string } }>("/api/v1/instances/:id/primary-session", {
+    schema: {
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["sessionId"],
+        properties: { sessionId: { type: "string", minLength: 1, maxLength: 512 } },
+      },
+    },
+  }, async (request) => await options.service.selectPrimarySession(request.params.id, request.body.sessionId))
 
   if (options.launcherAuthenticator) {
     app.post<{ Body: LauncherReservationRequest }>("/api/v1/launcher/reservations", {
@@ -169,7 +219,28 @@ export function buildApp(options: {
 
   if (options.webRoot && existsSync(options.webRoot)) registerWeb(app, options.webRoot)
 
+  app.addHook("onClose", async () => {
+    await options.service.shutdown()
+  })
+
   return app
+}
+
+function fallbackConnectivity(managerPort: number, publicOrigin?: string): ConnectivityInfo {
+  return {
+    checkedAt: new Date().toISOString(),
+    mode: publicOrigin ? "tailnet" : "loopback",
+    manager: { localUrl: `http://127.0.0.1:${managerPort}`, publicUrl: publicOrigin ?? null },
+    tailscale: { state: "unknown", dnsName: null, version: null },
+    serve: {
+      state: publicOrigin ? "unknown" : "not-configured",
+      managerMapped: null,
+      mappedInstancePorts: null,
+      expectedInstancePorts: 0,
+      funnel: "unknown",
+    },
+    nodeVersion: process.version,
+  }
 }
 
 function trustedAuthority(authority: { hostname: string; port: number }): string {

@@ -101,6 +101,100 @@ test("an exact live-root identity can stop its bounded process tree", { skip: !w
   }
 })
 
+test("Inspect ignores a same-port listener on a non-overlapping loopback address", { skip: !windows, timeout: 20_000 }, async () => {
+  let endpointListener: OwnedListener | null = null
+  let otherLoopbackListener: OwnedListener | null = null
+
+  try {
+    endpointListener = await spawnOwnedListener("127.0.0.1")
+    otherLoopbackListener = await spawnOwnedListener("127.0.0.2", endpointListener.port)
+    const identity = describe(endpointListener.child)
+
+    const inspected = runHelper([
+      "-Action", "Inspect",
+      "-ProcessId", String(identity.pid),
+      "-ExpectedCreationTicks", identity.creationTimeTicks,
+      "-ExpectedExecutable", identity.executable,
+      "-Port", String(endpointListener.port),
+    ])
+
+    assert.equal(inspected.status, 0, inspected.stderr)
+    assert.deepEqual(JSON.parse(inspected.stdout.trim()), {
+      processState: "running",
+      running: true,
+      matched: true,
+      portOwnerMatched: true,
+      portOwnedByOther: false,
+    })
+  } finally {
+    await Promise.all([stopOwnedListener(endpointListener), stopOwnedListener(otherLoopbackListener)])
+  }
+})
+
+test("Inspect and Stop reject an expected PID bound only to another loopback address", { skip: !windows, timeout: 20_000 }, async () => {
+  let expectedProcessListener: OwnedListener | null = null
+  let foreignEndpointListener: OwnedListener | null = null
+
+  try {
+    expectedProcessListener = await spawnOwnedListener("127.0.0.2")
+    foreignEndpointListener = await spawnOwnedListener("127.0.0.1", expectedProcessListener.port)
+    const identity = describe(expectedProcessListener.child)
+    const identityArguments = [
+      "-ProcessId", String(identity.pid),
+      "-ExpectedCreationTicks", identity.creationTimeTicks,
+      "-ExpectedExecutable", identity.executable,
+      "-Port", String(expectedProcessListener.port),
+    ]
+
+    const inspected = runHelper(["-Action", "Inspect", ...identityArguments])
+    assert.equal(inspected.status, 0, inspected.stderr)
+    assert.deepEqual(JSON.parse(inspected.stdout.trim()), {
+      processState: "running",
+      running: true,
+      matched: true,
+      portOwnerMatched: false,
+      portOwnedByOther: true,
+    })
+
+    const stopped = runHelper(["-Action", "Stop", ...identityArguments])
+    assert.equal(stopped.status, 0, stopped.stderr)
+    assert.deepEqual(JSON.parse(stopped.stdout.trim()), { stopped: false, reason: "port is owned by another process" })
+    assert.equal(processExists(identity.pid), true)
+    assert.ok(foreignEndpointListener.child.pid)
+    assert.equal(processExists(foreignEndpointListener.child.pid), true)
+  } finally {
+    await Promise.all([stopOwnedListener(expectedProcessListener), stopOwnedListener(foreignEndpointListener)])
+  }
+})
+
+test("Inspect treats IPv4 and dual-stack wildcard listeners as endpoint owners", { skip: !windows, timeout: 20_000 }, async () => {
+  for (const address of ["0.0.0.0", "::"]) {
+    let listener: OwnedListener | null = null
+    try {
+      listener = await spawnOwnedListener(address)
+      const identity = describe(listener.child)
+      const inspected = runHelper([
+        "-Action", "Inspect",
+        "-ProcessId", String(identity.pid),
+        "-ExpectedCreationTicks", identity.creationTimeTicks,
+        "-ExpectedExecutable", identity.executable,
+        "-Port", String(listener.port),
+      ])
+
+      assert.equal(inspected.status, 0, inspected.stderr)
+      assert.deepEqual(JSON.parse(inspected.stdout.trim()), {
+        processState: "running",
+        running: true,
+        matched: true,
+        portOwnerMatched: true,
+        portOwnedByOther: false,
+      })
+    } finally {
+      await stopOwnedListener(listener)
+    }
+  }
+})
+
 function fixtureDelegatingLauncher(pidFile: string): string {
   return `
 const { spawn } = require("node:child_process")
@@ -132,6 +226,82 @@ function runHelper(arguments_: string[]) {
     "-NoLogo", "-NoProfile", "-NonInteractive", "-File", helperPath,
     ...arguments_,
   ], { encoding: "utf8", timeout: 12_000, windowsHide: true })
+}
+
+interface OwnedListener {
+  child: ChildProcess
+  port: number
+}
+
+interface DescribedIdentity {
+  pid: number
+  creationTimeTicks: string
+  executable: string
+}
+
+async function spawnOwnedListener(address: string, port = 0): Promise<OwnedListener> {
+  const script = [
+    "const net = require('node:net')",
+    "const server = net.createServer()",
+    "server.on('error', (error) => { console.error(error.message); process.exit(2) })",
+    "server.listen({ host: process.argv[1], port: Number(process.argv[2]), exclusive: true }, () => process.stdout.write(String(server.address().port) + '\\n'))",
+    "setTimeout(() => process.exit(0), 12000)",
+  ].join(";")
+  const child = spawn(process.execPath, ["-e", script, address, String(port)], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  })
+
+  try {
+    const listeningPort = await new Promise<number>((resolve, reject) => {
+      let stdout = ""
+      let stderr = ""
+      const timer = setTimeout(() => reject(new Error(`listener ${address}:${port} did not start within 3000 ms`)), 3_000)
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8")
+        const lineEnd = stdout.indexOf("\n")
+        if (lineEnd < 0) return
+        clearTimeout(timer)
+        resolve(Number(stdout.slice(0, lineEnd)))
+      })
+      child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8") })
+      child.once("error", (error) => {
+        clearTimeout(timer)
+        reject(error)
+      })
+      child.once("exit", (code) => {
+        clearTimeout(timer)
+        reject(new Error(`listener ${address}:${port} exited with ${code}: ${stderr}`))
+      })
+    })
+    return { child, port: listeningPort }
+  } catch (error) {
+    await stopOwnedListener({ child, port })
+    throw error
+  }
+}
+
+function describe(child: ChildProcess): DescribedIdentity {
+  assert.ok(child.pid)
+  const described = runHelper([
+    "-Action", "Describe",
+    "-ProcessId", String(child.pid),
+    "-ExpectedExecutable", process.execPath,
+  ])
+  assert.equal(described.status, 0, described.stderr)
+  return JSON.parse(described.stdout.trim()) as DescribedIdentity
+}
+
+async function stopOwnedListener(listener: OwnedListener | null): Promise<void> {
+  if (!listener || listener.child.exitCode !== null || listener.child.signalCode !== null) return
+  listener.child.kill()
+  await Promise.race([
+    waitForExit(listener.child),
+    new Promise<void>((resolve) => setTimeout(resolve, 3_000)),
+  ])
+  if (listener.child.pid && processExists(listener.child.pid)) {
+    spawnSync("taskkill.exe", ["/PID", String(listener.child.pid), "/T", "/F"], { windowsHide: true, timeout: 3_000 })
+  }
 }
 
 function processExists(pid: number): boolean {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { randomBytes, randomUUID } from "node:crypto"
+import { randomUUID } from "node:crypto"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http"
 import net from "node:net"
@@ -33,7 +33,7 @@ test("two root-per-port mappings do not cross routes or Basic credentials", asyn
   }
 })
 
-test("root-per-port proxy preserves authenticated OpenCode HTTP, SSE, and PTY WebSocket surfaces", { skip: !enabled, timeout: 90_000 }, async () => {
+test("root-per-port proxy preserves unauthenticated OpenCode HTTP, SSE, and PTY WebSocket surfaces", { skip: !enabled, timeout: 90_000 }, async () => {
   const executable = process.env.OMW_OPENCODE_EXECUTABLE
   assert.ok(executable, "OMW_OPENCODE_EXECUTABLE is required")
   const sandbox = path.join(tmpdir(), `omw-tailnet-poc-${randomUUID()}`)
@@ -43,12 +43,9 @@ test("root-per-port proxy preserves authenticated OpenCode HTTP, SSE, and PTY We
   await Promise.all([mkdir(project, { recursive: true }), mkdir(config, { recursive: true }), mkdir(data, { recursive: true })])
   await writeFile(path.join(config, "opencode.json"), "{\"plugin\":[]}\n", "utf8")
 
-  const username = "opencode-poc"
-  const password = randomBytes(24).toString("base64url")
   const runtime = new OpenCodeRuntime({
     executable,
     dataDirectory: data,
-    credentials: { username, password },
     environment: isolatedEnvironment(sandbox, config),
   })
   const instanceId = randomUUID()
@@ -62,37 +59,34 @@ test("root-per-port proxy preserves authenticated OpenCode HTTP, SSE, and PTY We
     await runtime.readiness(launch)
     proxy = await startLoopbackProxy(upstreamPort)
     const origin = `http://127.0.0.1:${proxy.port}`
-    const authorization = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`
-    const headers = { authorization }
+    const health = await fetch(`${origin}/global/health`, { redirect: "error" })
+    assert.equal(health.status, 200)
 
-    const unauthorized = await fetch(`${origin}/global/health`, { redirect: "error" })
-    assert.equal(unauthorized.status, 401)
-
-    const root = await fetch(`${origin}/`, { headers, redirect: "error" })
+    const root = await fetch(`${origin}/`, { redirect: "error" })
     assert.equal(root.status, 200)
     const html = await root.text()
     assert.match(html, /<html/i)
     const assetPath = firstAssetPath(html)
-    const asset = await fetch(new URL(assetPath, origin), { headers, redirect: "error" })
+    const asset = await fetch(new URL(assetPath, origin), { redirect: "error" })
     assert.equal(asset.status, 200)
 
-    const api = await fetch(`${origin}/path`, { headers, redirect: "error" })
+    const api = await fetch(`${origin}/path`, { redirect: "error" })
     assert.equal(api.status, 200)
     assert.equal(path.resolve((await api.json() as { directory: string }).directory).toLowerCase(), path.resolve(project).toLowerCase())
 
     const deepLink = new URL(runtime.openUrl(asRecord(launch, upstreamPort))).pathname
-    const deepResponse = await fetch(`${origin}${deepLink}`, { headers, redirect: "error" })
+    const deepResponse = await fetch(`${origin}${deepLink}`, { redirect: "error" })
     assert.equal(deepResponse.status, 200)
     assert.match(await deepResponse.text(), /<html/i)
 
-    const sse = await fetch(`${origin}/global/event`, { headers, signal: AbortSignal.timeout(5_000) })
+    const sse = await fetch(`${origin}/global/event`, { signal: AbortSignal.timeout(5_000) })
     assert.equal(sse.status, 200)
     assert.match(sse.headers.get("content-type") ?? "", /text\/event-stream/i)
     assert.match(await readSseEvent(sse), /^data:/m)
 
     const created = await fetch(`${origin}/pty?directory=${encodeURIComponent(project)}`, {
       method: "POST",
-      headers: { ...headers, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
         command: process.execPath,
         args: ["-e", "process.stdin.on('data', data => process.stdout.write('echo:' + data)); setTimeout(() => process.exit(0), 15000)"],
@@ -104,7 +98,7 @@ test("root-per-port proxy preserves authenticated OpenCode HTTP, SSE, and PTY We
 
     const tokenResponse = await fetch(`${origin}/pty/${encodeURIComponent(ptyId)}/connect-token?directory=${encodeURIComponent(project)}`, {
       method: "POST",
-      headers: { ...headers, "x-opencode-ticket": "1" },
+      headers: { "x-opencode-ticket": "1" },
     })
     if (tokenResponse.status !== 200) assert.fail(`PTY connect-token returned HTTP ${tokenResponse.status}: ${await tokenResponse.text()}`)
     const ticket = (await tokenResponse.json() as { ticket: string }).ticket
@@ -119,10 +113,8 @@ test("root-per-port proxy preserves authenticated OpenCode HTTP, SSE, and PTY We
     }
   } finally {
     if (ptyId && proxy) {
-      const authorization = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`
       await fetch(`http://127.0.0.1:${proxy.port}/pty/${encodeURIComponent(ptyId)}?directory=${encodeURIComponent(project)}`, {
         method: "DELETE",
-        headers: { authorization },
       }).catch(() => undefined)
     }
     await proxy?.close()

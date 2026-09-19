@@ -37,7 +37,6 @@ const NON_TUI_ROOT_OPTIONS = new Set(["-h", "--help", "-v", "--version"])
 
 interface LauncherCredentials {
   launcherToken: string
-  openCode: { username: string; password: string }
 }
 
 interface ChildResult {
@@ -93,6 +92,7 @@ export async function runLauncher(
       directory: plan.projectArgument === undefined ? cwd : path.resolve(cwd, plan.projectArgument),
       ...(plan.requestedPort === undefined ? {} : { requestedPort: plan.requestedPort }),
     }
+    // Reservation is OMW's atomic allocation confirmation; a second health probe here would add a race window before spawn.
     reservation = await dependencies.request<LauncherReservationResponse>(origin, "/api/v1/launcher/reservations", credentials.launcherToken, body)
   } catch (error) {
     if (environment.OMW_REQUIRED === "1") {
@@ -103,12 +103,12 @@ export async function runLauncher(
     return await dependencies.spawnForeground(executable, argv, foregroundOptions(cwd, environment)).completion
   }
 
-  const childEnvironment = {
+  const childEnvironment: NodeJS.ProcessEnv = {
     ...environment,
     OMW_LAUNCHER_ACTIVE: "1",
-    OPENCODE_SERVER_USERNAME: credentials.openCode.username,
-    OPENCODE_SERVER_PASSWORD: credentials.openCode.password,
   }
+  delete childEnvironment.OPENCODE_SERVER_USERNAME
+  delete childEnvironment.OPENCODE_SERVER_PASSWORD
   const child = dependencies.spawnForeground(
     executable,
     managedArguments(argv, reservation.port),
@@ -229,16 +229,15 @@ async function loadCredentials(environment: NodeJS.ProcessEnv, cwd: string): Pro
   const helper = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../scripts/credential-store.ps1")
   const ciphertext = await readFile(filename, "utf8")
   const plaintext = await runDpapi(environment.OMW_POWERSHELL_EXECUTABLE ?? "pwsh.exe", helper, ciphertext)
+  return decodeLauncherCredentials(plaintext)
+}
+
+export function decodeLauncherCredentials(plaintext: string): LauncherCredentials {
   const value = JSON.parse(plaintext) as unknown
-  if (!isRecord(value) || !isRecord(value.openCode)
-    || typeof value.openCode.username !== "string" || typeof value.openCode.password !== "string"
-    || typeof value.launcherToken !== "string" || value.launcherToken.length < 32) {
+  if (!isRecord(value) || typeof value.launcherToken !== "string" || value.launcherToken.length < 32) {
     throw new Error("DPAPI credential store 格式無效。")
   }
-  return {
-    launcherToken: value.launcherToken,
-    openCode: { username: value.openCode.username, password: value.openCode.password },
-  }
+  return { launcherToken: value.launcherToken }
 }
 
 export function runDpapi(

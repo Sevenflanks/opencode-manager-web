@@ -8,7 +8,6 @@ export interface BasicCredential {
 
 export interface StoredCredentials {
   manager: BasicCredential
-  openCode: BasicCredential
   launcherToken: string
 }
 
@@ -35,30 +34,6 @@ export class SeparateRequestAuthenticator implements RequestAuthenticator {
 
   challenge(audience: AuthAudience): string | null {
     return audience === "browser" ? 'Basic realm="OMW", charset="UTF-8"' : null
-  }
-}
-
-export class OpenCodeAuthAdapter {
-  constructor(private readonly credential: BasicCredential) {}
-
-  environment(): NodeJS.ProcessEnv {
-    return {
-      OPENCODE_SERVER_USERNAME: this.credential.username,
-      OPENCODE_SERVER_PASSWORD: this.credential.password,
-    }
-  }
-
-  headers(): Record<string, string> {
-    return { authorization: `Basic ${Buffer.from(`${this.credential.username}:${this.credential.password}`, "utf8").toString("base64")}` }
-  }
-
-  redact(value: string): string {
-    const authorization = this.headers()["authorization"] ?? ""
-    const secrets: string[] = [this.credential.username, this.credential.password, authorization]
-      .filter((secret) => secret.length > 0)
-      .sort((left, right) => right.length - left.length)
-    return secrets
-      .reduce((result, secret) => result.replaceAll(secret, "[REDACTED]"), value)
   }
 }
 

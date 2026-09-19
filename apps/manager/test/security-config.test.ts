@@ -12,7 +12,6 @@ import { DpapiCredentialStore } from "../src/credential-store.js"
 
 const credentials: StoredCredentials = {
   manager: { username: "omw-user", password: "manager-fake-password" },
-  openCode: { username: "opencode-user", password: "opencode-fake-password" },
   launcherToken: "temporary-launcher-token-with-enough-entropy-shape",
 }
 
@@ -77,6 +76,7 @@ test("launcher token and browser Basic auth are separate audiences", () => {
   assert.equal(authenticator.authorize({ "x-omw-launcher-token": credentials.launcherToken }, "browser"), false)
   assert.equal(authenticator.authorize({ authorization: browserHeader }, "launcher"), false)
   assert.equal(authenticator.authorize({ "x-omw-launcher-token": credentials.launcherToken }, "launcher"), true)
+  assert.equal(authenticator.authorize({ "x-omw-launcher-token": "wrong-launcher-token" }, "launcher"), false)
 })
 
 test("DPAPI store atomically replaces and round-trips only temporary fake credentials", { skip: process.platform !== "win32" }, async () => {
@@ -85,7 +85,7 @@ test("DPAPI store atomically replaces and round-trips only temporary fake creden
   try {
     await store.save(credentials)
     const ciphertext = await readFile(store.filename, "utf8")
-    assert.doesNotMatch(ciphertext, /manager-fake-password|opencode-fake-password|temporary-launcher-token/)
+    assert.doesNotMatch(ciphertext, /manager-fake-password|temporary-launcher-token/)
     assert.deepEqual(await store.load(), credentials)
     const rotated = {
       ...credentials,
@@ -93,6 +93,37 @@ test("DPAPI store atomically replaces and round-trips only temporary fake creden
     }
     await store.save(rotated)
     assert.deepEqual(await store.load(), rotated)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("DPAPI store accepts a legacy OpenCode field without rotating the ciphertext", { skip: process.platform !== "win32" }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-dpapi-legacy-test-"))
+  const legacy = {
+    ...credentials,
+    openCode: { username: "legacy-opencode", password: "legacy-opencode-password" },
+  }
+  const child = new EventEmitter() as unknown as ChildProcessWithoutNullStreams
+  const stdin = new PassThrough()
+  const stdout = new PassThrough()
+  const stderr = new PassThrough()
+  Object.assign(child, { stdin, stdout, stderr, kill: () => true })
+  const store = new DpapiCredentialStore({
+    dataDirectory: root,
+    powershell: "fixture-pwsh",
+    spawnDpapi: () => {
+      queueMicrotask(() => {
+        stdout.end(JSON.stringify(legacy))
+        child.emit("close", 0, null)
+      })
+      return child
+    },
+  })
+  try {
+    await writeFile(store.filename, "legacy-ciphertext", "utf8")
+    assert.deepEqual(await store.load(), credentials)
+    assert.equal(await readFile(store.filename, "utf8"), "legacy-ciphertext")
   } finally {
     await rm(root, { recursive: true, force: true })
   }

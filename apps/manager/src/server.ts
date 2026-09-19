@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url"
 import { buildApp } from "./app.js"
 import { SeparateRequestAuthenticator, type StoredCredentials } from "./auth.js"
 import { readInstancePortPoolConfig, readRemoteAccessConfig } from "./config.js"
+import { ConnectivityService, tailscaleExecutable } from "./connectivity.js"
 import { DpapiCredentialStore } from "./credential-store.js"
 import { ManagerRepository } from "./repository.js"
 import { OpenCodeRuntime } from "./runtime.js"
@@ -29,14 +30,20 @@ const runtime = new OpenCodeRuntime({
   executable: process.env.OMW_OPENCODE_EXECUTABLE ?? "",
   dataDirectory,
   ...(process.env.OMW_POWERSHELL_EXECUTABLE ? { powershell: process.env.OMW_POWERSHELL_EXECUTABLE } : {}),
-  ...(credentials ? { credentials: credentials.openCode } : {}),
   ...(remoteAccess ? { publicOriginForPort: (instancePort: number) => remoteAccess.instanceOrigin(instancePort) } : {}),
 })
 const service = new ManagerService(repository, runtime, portPool)
+const connectivity = new ConnectivityService({
+  managerPort: port,
+  remoteAccess,
+  portPool,
+  executable: tailscaleExecutable(process.env),
+})
 const allowedOrigins = readAllowedOrigins(port, remoteAccess?.publicManagerOrigin)
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist")
 const app = buildApp({
   service,
+  connectivity,
   authority: { hostname: host, port },
   allowedOrigins,
   webRoot,
@@ -46,7 +53,8 @@ const app = buildApp({
 })
 
 app.addHook("onClose", async () => {
-  // Background Instances deliberately survive Manager shutdown; only close Manager-owned SQLite.
+  // Stop Manager-owned observers before SQLite; OpenCode Instances deliberately survive shutdown.
+  await service.shutdown()
   repository.close()
 })
 

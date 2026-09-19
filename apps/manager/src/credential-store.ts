@@ -75,15 +75,14 @@ export class DpapiCredentialStore implements CredentialStore {
 }
 
 function validateCredentials(value: unknown): StoredCredentials {
-  if (!isRecord(value) || !isBasic(value.manager) || !isBasic(value.openCode) || typeof value.launcherToken !== "string") {
+  if (!isRecord(value) || !isBasic(value.manager) || typeof value.launcherToken !== "string") {
     throw new Error("DPAPI credential store 格式無效。")
   }
-  if (value.manager.password.length < 16 || value.openCode.password.length < 16 || value.launcherToken.length < 32) {
-    throw new Error("Remote access passwords 至少 16 字元，launcher token 至少 32 字元。")
+  if (value.manager.password.length < 16 || value.launcherToken.length < 32) {
+    throw new Error("OMW password 至少 16 字元，launcher token 至少 32 字元。")
   }
   return {
     manager: { username: value.manager.username, password: value.manager.password },
-    openCode: { username: value.openCode.username, password: value.openCode.password },
     launcherToken: value.launcherToken,
   }
 }
