@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { spawn, type ChildProcess } from "node:child_process"
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import net from "node:net"
@@ -82,6 +83,67 @@ function fixture(statuses: Array<"omw" | "absent" | "foreign">): {
       runOpenCode: async () => { events.push("run"); return 0 },
     },
   }
+}
+
+async function startLockOwner(script: string, root: string): Promise<ChildProcess> {
+  const moduleUrl = new URL("../src/manager-cli.js", import.meta.url).href
+  const child = spawn(process.execPath, ["--input-type=module", "--eval", script, moduleUrl, root], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  })
+  let output = ""
+  let diagnostics = ""
+  child.stdout?.setEncoding("utf8")
+  child.stderr?.setEncoding("utf8")
+  child.stdout?.on("data", (chunk: string) => { output += chunk })
+  child.stderr?.on("data", (chunk: string) => { diagnostics += chunk })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const deadline = setTimeout(() => finish(new Error(`lock owner did not acquire within deadline: ${diagnostics}`)), 5_000)
+      const finish = (error?: Error): void => {
+        clearTimeout(deadline)
+        child.stdout?.off("data", onData)
+        child.off("exit", onExit)
+        child.off("error", onError)
+        if (error) reject(error)
+        else resolve()
+      }
+      const onData = (): void => {
+        if (output.includes("LOCKED\n")) finish()
+      }
+      const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+        finish(new Error(`lock owner exited before acquiring: code=${code}, signal=${signal}, stderr=${diagnostics}`))
+      }
+      const onError = (cause: Error): void => finish(cause)
+      child.stdout?.on("data", onData)
+      child.once("exit", onExit)
+      child.once("error", onError)
+      onData()
+    })
+    return child
+  } catch (cause) {
+    await stopLockOwner(child)
+    throw cause
+  }
+}
+
+async function stopLockOwner(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  await new Promise<void>((resolve, reject) => {
+    const deadline = setTimeout(() => finish(new Error("lock owner did not exit within cleanup deadline")), 5_000)
+    const finish = (error?: Error): void => {
+      clearTimeout(deadline)
+      child.off("exit", onExit)
+      child.off("error", onError)
+      if (error) reject(error)
+      else resolve()
+    }
+    const onExit = (): void => finish()
+    const onError = (cause: Error): void => finish(cause)
+    child.once("exit", onExit)
+    child.once("error", onError)
+    if (!child.kill()) finish(new Error("failed to terminate lock owner"))
+  })
 }
 
 test("bare Manager CLI reuses an exact OMW identity without spawning", async () => {
@@ -232,6 +294,56 @@ test("concurrent Manager invocations use one atomic start owner and one spawn", 
   assert.deepEqual(await readdir(root), [])
 })
 
+test("a stale legacy manager-start.lock does not block startup or get overwritten", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-manager-stale-lock-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const legacyLock = path.join(root, "manager-start.lock")
+  await writeFile(legacyLock, "stale-owner", "utf8")
+  const { dependencies, spawned } = fixture(["absent"])
+  dependencies.probe = async () => spawned.length ? "omw" : "absent"
+  let clock = 0
+  dependencies.now = () => { clock += 6_000; return clock }
+
+  assert.equal(await runManagerCli([], { OMW_DATA_DIR: root }, dependencies), 0)
+  assert.equal(spawned.length, 1)
+  assert.equal(await readFile(legacyLock, "utf8"), "stale-owner")
+})
+
+test("Manager startup lock is released by the OS when its owner exits", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-manager-owner-exit-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const script = `
+    const { runManagerCli } = await import(process.argv[1])
+    const never = new Promise(() => {})
+    await runManagerCli([], { OMW_DATA_DIR: process.argv[2] }, {
+      ensureCredentials: async () => ({ manager: { username: "fixture", password: "fixture-password-long-enough" }, launcherToken: "fixture-launcher-token-long-enough-for-validation" }),
+      probe: async () => "absent",
+      spawnManager: () => { throw new Error("unexpected spawn") },
+      managerEntry: async () => { process.stdout.write("LOCKED\\n"); await never },
+      webRoot: async () => "unused",
+      resolveExecutable: async () => "unused",
+      launcherPath: () => "unused",
+      sleep: async () => {},
+      now: Date.now,
+      output: () => {},
+      diagnostic: () => {},
+      runOpenCode: async () => 0,
+    })
+  `
+  const owner = await startLockOwner(script, root)
+  try {
+    await stopLockOwner(owner)
+    const retry = fixture(["absent"])
+    retry.dependencies.probe = async () => retry.spawned.length ? "omw" : "absent"
+    let clock = 0
+    retry.dependencies.now = () => { clock += 6_000; return clock }
+    assert.equal(await runManagerCli([], { OMW_DATA_DIR: root }, retry.dependencies), 0)
+    assert.equal(retry.spawned.length, 1)
+  } finally {
+    await stopLockOwner(owner)
+  }
+})
+
 test("post-spawn timeout and probe failure clean only the owned Manager process", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "omw-manager-cleanup-"))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -328,6 +440,69 @@ test("credential initialization is idempotent and concurrent callers share one r
   assert.equal(usernamePrompts, 1)
   assert.equal(passwordPrompts, 1)
   assert.deepEqual(await readdir(root), ["credentials.dpapi"])
+})
+
+test("a stale legacy initialize.lock does not block initialization or get overwritten", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-init-stale-lock-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const legacyLock = path.join(root, "initialize.lock")
+  await writeFile(legacyLock, "stale-owner", "utf8")
+  const credentials: LocalCredentials = {
+    manager: { username: "fixture", password: "fixture-password-long-enough" },
+    launcherToken: "fixture-token-with-at-least-thirty-two-characters",
+  }
+  const dependencies: CredentialInitializationDependencies = {
+    isInteractive: () => true,
+    load: async (filename) => JSON.parse(await readFile(filename, "utf8")) as LocalCredentials,
+    save: async (filename, value) => { await writeFile(filename, JSON.stringify(value), { encoding: "utf8", flag: "wx" }) },
+    promptUsername: async () => credentials.manager.username,
+    promptPassword: async () => credentials.manager.password,
+    createToken: () => credentials.launcherToken,
+    sleep: async () => undefined,
+    now: (() => { let clock = 0; return () => { clock += 20_000; return clock } })(),
+  }
+
+  assert.deepEqual(await ensureCredentials(root, {}, dependencies), credentials)
+  assert.equal(await readFile(legacyLock, "utf8"), "stale-owner")
+})
+
+test("credential initialization lock is released by the OS when its owner exits", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-init-owner-exit-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const script = `
+    const { ensureCredentials } = await import(process.argv[1])
+    const never = new Promise(() => {})
+    await ensureCredentials(process.argv[2], {}, {
+      isInteractive: () => true,
+      load: async () => { throw new Error("unexpected load") },
+      save: async () => { throw new Error("unexpected save") },
+      promptUsername: async () => { process.stdout.write("LOCKED\\n"); await never },
+      promptPassword: async () => "unused",
+      createToken: () => "unused",
+      sleep: async () => {},
+      now: Date.now,
+    })
+  `
+  const owner = await startLockOwner(script, root)
+  try {
+    await stopLockOwner(owner)
+    const expected: LocalCredentials = {
+      manager: { username: "retry", password: "retry-password-long-enough" },
+      launcherToken: "retry-token-with-at-least-thirty-two-characters",
+    }
+    assert.deepEqual(await ensureCredentials(root, {}, {
+      isInteractive: () => true,
+      load: async (filename) => JSON.parse(await readFile(filename, "utf8")) as LocalCredentials,
+      save: async (filename, value) => { await writeFile(filename, JSON.stringify(value), { encoding: "utf8", flag: "wx" }) },
+      promptUsername: async () => expected.manager.username,
+      promptPassword: async () => expected.manager.password,
+      createToken: () => expected.launcherToken,
+      sleep: async () => undefined,
+      now: (() => { let clock = 0; return () => { clock += 20_000; return clock } })(),
+    }), expected)
+  } finally {
+    await stopLockOwner(owner)
+  }
 })
 
 test("non-interactive initialization without credentials reports a typed setup requirement", async (t) => {

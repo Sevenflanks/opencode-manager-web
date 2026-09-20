@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { existsSync } from "node:fs"
-import { mkdir, open, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import path from "node:path"
 import process from "node:process"
@@ -107,21 +107,17 @@ async function ensureManagerReady(
   if (initial === "foreign") throw foreignManagerError(port)
 
   await mkdir(dataDirectory, { recursive: true })
-  // lock 只序列化 absent 到 spawn 的區段；取得後仍要重查 identity，避免採用其他 invocation 啟動的 process。
-  const lockFilename = path.join(dataDirectory, "manager-start.lock")
+  const lockName = processLockName(await realpath(dataDirectory), "manager-start.lock")
   const deadline = dependencies.now() + STARTUP_DEADLINE_MS
-  let lock: Awaited<ReturnType<typeof open>> | undefined
+  let lock: net.Server | undefined
   while (!lock) {
-    try {
-      lock = await open(lockFilename, "wx")
-    } catch (cause) {
-      if (!isAlreadyExists(cause)) throw cause
-      const status = await dependencies.probe(origin, credentials.launcherToken)
-      if (status === "omw") return
-      if (status === "foreign") throw foreignManagerError(port)
-      if (dependencies.now() >= deadline) throw new Error("另一個 OMW Manager 啟動仍在進行；請稍後重試。")
-      await dependencies.sleep(100)
-    }
+    lock = await tryAcquireProcessLock(lockName)
+    if (lock) break
+    const status = await dependencies.probe(origin, credentials.launcherToken)
+    if (status === "omw") return
+    if (status === "foreign") throw foreignManagerError(port)
+    if (dependencies.now() >= deadline) throw new Error("另一個 OMW Manager 啟動仍在進行；請稍後重試。")
+    await dependencies.sleep(100)
   }
 
   let owner: OwnedManagerProcess | undefined
@@ -181,8 +177,7 @@ async function ensureManagerReady(
     }
     throw cause
   } finally {
-    await lock.close().catch(() => undefined)
-    await rm(lockFilename, { force: true }).catch(() => undefined)
+    await releaseProcessLock(lock)
   }
 }
 
@@ -197,18 +192,15 @@ export async function ensureCredentials(
     throw new CredentialSetupRequiredError()
   }
   await mkdir(dataDirectory, { recursive: true })
-  const lockFilename = path.join(dataDirectory, "initialize.lock")
-  let lock: Awaited<ReturnType<typeof open>> | undefined
+  const lockName = processLockName(await realpath(dataDirectory), "initialize.lock")
+  let lock: net.Server | undefined
   const deadline = dependencies.now() + INITIALIZATION_DEADLINE_MS
   while (!lock) {
-    try {
-      lock = await open(lockFilename, "wx")
-    } catch (cause) {
-      if (!isAlreadyExists(cause)) throw cause
-      if (existsSync(filename)) return await dependencies.load(filename, environment)
-      if (dependencies.now() >= deadline) throw new Error("另一個 OMW 初始化仍在進行；請稍後重試。")
-      await dependencies.sleep(100)
-    }
+    lock = await tryAcquireProcessLock(lockName)
+    if (lock) break
+    if (existsSync(filename)) return await dependencies.load(filename, environment)
+    if (dependencies.now() >= deadline) throw new Error("另一個 OMW 初始化仍在進行；請稍後重試。")
+    await dependencies.sleep(100)
   }
   try {
     if (existsSync(filename)) return await dependencies.load(filename, environment)
@@ -223,9 +215,44 @@ export async function ensureCredentials(
     // 重新走 persisted store 的解密與驗證，避免後續 wrapper 使用未真正落盤的 in-memory token。
     return await dependencies.load(filename, environment)
   } finally {
-    await lock.close().catch(() => undefined)
-    await rm(lockFilename, { force: true }).catch(() => undefined)
+    await releaseProcessLock(lock)
   }
+}
+
+function processLockName(dataDirectory: string, logicalName: string): string {
+  // 不讀寫 legacy .lock 檔；用 TTL 或 PID 猜測 stale owner 可能誤搶仍存活的 lock。
+  const identity = createHash("sha256")
+    .update(dataDirectory.toLowerCase())
+    .update("\0")
+    .update(logicalName)
+    .digest("hex")
+  return `\\\\.\\pipe\\omw-${identity}`
+}
+
+async function tryAcquireProcessLock(lockName: string): Promise<net.Server | undefined> {
+  const server = net.createServer((socket) => socket.destroy())
+  return await new Promise((resolve, reject) => {
+    const onError = (cause: NodeJS.ErrnoException): void => {
+      server.off("listening", onListening)
+      if (cause.code === "EADDRINUSE") resolve(undefined)
+      else reject(cause)
+    }
+    const onListening = (): void => {
+      server.off("error", onError)
+      resolve(server)
+    }
+    server.once("error", onError)
+    server.once("listening", onListening)
+    // Windows named pipe 會隨持有 process handle 消失，owner 異常結束也不會留下 stale lock。
+    server.listen({ path: lockName, exclusive: true })
+  })
+}
+
+async function releaseProcessLock(lock: net.Server): Promise<void> {
+  if (!lock.listening) return
+  await new Promise<void>((resolve, reject) => {
+    lock.close((cause) => cause ? reject(cause) : resolve())
+  })
 }
 
 async function loadCredentials(filename: string, environment: NodeJS.ProcessEnv): Promise<LocalCredentials> {
@@ -423,10 +450,6 @@ function parsePort(value: string): number {
   const port = Number(value)
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("OMW_PORT 必須是 1 到 65535 的整數。")
   return port
-}
-
-function isAlreadyExists(cause: unknown): boolean {
-  return typeof cause === "object" && cause !== null && "code" in cause && cause.code === "EEXIST"
 }
 
 function foreignManagerError(port: number): Error {
