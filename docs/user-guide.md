@@ -17,15 +17,23 @@ omw opencode [project] [-s session]
 
 原生 `opencode` 命令不會被 OMW 改寫、攔截或自動接管。只有透過 `omw opencode ...` 啟動時，OMW wrapper 才會嘗試啟動或重用 Manager、保留執行個體的固定連線埠並登錄追蹤資訊。
 
-## 先看三張圖
+## How OMW Works
 
-- [OMW 本機與 Tailnet 架構](diagrams/omw-architecture.html)
-- [OMW 啟動、重用與失敗處理](diagrams/omw-startup-flow.html)
-- [OMW 三種停止操作](diagrams/omw-stop-semantics.html)
+![OMW 本機與 Tailnet 架構](diagrams/omw-architecture.svg)
 
-三張圖都是可直接用瀏覽器開啟的靜態 HTML，不代表已完成真實 UI 或手機驗收。
+[HTML source](diagrams/omw-architecture.html)
 
-## 1. 使用前準備
+![OMW 啟動、重用與失敗處理](diagrams/omw-startup-flow.svg)
+
+[HTML source](diagrams/omw-startup-flow.html)
+
+![OMW 三種停止操作](diagrams/omw-stop-semantics.svg)
+
+[HTML source](diagrams/omw-stop-semantics.html)
+
+三張圖是由同目錄的靜態 HTML source 匯出，方便 GitHub 直接顯示；它們不代表已完成真實 UI 或手機驗收。
+
+## Prerequisites
 
 目前的 local onboarding 需要：
 
@@ -42,18 +50,21 @@ $env:OMW_OPENCODE_EXECUTABLE = 'C:\path\to\opencode.exe'
 
 此值必須是絕對路徑、存在且為一般檔案。OMW 不會掃描整顆磁碟，也不會任意猜測 shim。若沒有設定，OMW 只會依序查看已知安裝提示與 `PATH`；它也會拒絕解析回 OMW launcher 自己，避免遞迴啟動。
 
-## 2. 建立 local package artifact
+## Quick Start
+
+### 建立 local package artifact
 
 在 repository root 開啟 PowerShell：
 
 ```powershell
+npm ci
 $packageDir = Join-Path $env:TEMP 'omw-local-package'
 New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
-npm pack --pack-destination $packageDir -w @sevenflanks/omw
-$omwPackage = Join-Path $packageDir 'sevenflanks-omw-0.1.0.tgz'
+$packageName = npm pack --pack-destination $packageDir -w @sevenflanks/omw | Select-Object -Last 1
+$omwPackage = Join-Path $packageDir $packageName
 ```
 
-目前 manifest 版本是 `0.1.0`，所以 artifact 檔名是 `sevenflanks-omw-0.1.0.tgz`。如果 package version 後續改變，請改用 `npm pack` 實際輸出的檔名。
+`$omwPackage` 直接使用 `npm pack` 實際輸出的檔名，不依賴寫死的 package version。
 
 `npm pack` 會先建置 workspace，並將以下 runtime 內容放入 artifact：
 
@@ -64,7 +75,7 @@ $omwPackage = Join-Path $packageDir 'sevenflanks-omw-0.1.0.tgz'
 
 這個 `.tgz` 才是下列命令的 package 來源。清除 npm cache 或刪除 artifact 後，未來再次啟動前需重新執行 `npm pack`；OMW 的持久資料不放在 artifact 或 npm cache 中。
 
-## 3. 第一次啟動
+### 第一次啟動
 
 執行 plain `omw`：
 
@@ -88,7 +99,7 @@ OMW Manager ready: http://127.0.0.1:4174
 
 plain `omw` 只會初始化、重用或在背景啟動 Manager，不會啟動 OpenCode TUI。請用瀏覽器開啟終端實際輸出的 URL。
 
-### 取消與重試
+#### 取消與重試
 
 在首次設定按 `Ctrl+C` 時，預期訊息是：
 
@@ -104,7 +115,7 @@ OMW 初始化已取消，可直接重試。
 缺少 OMW 初始設定；請先在本機互動式終端執行 omw。
 ```
 
-### 日常重跑與冪等性
+#### 日常重跑與冪等性
 
 之後每天可執行同一個 plain `omw` 命令。OMW 會以 launcher token 驗證 `127.0.0.1:<port>` 上的 Manager identity：
 
@@ -113,7 +124,9 @@ OMW 初始化已取消，可直接重試。
 - 同時執行多次時，由初始化與啟動 lock 加上第二次 identity 檢查避免重複初始化或重複 Manager。
 - 重用不會重設帳密、不會輪替 launcher token，也不會清空 SQLite。
 
-## 4. 透過 OMW wrapper 啟動 OpenCode
+## Usage
+
+### 透過 OMW wrapper 啟動 OpenCode
 
 在要工作的 Project 目錄執行：
 
@@ -143,7 +156,7 @@ opencode
 
 這是刻意的邊界，不是安裝失敗。OMW 不會建立全域 shim，也不會把 `opencode` 替換成 wrapper。
 
-### Wrapper bootstrap failure
+#### Wrapper bootstrap failure
 
 若 wrapper 無法啟動或連上 Manager，預設會顯示診斷，然後用原始 argv 與環境啟動 native OpenCode。這個 TUI 是未受 OMW 管理的執行個體；請不要把 fail-open 誤認為 Manager 已恢復。
 
@@ -156,12 +169,12 @@ npm exec --yes --package="$omwPackage" -- omw opencode
 
 `OMW_REQUIRED=1` 會讓任何 bootstrap failure 直接結束。未設定 `OMW_REQUIRED=1` 時，首次設定缺失或使用者取消初始化仍不會 fail-open；既有 credentials 損毀、DPAPI 無法解密或其他 Manager bootstrap failure 則會顯示診斷並啟動未受管理的 native OpenCode。
 
-## 5. 使用 Web 管理介面
+### 使用 Web 管理介面
 
 > [!NOTE]
 > 以下畫面證據皆為：**正式 Vue UI，隔離 mock backend，非真 Manager/Tailnet實測**。圖片用來說明操作位置與預期畫面，不代表真實 process、credentials、Session、手機或網路已通過。
 
-### Overview 與 Instance 清單
+#### Overview 與 Instance 清單
 
 Overview 顯示 OMW 已知的 Project 與 Instance。狀態來自觀察與 probe：
 
@@ -177,7 +190,7 @@ Overview 顯示 OMW 已知的 Project 與 Instance。狀態來自觀察與 probe
 
 ![Overview 與 Instance detail 的正式 Vue UI mock 證據](images/issue11-overview-details-desktop.png)
 
-### 啟動背景 Instance
+#### 啟動背景 Instance
 
 從 `啟動執行個體` 開啟 launch panel，選擇或輸入 Project 後啟動。這種 Instance 是 Manager-launched Headless Instance，與 wrapper 啟動的 Local TUI Instance 不同；只有前者可以從 Web 執行 `停止執行個體`。
 
@@ -197,7 +210,7 @@ Overview 顯示 OMW 已知的 Project 與 Instance。狀態來自觀察與 probe
 
 ![建立 Instance 結果的正式 Vue UI mock 證據](images/issue11-create-instance-result-desktop.png)
 
-### Session 與 Primary Session Binding
+#### Session 與 Primary Session Binding
 
 Instance detail 中的操作語意如下：
 
@@ -216,7 +229,7 @@ OMW 管理的是 binding 與入口；Session 內容仍由 OpenCode 保存。停�
 
 ![Session tree 的正式 Vue UI mock 證據](images/issue11-session-tree-desktop.png)
 
-## 6. 修改 OMW 帳號與密碼
+### 修改 OMW 帳號與密碼
 
 > [!NOTE]
 > **正式 Vue UI，隔離 mock backend，非真 Manager/Tailnet實測**。以下圖片沒有驗證 DPAPI persistence、新帳密登入或舊帳密失效。
@@ -253,7 +266,7 @@ OMW 管理的是 binding 與入口；Session 內容仍由 OpenCode 保存。停�
 
 ![Credential rotation 成功狀態的正式 Vue UI mock 證據](images/issue11-credential-rotation-success-desktop.png)
 
-## 7. 三種停止操作
+### 三種停止操作
 
 > [!NOTE]
 > **正式 Vue UI，隔離 mock backend，非真 Manager/Tailnet實測**。以下停止畫面不代表任何真實 Manager 或 OpenCode process 已停止或保留。
@@ -266,7 +279,7 @@ OMW 管理的是 binding 與入口；Session 內容仍由 OpenCode 保存。停�
 | `執行個體操作` → `停止執行個體` | 該 Manager-owned 背景 Instance 與其中進行中的工作 | Manager、其他 Instances、OpenCode Sessions、Project files；Local TUI 不允許由此停止 |
 | `執行個體操作` → `停止追蹤` | 只把 OMW tracking record 從預設清單隱藏 | process、工作、reserved port、Sessions、Project files、Manager |
 
-### 停止 OMW
+#### 停止 OMW
 
 管理介面會立即斷線，但 OpenCode 工作繼續。之後重新執行 plain `omw` 即可重建 Manager 管理介面並重用既有資料。
 
@@ -284,15 +297,17 @@ OMW 管理的是 binding 與入口；Session 內容仍由 OpenCode 保存。停�
 
 ![停止 Manager 結果的正式 Vue UI mock 證據](images/issue11-stop-manager-result-desktop.png)
 
-### 停止執行個體
+#### 停止執行個體
 
 這是真正的 process stop，只提供給 OMW 有 ownership 且允許停止的背景 Instance。Local TUI 的 process ownership 留在使用者的終端，因此 Web 不會代替使用者終止它。
 
-### 停止追蹤
+#### 停止追蹤
 
 這不是 process stop。被隱藏的 process 仍可能佔用同一個 fixed port；若要再次檢視，先開啟 `顯示已停止追蹤`。不要因為主清單看不到就嘗試啟動同 port 的替代 process。
 
-## 8. 資料位置與保留規則
+## Configuration
+
+### 資料位置與保留規則
 
 預設資料目錄固定為：
 
@@ -312,7 +327,7 @@ $env:OMW_DATA_DIR = 'D:\private\omw-data'
 
 如果使用 override，plain `omw` 與每一次 wrapper 命令都必須使用同一個 `OMW_DATA_DIR`，否則會看到不同的 OMW 狀態。
 
-## 9. Tailnet 與手機存取
+### Tailnet 與手機存取
 
 OMW server 仍只綁定 loopback。OMW 不會代替 operator 設定：
 
@@ -327,7 +342,7 @@ OMW server 仍只綁定 loopback。OMW 不會代替 operator 設定：
 - [Mobile acceptance checklist](security/mobile-acceptance.md)
 - [Launcher and authentication contract](security/launcher-contract.md)
 
-不要用「Tailnet 設定看起來正確」或模擬 viewport 代替真實手機驗收。手機清單、detail、Session navigation、帳密與 stop confirmation 只有經實機確認後才能宣稱通過。使用者已明確同意將真手機與 Tailnet 驗收移出 Issue #11 本輪 PR 的必要條件；它們仍是未驗證的後續驗收項目，目前狀態見[驗收證據](#11-驗收證據與限制)。
+不要用「Tailnet 設定看起來正確」或模擬 viewport 代替真實手機驗收。手機清單、detail、Session navigation、帳密與 stop confirmation 只有經實機確認後才能宣稱通過。使用者已明確同意將真手機與 Tailnet 驗收移出 Issue #11 本輪 PR 的必要條件；它們仍是未驗證的後續驗收項目，目前狀態見[驗收證據](#validation-status)。
 
 > [!NOTE]
 > **正式 Vue UI，隔離 mock backend，非真 Manager/Tailnet實測**。以下是 Playwright `390 × 844` viewport，不是觸控或實機證據。
@@ -346,7 +361,7 @@ OMW server 仍只綁定 loopback。OMW 不會代替 operator 設定：
 
 ![Mobile detail 的正式 Vue UI mock 證據](images/issue11-mobile-detail.png)
 
-## 10. 問題排除
+## Troubleshooting
 
 ### Local package 找不到或 public npx 失敗
 
@@ -391,9 +406,11 @@ Get-Command opencode
 
 這是 wrapper 的明示 fail-open，不是成功接管。OpenCode 可以繼續使用，但 OMW 不保證能追蹤這次 TUI。需要強制受管理時，修正 Manager 問題後使用 `OMW_REQUIRED=1` 重試。
 
-## 11. 驗收證據與限制
+## Reference
 
-### 目前證據
+### Validation Status
+
+#### 目前證據
 
 | 項目 | 狀態 | 證據或限制 |
 | --- | --- | --- |
@@ -413,7 +430,7 @@ Get-Command opencode
 
 Bin resolution probe 只證明 local artifact 與 bin entry 可用。另見 [Issue #11 人工本機驗收報告](acceptance/issue11-manual-local-acceptance-2026-09-20.md)，其 PASS 來自使用者在一般 `pwsh` 親自執行，不是 agent 重跑，也不證明 release artifact、個人既有 OpenCode 設定、Tailnet 或真手機路徑。
 
-### 正式 Vue UI mock 截圖狀態
+#### 正式 Vue UI mock 截圖狀態
 
 **正式 Vue UI，隔離 mock backend，非真 Manager/Tailnet實測**。十張圖已放入上方對應操作章節；完整 route、status、request 與 lifecycle 證據見 [Issue #11 UI acceptance report](acceptance/issue11-ui-acceptance-2026-09-20.md)。
 
@@ -426,7 +443,7 @@ Bin resolution probe 只證明 local artifact 與 bin entry 可用。另見 [Iss
 | Stop confirmation / stopped banner | VERIFIED | 真 Manager shutdown 與 OpenCode process 保留未驗證 |
 | Mobile list / detail / list | VERIFIED（模擬 viewport） | 真手機、touch、Tailnet 與 browser back gesture 未驗證 |
 
-### 仍缺或不在本輪的驗收
+#### 仍缺或不在本輪的驗收
 
 - Credential 更新後新帳密可用、舊帳密拒絕、launcher token 保留與 persistence failure rollback。
 - 個人既有 OpenCode 設定、plugin、Session 與資料相容性。
@@ -435,10 +452,11 @@ Bin resolution probe 只證明 local artifact 與 bin entry 可用。另見 [Iss
 
 真手機經 Tailnet／Tailscale Serve 的 list/detail、touch、back gesture、Session navigation、帳密與 stop confirmation 仍是 `NOT VERIFIED`，但使用者已明確同意移出 Issue #11 本輪 PR 必要條件。上方 desktop 與 `390 × 844` mobile viewport 證據維持有效；它們不代表真手機或 Tailnet 已通過。
 
-## 延伸文件
+### Further Reading
 
 - [Domain model](agents/domain.md)
 - [Issue tracker workflow](agents/issue-tracker.md)
 - [Launcher and authentication contract](security/launcher-contract.md)
 - [Tailnet access runbook](security/tailnet-access.md)
 - [Mobile acceptance checklist](security/mobile-acceptance.md)
+- [Technical Reference](reference.md)

@@ -20,7 +20,11 @@
 
 - `README.md`
 - `CONTEXT.md`
+- `docs/user-guide.md`
 - `docs/development.md`
+- `docs/reference.md`
+- `docs/diagrams/*.html`（可編輯 source）
+- `docs/diagrams/*.svg`（GitHub inline export）
 - `docs/security/launcher-contract.md`
 - `docs/security/tailnet-access.md`
 - `docs/security/mobile-acceptance.md`

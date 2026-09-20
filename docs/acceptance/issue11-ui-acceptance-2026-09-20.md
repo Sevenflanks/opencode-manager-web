@@ -15,7 +15,7 @@
 
 因此下列證據可驗證正式 UI 的可見文案、互動、layout 與前端 request 路徑，但**不代表**真實 Manager、SQLite、DPAPI credential store、OpenCode Instance／Session、provider、真手機或 Tailnet 已通過。這次沒有建立真 OpenCode Session，也沒有接觸既有 data、Session、service 或 port。
 
-使用手冊的用途、步驟與預期結果已同步至 [`docs/user-guide.md`](../user-guide.md#11-驗收證據與限制)。所有圖說均標示「正式 Vue UI，隔離 mock backend，非真 Manager/Tailnet實測」。
+使用手冊的日常操作步驟見 [`Usage`](../user-guide.md#usage)，設定與安全界線見 [`Configuration`](../user-guide.md#configuration)。所有圖說均標示「正式 Vue UI，隔離 mock backend，非真 Manager/Tailnet實測」。
 
 Scope 判定：使用者已明確同意將真手機與 Tailnet 驗收移出 Issue #11 本輪 PR 的必要條件。既有 desktop 與 `390 × 844` mobile viewport 證據保留，但不改稱真機通過；真實 OpenCode TUI 啟動與 `-s` 指定 Session 路徑仍是本輪必要條件，且不在這份 mock UI 報告的已通過範圍內。
 

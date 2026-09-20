@@ -1,31 +1,10 @@
-<!doctype html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OMW 三種停止操作</title>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif+TC:wght@400&family=Noto+Sans+TC:wght@400;500;600&display=swap" rel="stylesheet">
-  <style>
-    :root { --paper:#f5f5f5; --ink:#2d3142; --muted:#4f5d75; --soft:#7a8399; --accent:#eb6c36; --rule:rgba(45,49,66,.12); }
-    * { box-sizing:border-box; }
-    body { margin:0; background:var(--paper); color:var(--ink); font-family:'Geist','Noto Sans TC','Microsoft JhengHei',sans-serif; }
-    main { max-width:1040px; margin:0 auto; padding:32px 40px 24px; }
-    .eyebrow { margin:0 0 4px; color:var(--soft); font:500 8px/1 'Geist Mono',monospace; letter-spacing:.18em; }
-    h1 { margin:0; font:400 28px/1.1 'Instrument Serif','Noto Serif TC',serif; }
-    .subtitle { margin:8px 0 20px; color:var(--muted); font-size:13px; }
-    svg { display:block; width:100%; height:auto; }
-    footer { border-top:1px solid var(--rule); margin-top:16px; padding-top:12px; color:var(--soft); font:400 9px/1.5 'Geist Mono',monospace; }
-  </style>
-</head>
-<body>
-<main>
-  <p class="eyebrow">FLOWCHART · DOC-INLINE · SIMPLIFIED · MIXED AUDIENCE</p>
-  <h1>OMW 三種停止操作</h1>
-  <p class="subtitle">先決定想停止的是管理介面、背景 Instance，還是只想從清單隱藏追蹤紀錄。</p>
-  <svg width="960" height="600" viewBox="0 0 960 600" role="img" aria-labelledby="omw-stop-title omw-stop-desc">
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Source: omw-stop-semantics.html; edit the HTML source and re-export rather than editing this generated SVG. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="600" viewBox="0 0 960 600" role="img" aria-labelledby="omw-stop-title omw-stop-desc">
     <title id="omw-stop-title">OMW 三種停止操作</title>
     <desc id="omw-stop-desc">流程圖比較停止 OMW、停止背景執行個體與停止追蹤三種操作，列出每一種真正停止及保留的項目。</desc>
     <defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');</style>
       <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4f5d75"/></marker>
       <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#eb6c36"/></marker>
       <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#2e5aa8"/></marker>
@@ -46,7 +25,7 @@
     <text x="480" y="88" fill="#4f5d75" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">三種操作不可互相替代</text>
 
     <g>
-      <rect x="52" y="184" width="240" height="80" rx="6" fill="rgba(235,108,54,.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <rect x="52" y="184" width="240" height="80" rx="6" fill="#eb6c36" fill-opacity=".08" stroke="#eb6c36" stroke-width="1.2"/>
       <text x="68" y="204" fill="#eb6c36" font-size="10" font-family="'Geist Mono',monospace">MANAGER</text>
       <text x="172" y="228" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">設定 → 停止 OMW</text>
       <text x="172" y="250" fill="#4f5d75" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">只關閉管理介面</text>
@@ -68,7 +47,7 @@
       <rect x="40" y="316" width="264" height="192" rx="6" fill="#fff" stroke="#eb6c36"/>
       <text x="56" y="340" fill="#eb6c36" font-size="10" font-family="'Geist Mono',monospace">STOPS</text>
       <text x="116" y="340" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif">Manager、Web、狀態觀察</text>
-      <line x1="56" y1="356" x2="288" y2="356" stroke="rgba(45,49,66,.12)"/>
+      <line x1="56" y1="356" x2="288" y2="356" stroke="#2d3142" stroke-opacity=".12"/>
       <text x="56" y="380" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace">KEEPS</text>
       <text x="56" y="406" fill="#2d3142" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif">所有 Local TUI 與背景 Instance</text>
       <text x="56" y="430" fill="#2d3142" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif">Sessions、Project files、資料目錄</text>
@@ -79,7 +58,7 @@
       <rect x="348" y="316" width="264" height="192" rx="6" fill="#fff" stroke="#2d3142"/>
       <text x="364" y="340" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace">STOPS</text>
       <text x="424" y="340" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif">該背景 Instance 與工作</text>
-      <line x1="364" y1="356" x2="596" y2="356" stroke="rgba(45,49,66,.12)"/>
+      <line x1="364" y1="356" x2="596" y2="356" stroke="#2d3142" stroke-opacity=".12"/>
       <text x="364" y="380" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace">KEEPS</text>
       <text x="364" y="406" fill="#2d3142" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif">OMW Manager 與其他 Instances</text>
       <text x="364" y="430" fill="#2d3142" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif">OpenCode Sessions、Project files</text>
@@ -90,7 +69,7 @@
       <rect x="656" y="316" width="264" height="192" rx="6" fill="#fff" stroke="#2d3142"/>
       <text x="672" y="340" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace">STOPS</text>
       <text x="732" y="340" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif">主列表中的 tracking 顯示</text>
-      <line x1="672" y1="356" x2="904" y2="356" stroke="rgba(45,49,66,.12)"/>
+      <line x1="672" y1="356" x2="904" y2="356" stroke="#2d3142" stroke-opacity=".12"/>
       <text x="672" y="380" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace">KEEPS</text>
       <text x="672" y="406" fill="#2d3142" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif">process、工作、保留連線埠</text>
       <text x="672" y="430" fill="#2d3142" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif">Sessions、Project files、Manager</text>
@@ -98,12 +77,8 @@
       <text x="672" y="488" fill="#7a8399" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif">這不是 Stop process</text>
     </g>
 
-    <line x1="40" y1="548" x2="920" y2="548" stroke="rgba(45,49,66,.12)"/>
-    <rect x="40" y="564" width="18" height="12" rx="2" fill="rgba(235,108,54,.08)" stroke="#eb6c36"/>
+    <line x1="40" y1="548" x2="920" y2="548" stroke="#2d3142" stroke-opacity=".12"/>
+    <rect x="40" y="564" width="18" height="12" rx="2" fill="#eb6c36" fill-opacity=".08" stroke="#eb6c36"/>
     <text x="68" y="574" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace">MANAGER-ONLY STOP</text>
     <text x="288" y="574" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace">ALL THREE KEEP OPENCODE SESSIONS AND PROJECT FILES</text>
   </svg>
-  <footer>STATIC FLOWCHART · THREE DISTINCT OPERATIONS · CONFIRM IMPACT BEFORE ACTING</footer>
-</main>
-</body>
-</html>

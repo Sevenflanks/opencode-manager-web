@@ -1,31 +1,10 @@
-<!doctype html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OMW 本機與 Tailnet 架構</title>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif+TC:wght@400&family=Noto+Sans+TC:wght@400;500;600&display=swap" rel="stylesheet">
-  <style>
-    :root { --paper:#f5f5f5; --ink:#2d3142; --muted:#4f5d75; --soft:#7a8399; --accent:#eb6c36; --link:#2e5aa8; --rule:rgba(45,49,66,.12); }
-    * { box-sizing:border-box; }
-    body { margin:0; background:var(--paper); color:var(--ink); font-family:'Geist','Noto Sans TC','Microsoft JhengHei',sans-serif; }
-    main { max-width:1040px; margin:0 auto; padding:32px 40px 24px; }
-    .eyebrow { margin:0 0 4px; color:var(--soft); font:500 8px/1 'Geist Mono',monospace; letter-spacing:.18em; }
-    h1 { margin:0; font:400 28px/1.1 'Instrument Serif','Noto Serif TC',serif; }
-    .subtitle { margin:8px 0 20px; color:var(--muted); font-size:13px; }
-    svg { display:block; width:100%; height:auto; }
-    footer { border-top:1px solid var(--rule); margin-top:16px; padding-top:12px; color:var(--soft); font:400 9px/1.5 'Geist Mono',monospace; }
-  </style>
-</head>
-<body>
-<main>
-  <p class="eyebrow">ARCHITECTURE · DOC-INLINE · BALANCED · MIXED AUDIENCE</p>
-  <h1>OMW 本機與 Tailnet 架構</h1>
-  <p class="subtitle">只有 OMW wrapper 會嘗試登錄 OpenCode；原生 <code>opencode</code> 命令不會被自動接管。</p>
-  <svg width="960" height="600" viewBox="0 0 960 600" role="img" aria-labelledby="omw-architecture-title omw-architecture-desc">
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Source: omw-architecture.html; edit the HTML source and re-export rather than editing this generated SVG. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="600" viewBox="0 0 960 600" role="img" aria-labelledby="omw-architecture-title omw-architecture-desc">
     <title id="omw-architecture-title">OMW 本機與 Tailnet 架構</title>
     <desc id="omw-architecture-desc">架構圖顯示本機瀏覽器、OMW wrapper、Manager、OpenCode 執行個體、資料目錄與 Tailnet Serve 邊界，並標示原生 OpenCode 不會被自動接管。</desc>
     <defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');</style>
       <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4f5d75"/></marker>
       <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#eb6c36"/></marker>
       <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#2e5aa8"/></marker>
@@ -33,9 +12,9 @@
     <rect width="960" height="600" fill="#f5f5f5"/>
 
     <!-- Trust zones -->
-    <rect x="40" y="40" width="640" height="420" rx="8" fill="rgba(45,49,66,.02)" stroke="rgba(45,49,66,.10)"/>
+    <rect x="40" y="40" width="640" height="420" rx="8" fill="#2d3142" fill-opacity=".02" stroke="#2d3142" stroke-opacity=".10"/>
     <text x="56" y="64" fill="#7a8399" font-size="10" font-family="'Geist Mono',monospace" letter-spacing=".12em">WINDOWS LOCAL</text>
-    <rect x="712" y="40" width="208" height="420" rx="8" fill="rgba(46,90,168,.03)" stroke="rgba(46,90,168,.25)" stroke-dasharray="4,4"/>
+    <rect x="712" y="40" width="208" height="420" rx="8" fill="#2e5aa8" fill-opacity=".03" stroke="#2e5aa8" stroke-opacity=".25" stroke-dasharray="4,4"/>
     <text x="728" y="64" fill="#2e5aa8" font-size="10" font-family="'Geist Mono',monospace" letter-spacing=".12em">TAILNET ONLY</text>
 
     <!-- Connectors -->
@@ -51,13 +30,13 @@
 
     <!-- Nodes -->
     <g>
-      <rect x="72" y="100" width="168" height="64" rx="6" fill="rgba(79,93,117,.10)" stroke="#7a8399"/>
+      <rect x="72" y="100" width="168" height="64" rx="6" fill="#4f5d75" fill-opacity=".10" stroke="#7a8399"/>
       <text x="88" y="120" fill="#7a8399" font-size="10" font-family="'Geist Mono',monospace">BROWSER</text>
       <text x="156" y="142" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">本機瀏覽器</text>
       <text x="156" y="158" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace" text-anchor="middle">127.0.0.1:4174</text>
     </g>
     <g>
-      <rect x="336" y="88" width="208" height="88" rx="6" fill="rgba(235,108,54,.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <rect x="336" y="88" width="208" height="88" rx="6" fill="#eb6c36" fill-opacity=".08" stroke="#eb6c36" stroke-width="1.2"/>
       <text x="352" y="108" fill="#eb6c36" font-size="10" font-family="'Geist Mono',monospace">MANAGER</text>
       <text x="440" y="136" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">OMW Manager + Web</text>
       <text x="440" y="158" fill="#4f5d75" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">追蹤、狀態與生命週期</text>
@@ -69,7 +48,7 @@
       <text x="156" y="296" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace" text-anchor="middle">omw opencode</text>
     </g>
     <g>
-      <rect x="72" y="360" width="168" height="72" rx="6" fill="rgba(45,49,66,.03)" stroke="rgba(45,49,66,.30)"/>
+      <rect x="72" y="360" width="168" height="72" rx="6" fill="#2d3142" fill-opacity=".03" stroke="#2d3142" stroke-opacity=".30"/>
       <text x="88" y="380" fill="#7a8399" font-size="10" font-family="'Geist Mono',monospace">NATIVE</text>
       <text x="156" y="404" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">原生 OpenCode</text>
       <text x="156" y="422" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace" text-anchor="middle">opencode ...</text>
@@ -82,35 +61,31 @@
       <text x="536" y="318" fill="#7a8399" font-size="11" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">Session 仍由 OpenCode 保存</text>
     </g>
     <g>
-      <rect x="336" y="360" width="208" height="72" rx="6" fill="rgba(45,49,66,.05)" stroke="#4f5d75"/>
+      <rect x="336" y="360" width="208" height="72" rx="6" fill="#2d3142" fill-opacity=".05" stroke="#4f5d75"/>
       <text x="352" y="380" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace">DATA</text>
       <text x="440" y="404" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">固定使用者資料</text>
       <text x="440" y="422" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace" text-anchor="middle">%LOCALAPPDATA%\OMW</text>
     </g>
     <g>
-      <rect x="744" y="100" width="144" height="64" rx="6" fill="rgba(79,93,117,.10)" stroke="#7a8399"/>
+      <rect x="744" y="100" width="144" height="64" rx="6" fill="#4f5d75" fill-opacity=".10" stroke="#7a8399"/>
       <text x="760" y="120" fill="#7a8399" font-size="10" font-family="'Geist Mono',monospace">BROWSER</text>
       <text x="816" y="146" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">手機瀏覽器</text>
     </g>
     <g>
-      <rect x="744" y="232" width="144" height="88" rx="6" fill="rgba(46,90,168,.04)" stroke="#2e5aa8"/>
+      <rect x="744" y="232" width="144" height="88" rx="6" fill="#2e5aa8" fill-opacity=".04" stroke="#2e5aa8"/>
       <text x="760" y="252" fill="#2e5aa8" font-size="10" font-family="'Geist Mono',monospace">PROXY</text>
       <text x="816" y="280" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">Tailscale Serve</text>
       <text x="816" y="302" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace" text-anchor="middle">HTTPS → loopback</text>
     </g>
 
-    <rect x="40" y="476" width="640" height="44" rx="6" fill="rgba(235,108,54,.08)" stroke="rgba(235,108,54,.55)" stroke-dasharray="4,4"/>
+    <rect x="40" y="476" width="640" height="44" rx="6" fill="#eb6c36" fill-opacity=".08" stroke="#eb6c36" stroke-opacity=".55" stroke-dasharray="4,4"/>
     <text x="360" y="503" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">原生 opencode 不會被攔截；只有 OMW wrapper 會介入</text>
 
-    <line x1="40" y1="548" x2="920" y2="548" stroke="rgba(45,49,66,.12)"/>
-    <rect x="40" y="564" width="18" height="12" rx="2" fill="rgba(235,108,54,.08)" stroke="#eb6c36"/>
+    <line x1="40" y1="548" x2="920" y2="548" stroke="#2d3142" stroke-opacity=".12"/>
+    <rect x="40" y="564" width="18" height="12" rx="2" fill="#eb6c36" fill-opacity=".08" stroke="#eb6c36"/>
     <text x="68" y="574" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace">OMW CONTROL</text>
     <line x1="224" y1="570" x2="256" y2="570" stroke="#2e5aa8" marker-end="url(#arrow-link)"/>
     <text x="268" y="574" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace">HTTP / HTTPS</text>
     <line x1="432" y1="570" x2="464" y2="570" stroke="#4f5d75" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
     <text x="476" y="574" fill="#4f5d75" font-size="10" font-family="'Geist Mono',monospace">NATIVE / UNMANAGED</text>
   </svg>
-  <footer>STATIC DIAGRAM · DOC-INLINE SOURCE · NO RUNTIME OR MOBILE VERIFICATION CLAIM</footer>
-</main>
-</body>
-</html>
