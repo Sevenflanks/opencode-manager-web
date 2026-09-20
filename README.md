@@ -4,6 +4,9 @@ OMW 是 Windows 本機的 OpenCode 管理介面，用來檢視 Project、Instanc
 
 > [!IMPORTANT]
 > `@sevenflanks/omw` 尚未確認已發布至 public npm registry。目前請使用這個 repository 建出的 local `.tgz`；`npx @sevenflanks/omw` 不是已驗證的安裝步驟。
+> 本節的 local package 命令是日常／configured product flow，會使用 `%LOCALAPPDATA%\OMW`。Repository
+> development 請改用 `npm run dev:credentials`、`npm run dev` 或 `npm run dev:omw -- ...`；完整隔離規則見
+> [開發文件](docs/development.md#隔離的開發測試與驗收入口)。
 
 ## Local package 快速開始
 

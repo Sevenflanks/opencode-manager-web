@@ -10,6 +10,7 @@ import { chromium, type Browser, type Page } from "playwright-core"
 import type { ConnectivityInfo, ManagedInstance, SessionMetadata } from "@omw/contracts"
 import { buildApp } from "../src/app.js"
 import { ManagerError } from "../src/errors.js"
+import { prepareIsolatedEnvironment } from "../src/isolation.js"
 import { ManagerRepository, type InstanceRecord } from "../src/repository.js"
 import { ManagerService } from "../src/service.js"
 import {
@@ -1835,7 +1836,13 @@ test("mobile UI drives real Manager API Start, official Open URL, and safe Stop"
   ])
   await writeFile(path.join(config, "opencode.json"), "{\"plugin\":[]}\n", "utf8")
   const browserEnvironment = createBrowserEnvironment(sandbox)
-  const openCodeEnvironment = createOpenCodeEnvironment(sandbox, config)
+  const isolation = await prepareIsolatedEnvironment({
+    mode: "test",
+    root: sandbox,
+    configFile: path.join(config, "opencode.json"),
+    sourceEnvironment: process.env,
+  })
+  const openCodeEnvironment = isolation.environment
   const repository = new ManagerRepository(path.join(sandbox, "manager.sqlite"))
   const runtime = new OpenCodeRuntime({ executable: openCodeExecutable, dataDirectory: data, environment: openCodeEnvironment })
   const service = new ManagerService(repository, runtime)
@@ -2106,38 +2113,6 @@ function freePort(): Promise<number> {
       server.close((error) => error ? reject(error) : resolve(typeof address === "object" && address ? address.port : 0))
     })
   })
-}
-
-function createOpenCodeEnvironment(sandbox: string, config: string): NodeJS.ProcessEnv {
-  const home = path.join(sandbox, "home")
-  const temporary = path.join(home, "Temp")
-  return {
-    ...baseProcessEnvironment(),
-    HOME: home,
-    USERPROFILE: home,
-    TEMP: temporary,
-    TMP: temporary,
-    OPENCODE_TEST_HOME: home,
-    XDG_CONFIG_HOME: path.join(sandbox, "xdg-config"),
-    XDG_DATA_HOME: path.join(sandbox, "xdg-data"),
-    XDG_CACHE_HOME: path.join(sandbox, "xdg-cache"),
-    XDG_STATE_HOME: path.join(sandbox, "xdg-state"),
-    OPENCODE_DB: path.join(sandbox, "opencode.sqlite"),
-    OPENCODE_CONFIG: path.join(config, "opencode.json"),
-    OPENCODE_CONFIG_DIR: config,
-    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-    OPENCODE_PURE: "1",
-    OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-    OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
-    OPENCODE_DISABLE_CLAUDE_CODE: "1",
-    OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: "1",
-    OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1",
-    OPENCODE_DISABLE_MODELS_FETCH: "1",
-    OPENCODE_DISABLE_AUTOUPDATE: "1",
-    OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
-    OPENCODE_DISABLE_PRUNE: "1",
-    OPENCODE_AUTO_SHARE: "false",
-  }
 }
 
 function createBrowserEnvironment(sandbox: string): NodeJS.ProcessEnv {

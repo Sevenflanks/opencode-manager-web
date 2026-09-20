@@ -8,6 +8,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { buildApp } from "../src/app.js"
+import { prepareIsolatedEnvironment } from "../src/isolation.js"
 import { ManagerRepository, type InstanceRecord } from "../src/repository.js"
 import { OpenCodeRuntime } from "../src/runtime.js"
 import { ManagerService } from "../src/service.js"
@@ -106,10 +107,11 @@ test("Manager restart reconciles two real OpenCode processes and refuses stale i
   const data = path.join(sandbox, "data")
   const database = path.join(sandbox, "manager.sqlite")
   await Promise.all([mkdir(project, { recursive: true }), mkdir(config, { recursive: true }), mkdir(data, { recursive: true })])
-  await writeFile(path.join(config, "opencode.json"), "{\"plugin\":[]}\n", "utf8")
-  isolateEnvironment(sandbox, config)
+  const configFile = path.join(config, "opencode.json")
+  await writeFile(configFile, "{\"plugin\":[]}\n", "utf8")
+  const isolation = await prepareIsolatedEnvironment({ mode: "test", root: sandbox, configFile, sourceEnvironment: process.env })
 
-  const runtime = new OpenCodeRuntime({ executable, dataDirectory: data })
+  const runtime = new OpenCodeRuntime({ executable, dataDirectory: data, environment: isolation.environment })
   let repository = new ManagerRepository(database)
   let service = new ManagerService(repository, runtime)
   let app = buildApp({ service, authority, allowedOrigins: new Set([mutationHeaders.origin]) })
@@ -129,7 +131,7 @@ test("Manager restart reconciles two real OpenCode processes and refuses stale i
     assert.equal(await portReachable(safeRecords[1]!.port), true)
 
     repository = new ManagerRepository(database)
-    service = new ManagerService(repository, new OpenCodeRuntime({ executable, dataDirectory: data }))
+    service = new ManagerService(repository, new OpenCodeRuntime({ executable, dataDirectory: data, environment: isolation.environment }))
     await service.reconcile()
     app = buildApp({ service, authority, allowedOrigins: new Set([mutationHeaders.origin]) })
     assert.deepEqual(repository.listInstances().map((item) => item.state).sort(), ["ready", "ready"])
@@ -178,36 +180,6 @@ async function startInstance(app: ReturnType<typeof buildApp>, directory: string
   const response = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory } })
   assert.equal(response.statusCode, 201, response.body)
   return response.json()
-}
-
-function isolateEnvironment(sandbox: string, config: string): void {
-  const sensitive = /^(?:OPENCODE|OTUI)|(?:_API_KEY|_TOKEN|_SECRET|_PASSWORD|_CREDENTIAL|AUTH|^AWS_|^AZURE_|^GOOGLE_|^GITHUB_|^GITLAB_|^ANTHROPIC_|^OPENAI_)/i
-  for (const name of Object.keys(process.env)) if (sensitive.test(name)) delete process.env[name]
-  const home = path.join(sandbox, "home")
-  Object.assign(process.env, {
-    HOME: home,
-    USERPROFILE: home,
-    OPENCODE_TEST_HOME: home,
-    XDG_CONFIG_HOME: path.join(sandbox, "xdg-config"),
-    XDG_DATA_HOME: path.join(sandbox, "xdg-data"),
-    XDG_CACHE_HOME: path.join(sandbox, "xdg-cache"),
-    XDG_STATE_HOME: path.join(sandbox, "xdg-state"),
-    OPENCODE_DB: path.join(sandbox, "opencode.sqlite"),
-    OPENCODE_CONFIG: path.join(config, "opencode.json"),
-    OPENCODE_CONFIG_DIR: config,
-    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-    OPENCODE_PURE: "1",
-    OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-    OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
-    OPENCODE_DISABLE_CLAUDE_CODE: "1",
-    OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: "1",
-    OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1",
-    OPENCODE_DISABLE_MODELS_FETCH: "1",
-    OPENCODE_DISABLE_AUTOUPDATE: "1",
-    OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
-    OPENCODE_DISABLE_PRUNE: "1",
-    OPENCODE_AUTO_SHARE: "false",
-  })
 }
 
 function listen(server: net.Server): Promise<number> {

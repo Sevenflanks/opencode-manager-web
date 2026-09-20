@@ -172,9 +172,10 @@ test("Manager CLI starts one detached Manager and waits for exact readiness", as
 })
 
 test("Manager CLI rejects a foreign default-port listener and never replaces it", async () => {
-  const { dependencies, spawned } = fixture(["foreign"])
+  const { dependencies, spawned, ownerActions } = fixture(["foreign"])
   await assert.rejects(runManagerCli([], { OMW_DATA_DIR: "C:\\fixture\\data" }, dependencies), /非 OMW Manager/)
   assert.equal(spawned.length, 0)
+  assert.deepEqual(ownerActions, [])
 })
 
 test("loopback occupancy detection recognizes a foreign listener", async (t) => {
