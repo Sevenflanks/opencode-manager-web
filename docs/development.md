@@ -178,7 +178,7 @@ metadata 還原 binding。
 
 ## Runtime data
 
-- `OMW_DATA_DIR`：預設 `<cwd>/.omw`
+- `OMW_DATA_DIR`：預設 `%LOCALAPPDATA%\OMW`；只有明確設定時才使用 override
 - SQLite：`<OMW_DATA_DIR>/omw.sqlite`
 - OpenCode child stdout/stderr：production 預設 `ignore`，不寫入 OMW data directory、SQLite 或 API
 - Runtime diagnostics：不執行為 redaction 目的的全表批次清除或資料 migration。讀取 free-form
@@ -186,10 +186,10 @@ metadata 還原 binding。
   `stderr_summary` 不送至 UI，也不由診斷清理流程改寫。`error` 是 Instance 的目前診斷狀態，不是
   歷史 audit log；因此 reconcile、啟動或停止等正常狀態更新會同步更新 `error`。需要隔離開發資料時
   請改用新的 `OMW_DATA_DIR`
-- `OMW_OPENCODE_EXECUTABLE`：必填；不接受 API 傳入 executable
+- `OMW_OPENCODE_EXECUTABLE`：可選；未設定時依序從已知安裝目錄與 `PATH` 尋找真正的 `opencode.exe`，不接受 API 傳入 executable
 - `OMW_INSTANCE_PORT_MIN/MAX`：成對設定的本機 fixed pool；預設 `42000-42099`，最多 128 ports
 - `OMW_ALLOWED_ORIGINS`：可選、逗號分隔的 loopback origins；remote mode 另只接受核准的 public HTTPS origin
-- `<OMW_DATA_DIR>/credentials.dpapi`：互動式 `npm run credentials:setup -w @omw/manager` 建立的 current-user DPAPI ciphertext，只保存 OMW Basic credential 與 random launcher token
+- `<OMW_DATA_DIR>/credentials.dpapi`：第一次在互動式終端執行 `omw` 時建立的 current-user DPAPI ciphertext，只保存 OMW Basic credential 與 random launcher token
 
 未設定 `OMW_REMOTE_ACCESS=1` 時仍是未啟用 production auth 的 loopback development mode。Remote
 mode 需要 DPAPI credentials、明確的 expected loopback origin、tailnet DNS host、Manager HTTPS port、
@@ -202,44 +202,31 @@ Tailnet policy 將 OpenCode ports 限制為 user devices。
 
 ## Local TUI launcher
 
-先以目前 Windows 使用者建立開發用 DPAPI credential store；setup 只會互動詢問 OMW Basic
-username/password，並產生不顯示的獨立 random launcher token。不可把正式 credentials 放入
-tracked 檔案：
-
-```powershell
-$env:OMW_DATA_DIR = 'C:\absolute\path\to\omw-data'
-npm run credentials:setup -w @omw/manager
-$env:OMW_LAUNCHER_INTEGRATION = '1'
-$env:OMW_OPENCODE_EXECUTABLE = 'C:\absolute\path\to\opencode.exe'
-npm run dev
-```
-
-從 repository root 執行 `npm ci` 後，先執行 `npm run build`，再直接呼叫已編譯的 launcher，
-不安裝或修改使用者／系統 `PATH`：
+`@sevenflanks/omw` 尚未確認已發布至 public npm registry。從 repository root 建立 local package，
+再透過該 package 的 `omw` bin 初始化 credentials 與啟動 Manager；不可把正式 credentials 放入
+tracked 檔案，也不要改用舊的 `credentials:setup` 開發 script：
 
 ```powershell
 # PowerShell，工作目錄為 repository root
 npm ci
-npm run build
-node .\packages\launcher\dist\src\cli.js --port=42001 C:\work\project
+$packageDir = Join-Path $env:TEMP 'omw-local-package'
+New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+npm pack --pack-destination $packageDir -w @sevenflanks/omw
+$omwPackage = Join-Path $packageDir 'sevenflanks-omw-0.1.0.tgz'
+
+# 第一次執行會互動建立 credentials；之後會重用既有 Manager。
+npm exec --yes --package="$omwPackage" -- omw
+npm exec --yes --package="$omwPackage" -- omw opencode 'C:\work\project' -s '<session-id>'
 ```
 
-```bat
-rem cmd.exe，工作目錄為 repository root
-npm ci
-npm run build
-node .\packages\launcher\dist\src\cli.js --port 42001 C:\work\project
-```
+沒有提供 Project 時，`omw opencode` 使用目前工作目錄；`-s` 可省略。若 `opencode.exe` 不在已知
+安裝目錄或 `PATH`，再以 `OMW_OPENCODE_EXECUTABLE` 指定可信任 `.exe` 的絕對路徑。
 
-`npm ci` 在 build 前不保證產生 `node_modules/.bin/omw-opencode.cmd`，因為 package
-`bin` target 可能尚不存在。若安裝時已產生該 shim，可選擇使用它；直接執行上述編譯檔是
-不依賴 npm shim 的穩定方式。
-
-Manager 與 launcher 必須使用相同 `OMW_DATA_DIR`、Windows 使用者及
-`OMW_OPENCODE_EXECUTABLE`。`omw-opencode` 不取代原本的 `opencode`。Known subcommands、
+Manager 與 launcher 必須使用相同 `OMW_DATA_DIR` 與 Windows 使用者。`omw opencode` 不取代原本的 `opencode`。Known subcommands、
 `--help`、`--version` 與 non-loopback hostname 會原始透傳且不登錄；Manager/DPAPI 不可用則
-fail-open 原始 argv，`OMW_REQUIRED=1` 才以 exit 70 fail-closed。每次 launcher HTTP request 最多
-1,500 ms；reservation TTL 為 10,000 ms；Local TUI 的 15,000 ms readiness 在背景執行。
+fail-open 原始 argv；`OMW_REQUIRED=1`、使用者主動取消初始化，或缺少設定且不在互動式 TTY 時
+會以 exit 70 fail-closed。每次 launcher HTTP request 最多 1,500 ms；reservation TTL 為 10,000 ms；
+Local TUI 的 15,000 ms readiness 在背景執行。
 成功的 managed headless/TUI launch 會明確移除 parent environment 的
 `OPENCODE_SERVER_USERNAME` 與 `OPENCODE_SERVER_PASSWORD`；native bypass 與 fail-open 則保留 user
 原始 environment，讓獨立原生流程仍可自行明示 OpenCode auth。舊 DPAPI payload 的 `openCode`

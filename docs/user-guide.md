@@ -151,7 +151,7 @@ $env:OMW_REQUIRED = '1'
 npm exec --yes --package="$omwPackage" -- omw opencode
 ```
 
-`OMW_REQUIRED=1` 只改變 bootstrap failure 的結果。首次設定缺失、設定取消或 DPAPI credentials 無法讀取，本來就會直接結束，不會 fail-open。
+`OMW_REQUIRED=1` 會讓任何 bootstrap failure 直接結束。未設定 `OMW_REQUIRED=1` 時，首次設定缺失或使用者取消初始化仍不會 fail-open；既有 credentials 損毀、DPAPI 無法解密或其他 Manager bootstrap failure 則會顯示診斷並啟動未受管理的 native OpenCode。
 
 ## 5. 使用 Web 管理介面
 

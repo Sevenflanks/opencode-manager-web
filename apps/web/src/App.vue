@@ -1413,7 +1413,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
 
     <section v-if="managerStopped" class="manager-stopped" role="status">
       <PowerIcon />
-      <div><strong>OMW Manager 已停止</strong><p>OpenCode TUI、背景執行個體、Sessions 與 Project 工作仍繼續運作。重新執行 <code>npx @sevenflanks/omw</code> 可恢復管理介面。</p></div>
+      <div><strong>OMW Manager 已停止</strong><p>OpenCode TUI、背景執行個體、Sessions 與 Project 工作仍繼續運作。重新執行 <code>omw</code> 可恢復管理介面。</p></div>
     </section>
 
     <section class="connectivity" :data-tone="connectivityTone" aria-labelledby="connectivity-title" :aria-busy="connectivityLoading">

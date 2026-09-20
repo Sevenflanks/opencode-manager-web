@@ -7,7 +7,7 @@ import net from "node:net"
 import path from "node:path"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
-import { resolveCredentialHelper, resolveDataDirectory, resolveExecutable, runDpapiAction, runLauncher } from "./cli.js"
+import { resolveCredentialHelper, resolveDataDirectory, resolveExecutable, runDpapiAction, runLauncher, safeMessage } from "./cli.js"
 
 const STARTUP_DEADLINE_MS = 10_000
 const INITIALIZATION_DEADLINE_MS = 30_000
@@ -16,6 +16,20 @@ const OWNED_PROCESS_STOP_DEADLINE_MS = 2_000
 export interface LocalCredentials {
   manager: { username: string; password: string }
   launcherToken: string
+}
+
+export class CredentialInitializationCancelledError extends Error {
+  constructor() {
+    super("OMW 初始化已取消，可直接重試。")
+    this.name = "CredentialInitializationCancelledError"
+  }
+}
+
+export class CredentialSetupRequiredError extends Error {
+  constructor() {
+    super("缺少 OMW 初始設定；請先在本機互動式終端執行 omw。")
+    this.name = "CredentialSetupRequiredError"
+  }
 }
 
 export interface ManagerCliDependencies {
@@ -55,22 +69,28 @@ export async function runManagerCli(
   dependencies: ManagerCliDependencies = defaultDependencies,
 ): Promise<number> {
   const wrapperArguments = argv[0] === "opencode" ? argv.slice(1) : null
-  if (argv.length && !wrapperArguments) throw new Error("未知命令；OpenCode TUI 請使用 npx @sevenflanks/omw opencode [project] [-s session]。")
-  const dataDirectory = resolveDataDirectory(environment)
-  // Missing, cancelled, or unreadable credentials are never a fail-open condition.
-  const credentials = await dependencies.ensureCredentials(dataDirectory, environment)
-  const port = parsePort(environment.OMW_PORT ?? "4174")
-  const origin = `http://127.0.0.1:${port}`
+  if (argv.length && !wrapperArguments) throw new Error("未知命令；OpenCode TUI 請使用 omw opencode [project] [-s session]。")
+  let ready: { dataDirectory: string; origin: string } | undefined
   try {
+    const dataDirectory = resolveDataDirectory(environment)
+    const credentials = await dependencies.ensureCredentials(dataDirectory, environment)
+    const port = parsePort(environment.OMW_PORT ?? "4174")
+    const origin = `http://127.0.0.1:${port}`
     await ensureManagerReady(dataDirectory, origin, port, credentials, environment, dependencies)
+    ready = { dataDirectory, origin }
   } catch (cause) {
-    if (!wrapperArguments || environment.OMW_REQUIRED === "1") throw cause
-    dependencies.diagnostic(`OMW Manager bootstrap failed; continuing with native OpenCode: ${errorMessage(cause)}`)
+    if (
+      !wrapperArguments
+      || environment.OMW_REQUIRED === "1"
+      || cause instanceof CredentialInitializationCancelledError
+      || cause instanceof CredentialSetupRequiredError
+    ) throw cause
+    dependencies.diagnostic(`OMW Manager bootstrap failed; continuing with native OpenCode: ${safeMessage(cause)}`)
   }
   if (wrapperArguments) return await dependencies.runOpenCode(wrapperArguments, environment)
-  dependencies.output(`OMW Manager ready: ${origin}`)
-  dependencies.output(`Data directory: ${dataDirectory}`)
-  dependencies.output("OpenCode TUI: npx @sevenflanks/omw opencode [project] [-s session]")
+  dependencies.output(`OMW Manager ready: ${ready!.origin}`)
+  dependencies.output(`Data directory: ${ready!.dataDirectory}`)
+  dependencies.output("OpenCode TUI: omw opencode [project] [-s session]")
   return 0
 }
 
@@ -174,7 +194,7 @@ export async function ensureCredentials(
   const filename = path.join(dataDirectory, "credentials.dpapi")
   if (existsSync(filename)) return await dependencies.load(filename, environment)
   if (!dependencies.isInteractive()) {
-    throw new Error("缺少 OMW 初始設定；請先在本機互動式終端執行 omw。")
+    throw new CredentialSetupRequiredError()
   }
   await mkdir(dataDirectory, { recursive: true })
   const lockFilename = path.join(dataDirectory, "initialize.lock")
@@ -216,7 +236,16 @@ async function loadCredentials(filename: string, environment: NodeJS.ProcessEnv)
     "Unprotect",
     await readFile(filename, "utf8"),
   )
-  return validateCredentials(JSON.parse(plaintext) as unknown)
+  return decodeManagerCredentials(plaintext)
+}
+
+export function decodeManagerCredentials(plaintext: string): LocalCredentials {
+  try {
+    return validateCredentials(JSON.parse(plaintext) as unknown)
+  } catch (cause) {
+    if (cause instanceof SyntaxError) throw new Error("DPAPI credential store 無法解析。")
+    throw cause
+  }
 }
 
 async function saveCredentials(filename: string, credentials: LocalCredentials, environment: NodeJS.ProcessEnv): Promise<void> {
@@ -375,7 +404,7 @@ function readLine(masked: boolean): Promise<string> {
     }
     const onData = (chunk: string): void => {
       for (const character of chunk) {
-        if (character === "\u0003") return finish(new Error("OMW 初始化已取消，可直接重試。"))
+        if (character === "\u0003") return finish(new CredentialInitializationCancelledError())
         if (character === "\r" || character === "\n") return finish()
         if (character === "\u007f" || character === "\b") {
           value = value.slice(0, -1)
@@ -450,7 +479,7 @@ if (process.argv[1] && samePath(fileURLToPath(import.meta.url), process.argv[1])
   runManagerCli(process.argv.slice(2), process.env)
     .then((code) => { process.exitCode = code })
     .catch((cause: unknown) => {
-      process.stderr.write(`omw failed: ${cause instanceof Error ? cause.message : String(cause)}\n`)
+      process.stderr.write(`omw failed: ${safeMessage(cause)}\n`)
       process.exitCode = 70
     })
 }

@@ -7,7 +7,7 @@ import {
 } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
-import { readFile, realpath, stat } from "node:fs/promises"
+import { open, readFile, realpath, stat } from "node:fs/promises"
 import { constants as osConstants } from "node:os"
 import path from "node:path"
 import process from "node:process"
@@ -363,10 +363,31 @@ export async function resolveExecutable(value: string, launcherPath: string, env
   if (!details.isFile()) throw new Error("OpenCode executable 必須是一般檔案。")
   const executable = await realpath(candidate)
   const launcher = existsSync(launcherPath) ? await realpath(launcherPath) : path.resolve(launcherPath)
-  if (samePath(executable, launcher) || /^omw-opencode(?:\.cmd|\.ps1|\.exe)?$/i.test(path.basename(executable))) {
-    throw new Error("OMW_OPENCODE_EXECUTABLE 不可指向 omw-opencode launcher。")
+  if (samePath(executable, launcher) || /^omw(?:-opencode)?(?:\.cmd|\.ps1|\.exe)?$/i.test(path.basename(executable))) {
+    throw new Error("OMW_OPENCODE_EXECUTABLE 不可指向 OMW launcher。")
+  }
+  if (path.extname(executable).toLowerCase() !== ".exe" || !await hasWindowsPeSignature(executable, details.size)) {
+    throw new Error("OpenCode executable 必須是有效的 Windows PE executable，不可使用 script、shim 或一般檔案。")
   }
   return executable
+}
+
+async function hasWindowsPeSignature(filename: string, size: number): Promise<boolean> {
+  if (size < 68) return false
+  const handle = await open(filename, "r")
+  try {
+    // 只驗證 Windows PE container；不執行 user-provided binary 做版本探測。
+    const dosHeader = Buffer.alloc(64)
+    if ((await handle.read(dosHeader, 0, dosHeader.length, 0)).bytesRead !== dosHeader.length) return false
+    if (dosHeader[0] !== 0x4d || dosHeader[1] !== 0x5a) return false
+    const peOffset = dosHeader.readUInt32LE(0x3c)
+    if (peOffset > size - 4) return false
+    const signature = Buffer.alloc(4)
+    if ((await handle.read(signature, 0, signature.length, peOffset)).bytesRead !== signature.length) return false
+    return signature.equals(Buffer.from([0x50, 0x45, 0, 0]))
+  } finally {
+    await handle.close()
+  }
 }
 
 function spawnForeground(executable: string, args: string[], options: SpawnOptions): ChildResult {
@@ -404,7 +425,7 @@ async function request<T>(origin: string, pathname: string, token: string, body:
   return await response.json() as T
 }
 
-function safeMessage(error: unknown): string {
+export function safeMessage(error: unknown): string {
   return (error instanceof Error ? error.message : String(error))
     .replace(/([?&](?:token|key|secret|password)=)[^&\s]+/gi, "$1[REDACTED]")
     .replace(/\b(?:sk|token|secret)[-_][A-Za-z0-9._-]{8,}\b/gi, "[REDACTED]")

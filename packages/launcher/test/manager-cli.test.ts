@@ -6,6 +6,9 @@ import path from "node:path"
 import test from "node:test"
 import { resolveCredentialHelper, resolveDataDirectory, resolveExecutable } from "../src/cli.js"
 import {
+  CredentialInitializationCancelledError,
+  CredentialSetupRequiredError,
+  decodeManagerCredentials,
   ensureCredentials,
   isLoopbackPortOccupied,
   runManagerCli,
@@ -13,6 +16,14 @@ import {
   type LocalCredentials,
   type ManagerCliDependencies,
 } from "../src/manager-cli.js"
+
+function windowsPeFixture(): Buffer {
+  const fixture = Buffer.alloc(68)
+  fixture.write("MZ", 0, "ascii")
+  fixture.writeUInt32LE(64, 0x3c)
+  fixture.write("PE\0\0", 64, "binary")
+  return fixture
+}
 
 function fixture(statuses: Array<"omw" | "absent" | "foreign">): {
   dependencies: ManagerCliDependencies
@@ -78,7 +89,8 @@ test("bare Manager CLI reuses an exact OMW identity without spawning", async () 
   assert.equal(await runManagerCli([], { OMW_DATA_DIR: "C:\\fixture\\data" }, dependencies), 0)
   assert.equal(spawned.length, 0)
   assert.match(output.join("\n"), /OMW Manager ready: http:\/\/127\.0\.0\.1:4174/)
-  assert.match(output.join("\n"), /npx @sevenflanks\/omw opencode/)
+  assert.match(output.join("\n"), /OpenCode TUI: omw opencode/)
+  assert.doesNotMatch(output.join("\n"), /npx/)
 })
 
 test("Manager CLI starts one detached Manager and waits for exact readiness", async (t) => {
@@ -132,14 +144,25 @@ test("opencode subcommand starts Manager before dispatching the native wrapper",
   assert.deepEqual(events, ["ensure", "probe", "probe", "spawn", "probe", "run"])
 })
 
-test("opencode bootstrap keeps initialization strict and only fail-opens general Manager failures", async () => {
-  const strictInitialization = fixture(["omw"])
-  strictInitialization.dependencies.ensureCredentials = async () => { throw new Error("missing non-TTY setup") }
-  await assert.rejects(
-    runManagerCli(["opencode"], { LOCALAPPDATA: "C:\\fixture\\local" }, strictInitialization.dependencies),
-    /missing non-TTY setup/,
-  )
-  assert.doesNotMatch(strictInitialization.events.join(","), /run/)
+test("opencode bootstrap keeps cancelled and non-TTY initialization fail-closed", async () => {
+  for (const cause of [new CredentialInitializationCancelledError(), new CredentialSetupRequiredError()]) {
+    const strictInitialization = fixture(["omw"])
+    strictInitialization.dependencies.ensureCredentials = async () => { throw cause }
+    await assert.rejects(
+      runManagerCli(["opencode"], { LOCALAPPDATA: "C:\\fixture\\local" }, strictInitialization.dependencies),
+      cause,
+    )
+    assert.doesNotMatch(strictInitialization.events.join(","), /run/)
+  }
+})
+
+test("opencode bootstrap fail-opens unreadable credentials and general Manager failures", async () => {
+  const unreadableCredentials = fixture(["omw"])
+  unreadableCredentials.dependencies.ensureCredentials = async () => { throw new Error("DPAPI decrypt failed") }
+  unreadableCredentials.dependencies.runOpenCode = async () => { unreadableCredentials.events.push("run"); return 17 }
+  assert.equal(await runManagerCli(["opencode"], { LOCALAPPDATA: "C:\\fixture\\local" }, unreadableCredentials.dependencies), 17)
+  assert.deepEqual(unreadableCredentials.events, ["run"])
+  assert.match(unreadableCredentials.diagnostics.join("\n"), /bootstrap failed.*DPAPI decrypt failed/)
 
   const failOpen = fixture(["absent"])
   failOpen.dependencies.probe = async () => { throw new Error("Manager unavailable") }
@@ -147,15 +170,40 @@ test("opencode bootstrap keeps initialization strict and only fail-opens general
   assert.equal(await runManagerCli(["opencode"], { LOCALAPPDATA: "C:\\fixture\\local" }, failOpen.dependencies), 23)
   assert.deepEqual(failOpen.events, ["ensure", "run"])
   assert.match(failOpen.diagnostics.join("\n"), /Manager bootstrap failed.*Manager unavailable/)
+})
 
+test("malformed decrypted credentials and bounded diagnostics do not expose secrets", async () => {
+  const decryptedSecret = "credential-password-super-secret-fixture"
+  const malformed = fixture(["omw"])
+  malformed.dependencies.ensureCredentials = async () => decodeManagerCredentials(`{"manager":"${decryptedSecret}`)
+  malformed.dependencies.runOpenCode = async () => 19
+  assert.equal(await runManagerCli(["opencode"], { LOCALAPPDATA: "C:\\fixture\\local" }, malformed.dependencies), 19)
+  assert.match(malformed.diagnostics.join("\n"), /DPAPI credential store 無法解析/)
+  assert.doesNotMatch(malformed.diagnostics.join("\n"), new RegExp(decryptedSecret))
+
+  const diagnosticSecret = "diagnostic-password-super-secret-fixture"
+  const noisy = fixture(["omw"])
+  noisy.dependencies.ensureCredentials = async () => {
+    throw new Error(`request failed?password=${diagnosticSecret}&reason=${"x".repeat(2_000)}`)
+  }
+  noisy.dependencies.runOpenCode = async () => 20
+  assert.equal(await runManagerCli(["opencode"], { LOCALAPPDATA: "C:\\fixture\\local" }, noisy.dependencies), 20)
+  assert.doesNotMatch(noisy.diagnostics.join("\n"), new RegExp(diagnosticSecret))
+  assert.ok(noisy.diagnostics.join("\n").length < 600)
+})
+
+test("OMW_REQUIRED keeps unreadable credentials fail-closed", async () => {
+  const required = fixture(["omw"])
+  required.dependencies.ensureCredentials = async () => { throw new Error("DPAPI decrypt failed") }
   await assert.rejects(
     runManagerCli(
       ["opencode"],
       { LOCALAPPDATA: "C:\\fixture\\local", OMW_REQUIRED: "1" },
-      failOpen.dependencies,
+      required.dependencies,
     ),
-    /Manager unavailable/,
+    /DPAPI decrypt failed/,
   )
+  assert.doesNotMatch(required.events.join(","), /run/)
 })
 
 test("concurrent Manager invocations use one atomic start owner and one spawn", async (t) => {
@@ -213,16 +261,29 @@ test("default data directory is fixed under LOCALAPPDATA and honors the explicit
   assert.throws(() => resolveDataDirectory({}), /LOCALAPPDATA/)
 })
 
-test("OpenCode executable resolution uses an explicit executable or exact opencode.exe in known locations", async () => {
+test("OpenCode executable resolution accepts only a Windows PE executable and rejects wrappers", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "omw-executable-"))
   const executable = path.join(root, "opencode.exe")
   const launcher = path.join(root, "omw-opencode.cmd")
   try {
-    await writeFile(executable, "fixture", "utf8")
+    await writeFile(executable, windowsPeFixture())
     assert.equal(await resolveExecutable(executable, launcher, {}), await import("node:fs/promises").then(({ realpath }) => realpath(executable)))
     assert.equal(await resolveExecutable("", launcher, { OPENCODE_INSTALL_DIR: root }), await import("node:fs/promises").then(({ realpath }) => realpath(executable)))
     assert.equal(await resolveExecutable("", launcher, { PATH: root }), await import("node:fs/promises").then(({ realpath }) => realpath(executable)))
+    await assert.rejects(resolveExecutable(executable, executable, {}), /不可指向 OMW launcher/)
     await assert.rejects(resolveExecutable("", launcher, { PATH: path.join(root, "missing") }), /OMW_OPENCODE_EXECUTABLE/)
+
+    const textExecutable = path.join(root, "text.exe")
+    await writeFile(textExecutable, "not an executable", "utf8")
+    await assert.rejects(resolveExecutable(textExecutable, launcher, {}), /Windows PE executable/)
+
+    const script = path.join(root, "opencode.cmd")
+    await writeFile(script, windowsPeFixture())
+    await assert.rejects(resolveExecutable(script, launcher, {}), /Windows PE executable/)
+
+    const wrapper = path.join(root, "omw.exe")
+    await writeFile(wrapper, windowsPeFixture())
+    await assert.rejects(resolveExecutable(wrapper, launcher, {}), /不可指向 OMW launcher/)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -267,6 +328,24 @@ test("credential initialization is idempotent and concurrent callers share one r
   assert.equal(usernamePrompts, 1)
   assert.equal(passwordPrompts, 1)
   assert.deepEqual(await readdir(root), ["credentials.dpapi"])
+})
+
+test("non-interactive initialization without credentials reports a typed setup requirement", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-init-required-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const dependencies: CredentialInitializationDependencies = {
+    isInteractive: () => false,
+    load: async () => { throw new Error("unexpected load") },
+    save: async () => { throw new Error("unexpected save") },
+    promptUsername: async () => { throw new Error("unexpected prompt") },
+    promptPassword: async () => { throw new Error("unexpected prompt") },
+    createToken: () => "unexpected token",
+    sleep: async () => undefined,
+    now: Date.now,
+  }
+
+  await assert.rejects(ensureCredentials(root, {}, dependencies), CredentialSetupRequiredError)
+  assert.deepEqual(await readdir(root), [])
 })
 
 test("successful initialization returns credentials reloaded from persisted storage", async (t) => {

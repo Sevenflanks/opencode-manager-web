@@ -23,7 +23,9 @@
 
 本報告記錄的是使用者在真實互動式終端完成的人工驗收結果，用來補足 [歷史 synthetic PTY harness 報告](issue11-tui-acceptance-2026-09-20.md) 未能自動證明的 user-observable 路徑。歷史 harness 的 `NOT_PROVEN` 結果維持不變；人工結果不會回溯改寫該次 harness attempt 為成功。
 
-驗收使用目前本機未提交 worktree 建立的 local package。既有 artifact 的 SHA 未知，本報告也沒有可對應到 release commit 的 artifact hash，因此**不宣稱 release artifact 或已發布版本已通過驗證**。沒有推測或補記確切驗收時間、pack hash 或 artifact SHA。
+驗收環境保留的 `package/sevenflanks-omw-0.1.0.tgz` SHA-256 為 `D21651898B322961B33D08E6C76375A5C4A9E905C89A3A2D2541F38EDB87BD17`，同一環境的 install lock 明確引用該 local package。以 clean commit `dfb0f828527eda06bd6ecfb60a6bf970fd07529f` 重建後，package 內 47 個 `dist` 檔案全部與重建輸出逐 byte 相同，因此可將本次人工驗收對應到該產品實作與 local artifact hash。
+
+這項對照不會把 local artifact 變成 release artifact，也不代表 public npm 已發布或已驗證；本報告仍**不宣稱 release artifact 或已發布版本已通過驗證**。沒有推測或補記確切驗收時間。
 
 下列項目不在本次人工驗收的已通過範圍：
 
