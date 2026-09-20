@@ -35,4 +35,4 @@
 - 可由 commit、tag、SHA 或正式發布 artifact 重現的 release 驗證。
 - Credential rotation 的新舊帳密、launcher token retention 與 persistence failure rollback。
 
-操作方式與仍適用的安全界線見 [OMW 本機使用手冊](../user-guide.md#11-驗收證據與限制)。
+日常操作方式見使用手冊的 [`Usage`](../user-guide.md#usage)，仍適用的設定與安全界線見 [`Configuration`](../user-guide.md#configuration)。

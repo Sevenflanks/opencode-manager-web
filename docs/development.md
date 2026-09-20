@@ -1,6 +1,6 @@
 # 開發說明
 
-## 邊界
+## Prerequisites
 
 OMW MVP 與 Manager-launched OpenCode 都只監聽 `127.0.0.1`。Remote mode 的 OMW 有 Basic auth、
 current-user DPAPI credential store 與固定 remote URL validation，但不會設定 Tailnet、TLS、
@@ -10,7 +10,30 @@ Firewall、PATH、ACL 或 production secrets。完整 contract 見
 Directory Shortcut 只提供操作入口，不是 allowlist。Manager 可瀏覽及啟動其 OS identity
 原本可存取的既有目錄；所有路徑都先解析成 canonical path，並以結構化 argv 傳給程序。
 
-## Manager API contract
+開發環境需要 Windows 11、Node.js 24 以上與 npm。需要執行 OpenCode 整合路徑時，另須安裝 OpenCode CLI；OMW 不會代為安裝或修改 `PATH`。
+
+## Quick Start
+
+Repository 內一律使用隔離入口，不執行 local package 的裸 `omw`：
+
+```powershell
+npm ci
+
+# 第一次：建立此 worktree 專用的 masked credentials。
+npm run dev:credentials
+
+# 啟動使用 .omw/development 的 Manager 開發流程。
+npm run dev
+
+# 需要測試 launcher 時，透過相同隔離 context 啟動目前 Project 的 Local TUI。
+npm run dev:omw -- opencode (Get-Location).Path
+```
+
+這些命令不讀取日常 `%LOCALAPPDATA%\OMW`、OpenCode DB、credentials、token 或 API target。`npm run dev` 是前景開發程序；結束時使用該終端的正常中斷，不要依 port 或猜測 PID 清理 process。
+
+## Reference
+
+### Manager API contract
 
 所有 response 都是 JSON。錯誤格式為
 `{ "error": { "code": string, "message": string, "details"?: unknown } }`。
@@ -60,13 +83,13 @@ Session root 僅限沒有 `parentID` 的 metadata。`parentID` 存在但 parent 
 Open URL 由 1.18.31 adapter 集中產生 `/<base64url(directory)>/session/<session-id>`；UI 不組 route，
 沒有明確選擇 Session 時也不猜 latest。
 
-## Instance recovery and tracking contract
+### Instance recovery and tracking contract
 
 Overview 以完整 `Project` 目錄分組；group header 同時顯示資料夾名稱與完整 path。每個 Instance
 子列顯示 `#PID` 與 primary 最新 title。PID 未知時顯示 unknown，不造出 PID；UI 不使用
 `sessionowner` 稱呼。
 
-### 手機導覽與歷史紀錄
+#### 手機導覽與歷史紀錄
 
 - 860px 以下初始顯示列表，選取 Instance 後才顯示詳細內容；桌面維持雙欄。手機列表與詳細內容使用
   namespaced History state，頁內「返回列表」、瀏覽器返回／前進與重新整理都保留搜尋、篩選、歷史展開偏好、
@@ -87,7 +110,7 @@ Overview 以完整 `Project` 目錄分組；group header 同時顯示資料夾�
 `Managed` response 的 lifecycle metadata 包含 `trackingHidden` 與四個 recovery flags：
 `recheckAllowed`、`resumeAllowed`、`hideAllowed`、`removeAllowed`。
 
-### Recheck 與狀態邊界
+#### Recheck 與狀態邊界
 
 - 每次 recheck 都是單次 fresh check，須以 exact process identity 與 health 共同判斷；API 不做自動 retry。
 - 只有 process inspector 明確證實 process missing，且 recorded loopback port 同時確認 free，才能標記
@@ -101,7 +124,7 @@ Online identity、health 與 metadata 都確認後，才以 Project metadata 的
 即使 activity 是 idle 也可更新。更新以既有 `sessionId`、`source`、`boundAt` 作 CAS，競爭時不覆蓋新的
 binding；identity、health 或 metadata 失敗時保留最後已知的 binding 與 title。
 
-### Explicit continuation
+#### Explicit continuation
 
 - 「啟動」與「接續對話」使用綠色正向操作樣式。已停止且沒有 primary 的 Instance 提供「啟動」，
   沿用一般 start API 在相同目錄建立新 Instance；不建立 Session，也不改寫舊紀錄。
@@ -112,7 +135,7 @@ binding；identity、health 或 metadata 失敗時保留最後已知的 binding 
 - 若新 Instance 已建立但 binding 接續失敗，API 回傳 `newInstanceId` 並明示不要重複啟動；此 partial create
   failure 不會由 API 自動 retry。
 
-### 確認與操作面板
+#### 確認與操作面板
 
 - 「執行個體操作」的展開偏好在目前頁面內保留；切換 Instance、刷新資料、啟動或接續不重設，只有使用者
   主動展開／收起才變更。此偏好不持久化至下次載入頁面。
@@ -120,7 +143,7 @@ binding；identity、health 或 metadata 失敗時保留最後已知的 binding 
 - New Session 與手動換綁必須在確認按鈕的 user activation 內同步預留新分頁，再等待 API；不可為退場動畫
   延遲 `window.open`。確認框的文字保留至退場完成，避免內容先清空而閃爍。
 
-### Tracking 與移除
+#### Tracking 與移除
 
 - `POST /tracking` 的 `hidden=true` 是停止追蹤，不是 Stop：Instance 仍保留在 DB 與 allocation，不 kill
   process。預設 overview 隱藏它；`GET /api/v1/overview?includeHidden=true` 可恢復追蹤。
@@ -128,7 +151,7 @@ binding；identity、health 或 metadata 失敗時保留最後已知的 binding 
   tracking metadata 與 primary binding。它不刪 OpenCode Session，也不刪 Project files。
 - Stopped Instance 預設仍保留既有 binding；只有上述明確移除追蹤操作才會一併刪除 OMW binding。
 
-## Primary Session Binding contract
+### Primary Session Binding contract
 
 Primary Session Binding 是每個 Instance 各自維護的主要 root Session 關聯。Overview 會回傳
 `primarySession`；其 `source` 會標示為 `activity`、`new-session` 或 `manual`，`boundAt` 是綁定時間，
@@ -141,7 +164,7 @@ OpenCode Instance；先以 `omw` 啟動 TUI，再由手機對該 Local TUI「進
 只選擇 Session，不是 attach 到既有 Instance；OMW 不新增跨 Instance 同步。此為目前 accepted
 limitation，非待修 bug。
 
-### 建立與切換規則
+#### 建立與切換規則
 
 - Instance 第一次透過 session activity SSE 取得自身活動的有效 evidence 時，OMW 會沿 Session
   parent chain 找到 root，並在尚未綁定時以 first-writer-wins 方式 pin；同一 Instance 後續的
@@ -159,7 +182,7 @@ limitation，非待修 bug。
   否則使用該 Instance 的 primary binding，沒有 binding 就不猜 Session。這不代表 native TUI
   直接建立的新 Session 會自動換綁，也不代表 native TUI 知道 OMW 的 selected Session。
 
-### Instance 生命週期與升級
+#### Instance 生命週期與升級
 
 - Stopped Instance 保留既有 binding，但不能 open 或變更 primary。可用「接續對話」建立並綁定新 Instance，
   或另行啟動後透過 Advanced 明確選擇歷史 root；不能把原 Instance ID 或原 binding 視為可 resurrect 的
@@ -167,7 +190,7 @@ limitation，非待修 bug。
 - 升級前已存在的 legacy Instance 若沒有 binding row，升級後維持 `primarySession: null`。
   只有升級後觀測到新的有效活動或使用者明確手動選擇，才可建立 binding；不做 retroactive guess。
 
-### 驗證證據與限制
+#### 驗證證據與限制
 
 已用真 OpenCode 1.18.31、兩個 Instance 共用同一測試資料庫驗證窄鏈：各 Instance 的第一次
 busy-session SSE evidence 會歸到自身活動所屬的 root 並各自 pin；後續 status 為空、idle 或另一
@@ -176,7 +199,9 @@ cleanup 通過。這些證據只支持 OMW 已觀測到的活動與 explicit mut
 TUI 直接建立 Session 會自動改綁、native TUI 知道 selected Session，或 SSE 漏接後 OMW 能從歷史
 metadata 還原 binding。
 
-## 隔離的開發、測試與驗收入口
+## Configuration
+
+### 隔離的開發、測試與驗收入口
 
 Repository 內的 `npm run dev`、`npm run dev:credentials`、`npm run dev:omw -- ...`、`npm test` 與
 `npm run acceptance:isolated -- <bounded-command>` 都透過同一套 child environment policy 執行，不修改
@@ -199,21 +224,7 @@ keys、`PATH`、locale、CI/color、明示的 executable/test opt-in，以及唯
 `OMW_DEV_SHARED_CONFIG` source 是唯一例外：entry 可經 alias 讀取其 canonical regular file，但只將該檔案
 當下的 bytes 寫入受 guard 保護的 private snapshot；read-only source 即使有其他 hard link也不會成為
 mutable target，`OPENCODE_CONFIG` 只會指向 snapshot。
-第一次啟動前，需在 isolated data root 建立專用 OMW credentials：
-
-```powershell
-# 互動式 masked setup，只寫入此 worktree 的 .omw/development
-npm run dev:credentials
-
-# 後續啟動重用同一份 worktree-local data
-npm run dev
-
-# 啟動或重用同一份 worktree-local Manager
-npm run dev:omw
-
-# 透過同一份隔離 context 啟動目前 Project 的 Local TUI；-- 後參數原樣交給 omw
-npm run dev:omw -- opencode (Get-Location).Path
-```
+第一次啟動前，需以 [Quick Start](#quick-start) 的 `npm run dev:credentials` 在 isolated data root 建立專用 OMW credentials。後續 `npm run dev` 與 `npm run dev:omw -- ...` 會重用同一份 worktree-local data。
 
 預設 OpenCode config 是自建的最小 `plugin: []`、`mcp: {}` config，且停用 default plugins、external
 skills、model fetch、autoupdate、LSP download 與 Claude Code integration。只有明確設定 absolute
@@ -249,7 +260,7 @@ parent。Generic entry 不會因 direct child exit 就推論 descendants 已全�
 npm run acceptance:isolated -- node '<bounded-acceptance-harness.mjs>'
 ```
 
-## Runtime data
+### Runtime data
 
 - `OMW_DATA_DIR`：產品／明示 configured startup 預設 `%LOCALAPPDATA%\OMW`；repository 的隔離
   dev/test/acceptance entry 一律傳入 owned override
@@ -274,35 +285,13 @@ audience。Manager-launched OpenCode 不設定獨立 Basic auth，Manager intern
 `Authorization`。因此 OMW Basic 不是 OpenCode endpoint 的 gate；remote deployment 必須以 #9 的
 Tailnet policy 將 OpenCode ports 限制為 user devices。
 
-## Local TUI launcher
+## Usage
 
-Repository development 不可直接執行 local package 的裸 `omw`，因為它會使用日常
-`%LOCALAPPDATA%\OMW`。請用實際的 development wrapper；它與 `dev:credentials` 共用
-`.omw/development`、相同 ports 與相同 child environment policy，`--` 後的 `omw` arguments 原樣傳遞：
+### Local TUI launcher
 
-```powershell
-# PowerShell，工作目錄為 repository root
-npm run dev:credentials
-npm run dev:omw
-npm run dev:omw -- opencode (Get-Location).Path
-```
+Repository development 不可直接執行 local package 的裸 `omw`，因為它會使用日常 `%LOCALAPPDATA%\OMW`。請使用 [Quick Start](#quick-start) 的 development wrapper；它與 `dev:credentials` 共用 `.omw/development`、相同 ports 與相同 child environment policy，`--` 後的 `omw` arguments 原樣傳遞。
 
-`@sevenflanks/omw` 尚未確認已發布至 public npm registry。只有驗證日常／configured product flow 時，
-才從 repository root 建立 local package 並執行下列命令；它們刻意使用日常 data，不是 development entry。
-不可把正式 credentials 放入 tracked 檔案：
-
-```powershell
-# PowerShell，工作目錄為 repository root
-npm ci
-$packageDir = Join-Path $env:TEMP 'omw-local-package'
-New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
-npm pack --pack-destination $packageDir -w @sevenflanks/omw
-$omwPackage = Join-Path $packageDir 'sevenflanks-omw-0.1.0.tgz'
-
-# 日常 configured flow：第一次互動建立 credentials；之後重用既有 Manager。
-npm exec --yes --package="$omwPackage" -- omw
-npm exec --yes --package="$omwPackage" -- omw opencode (Get-Location).Path
-```
+日常／configured product flow 的 local `.tgz` 操作只記錄在[使用手冊 Quick Start](user-guide.md#quick-start)，避免把日常與 development 命令混在同一份操作步驟。`@sevenflanks/omw` 尚未確認已發布至 public npm registry，不可把正式 credentials 放入 tracked 檔案。
 
 沒有提供 Project 時，`omw opencode` 使用目前工作目錄；需要既有 Session 時可在實際命令後加上
 `-s` 與真實 Session ID。若 `opencode.exe` 不在已知
@@ -347,3 +336,12 @@ Start 後先保留原生 `ChildProcess` handle，但這不會單憑 PID 授予 t
 若 Describe 前 root 已退出或無法取得 exact identity，只能透過原生 handle bounded 停止仍存活的
 root；不掃描 PID ancestry、不猜測 descendants，並以安全的 `STARTUP_CLEANUP_UNRESOLVED` error
 code 記錄無法證明 descendant cleanup。
+
+## Troubleshooting
+
+- 缺少 worktree-local credentials：重新執行 `npm run dev:credentials`；不要複製日常 `%LOCALAPPDATA%\OMW` 的 `credentials.dpapi`。
+- 隔離 port 被占用：保留錯誤並確認 listener owner；不可依 port 猜 PID、停止或取代 foreign process。
+- Test／acceptance root 被保留：這是無法證明 descendants 已結束時的診斷保留，不代表可以直接遞迴刪除。先依輸出的 root 與 harness ownership 查明 process identity。
+- 真瀏覽器 integration 未執行：確認先完成 `npm run build`，並明示 `OMW_BROWSER_TEST=1` 與 `OMW_BROWSER_EXECUTABLE`；不要把 mock 或模擬 viewport 當成真瀏覽器、Tailnet 或手機證據。
+
+其餘 CLI、API、安全與驗收入口集中在 [Technical Reference](reference.md)。
