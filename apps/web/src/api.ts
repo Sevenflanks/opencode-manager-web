@@ -35,6 +35,12 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const managerApi = {
+  updateCredentials(payload: { currentPassword: string; username: string; password: string }) {
+    return request<void>("/api/v1/settings/credentials", { method: "PATCH", body: JSON.stringify(payload) })
+  },
+  shutdown() {
+    return request<{ stopping: true }>("/api/v1/manager/shutdown", { method: "POST", body: "{}" })
+  },
   connectivity() {
     return request<ConnectivityInfo>("/api/v1/connectivity")
   },

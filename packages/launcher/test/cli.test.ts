@@ -118,6 +118,16 @@ test("managed launch without a project uses the invocation cwd and only adds net
   assert.match(fixture.requests[2]?.pathname ?? "", /\/finalize$/)
 })
 
+test("wrapper follows the Manager port when no explicit origin is configured", async () => {
+  const fixture = dependencies()
+  const customPortEnvironment = {
+    OMW_OPENCODE_EXECUTABLE: "C:\\tools\\opencode.exe",
+    OMW_PORT: "4317",
+  }
+  assert.equal(await runLauncher([], customPortEnvironment, "C:\\project", "C:\\launcher.js", fixture.value), 23)
+  assert.equal(fixture.requests[0]?.origin, "http://127.0.0.1:4317")
+})
+
 test("session TUI reserves before spawn and injects only the reserved port", async () => {
   const fixture = dependencies()
   const args = ["-s", "ses_demo", "C:\\work\\project"]
@@ -249,15 +259,15 @@ function environmentWithOpenCodeAuth(): NodeJS.ProcessEnv {
 
 function dependencies(options: { reserveError?: Error; finalizeError?: Error; credentialError?: Error } = {}) {
   const spawns: Array<{ executable: string; args: string[]; options: SpawnOptions }> = []
-  const requests: Array<{ pathname: string; body: unknown }> = []
+  const requests: Array<{ origin: string; pathname: string; body: unknown }> = []
   const value: LauncherDependencies = {
     async loadCredentials() {
       if (options.credentialError) throw options.credentialError
       return credentials
     },
     async resolveExecutable(value) { return value },
-    async request<T>(_origin: string, pathname: string, _token: string, body: unknown): Promise<T> {
-      requests.push({ pathname, body })
+    async request<T>(origin: string, pathname: string, _token: string, body: unknown): Promise<T> {
+      requests.push({ origin, pathname, body })
       if (pathname === "/api/v1/launcher/reservations") {
         if (options.reserveError) throw options.reserveError
         return { reservationId: "reservation-1", hostname: "127.0.0.1", port: 42004, expiresAt: new Date().toISOString(), status: "reserved" } as T

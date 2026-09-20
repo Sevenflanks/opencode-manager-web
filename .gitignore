@@ -5,6 +5,7 @@
 /opencode.jsonc
 /OMW_PROJECT_HANDOFF.md
 /docs/research/
+/docs/acceptance/.issue11-tui-*/
 node_modules/
 dist/
 coverage/

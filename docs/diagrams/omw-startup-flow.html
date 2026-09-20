@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OMW 啟動、重用與失敗處理</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif+TC:wght@400&family=Noto+Sans+TC:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root { --paper:#f5f5f5; --ink:#2d3142; --muted:#4f5d75; --soft:#7a8399; --accent:#eb6c36; --accent-tint:rgba(235,108,54,.08); --rule:rgba(45,49,66,.12); }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--paper); color:var(--ink); font-family:'Geist','Noto Sans TC','Microsoft JhengHei',sans-serif; }
+    main { max-width:1360px; margin:0 auto; padding:32px 40px 24px; }
+    .eyebrow { margin:0 0 4px; color:var(--soft); font:500 8px/1 'Geist Mono',monospace; letter-spacing:.18em; }
+    h1 { margin:0; font:400 28px/1.1 'Instrument Serif','Noto Serif TC',serif; }
+    .subtitle { margin:8px 0 20px; color:var(--muted); font-size:13px; }
+    svg { display:block; width:100%; height:auto; }
+    footer { border-top:1px solid var(--rule); margin-top:16px; padding-top:12px; color:var(--soft); font:400 9px/1.5 'Geist Mono',monospace; }
+  </style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">FLOWCHART · DOC-WIDE · MIXED AUDIENCE</p>
+  <h1>OMW 啟動、重用與失敗處理</h1>
+  <p class="subtitle">初始化取消一定結束；一般 bootstrap failure 只有 wrapper 可 fail-open，<code>OMW_REQUIRED=1</code> 會阻止未受管理啟動。</p>
+  <svg viewBox="0 0 1280 720" role="img" aria-labelledby="omw-startup-title omw-startup-desc">
+    <title id="omw-startup-title">OMW 啟動、重用與失敗處理</title>
+    <desc id="omw-startup-desc">流程圖顯示首次 DPAPI 設定、取消、既有 Manager 身分重用、非 OMW port 衝突、背景啟動 readiness，以及 wrapper fail-open 與嚴格模式結果。</desc>
+    <defs>
+      <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4f5d75"/></marker>
+      <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#eb6c36"/></marker>
+      <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#2e5aa8"/></marker>
+    </defs>
+    <rect width="1280" height="720" fill="#f5f5f5"/>
+
+    <!-- Connectors -->
+    <line x1="640" y1="104" x2="640" y2="120" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="640" y1="200" x2="640" y2="260" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <path d="M540 160 H448 Q440 160 440 168 V240" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="280" y1="276" x2="220" y2="276" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <path d="M480 280 H504 Q512 280 512 288 V320 H520" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="760" y1="300" x2="860" y2="300" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+    <path d="M760 340 H812 Q820 340 820 348 V388 H860" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="640" y1="380" x2="640" y2="420" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="640" y1="492" x2="640" y2="540" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+
+    <!-- Labels -->
+    <rect x="652" y="218" width="24" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="664" y="230" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">有</text>
+    <rect x="464" y="136" width="24" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="476" y="148" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">無</text>
+    <rect x="224" y="252" width="48" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="248" y="264" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">Ctrl+C</text>
+    <rect x="780" y="276" width="64" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="812" y="288" fill="#eb6c36" font-size="12" font-weight="500" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">身分吻合</text>
+    <rect x="768" y="312" width="80" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="808" y="324" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">非 OMW listener</text>
+    <rect x="652" y="392" width="48" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="676" y="404" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">未啟動</text>
+
+    <!-- Nodes -->
+    <rect x="500" y="48" width="280" height="56" rx="28" fill="#fff" stroke="#2d3142"/>
+    <text x="640" y="74" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">執行 local package 的 omw</text>
+    <text x="640" y="91" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">plain start 或 omw opencode ...</text>
+
+    <polygon points="640,120 740,160 640,200 540,160" fill="#fff" stroke="#2d3142"/>
+    <text x="640" y="156" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">credentials.dpapi</text>
+    <text x="640" y="174" fill="#4f5d75" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">存在且可讀？</text>
+
+    <rect x="280" y="240" width="200" height="80" rx="6" fill="#fff" stroke="#2d3142"/>
+    <rect x="292" y="248" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,.4)" stroke-width=".8"/>
+    <text x="312" y="257" fill="#4f5d75" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle">SETUP</text>
+    <text x="380" y="280" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">互動式首次設定</text>
+    <text x="380" y="298" fill="#4f5d75" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">密碼 ≥16 字元；token 自動產生</text>
+    <text x="380" y="314" fill="#7a8399" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">DPAPI · atomic rename · initialize.lock</text>
+
+    <rect x="60" y="248" width="160" height="56" rx="28" fill="rgba(45,49,66,.03)" stroke="rgba(45,49,66,.30)"/>
+    <text x="140" y="272" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">結束，可直接重試</text>
+    <text x="140" y="290" fill="#4f5d75" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">不啟動 TUI</text>
+
+    <polygon points="640,260 760,320 640,380 520,320" fill="rgba(235,108,54,.08)" stroke="#eb6c36" stroke-width="1.2"/>
+    <text x="640" y="310" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">127.0.0.1:&lt;OMW_PORT&gt;</text>
+    <text x="640" y="330" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">Manager identity probe</text>
+    <text x="640" y="350" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">product=omw-manager · protocolVersion=1</text>
+
+    <rect x="860" y="272" width="220" height="56" rx="28" fill="rgba(235,108,54,.08)" stroke="#eb6c36"/>
+    <text x="970" y="296" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">重用既有 Manager</text>
+    <text x="970" y="314" fill="#4f5d75" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">不改帳密、不輪替 token</text>
+
+    <rect x="860" y="360" width="280" height="56" rx="28" fill="rgba(45,49,66,.03)" stroke="rgba(45,49,66,.30)"/>
+    <text x="1000" y="384" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">明確回報衝突並結束</text>
+    <text x="1000" y="402" fill="#4f5d75" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">不停止、不取代該程序</text>
+
+    <rect x="520" y="420" width="240" height="72" rx="6" fill="#fff" stroke="#2d3142"/>
+    <rect x="532" y="428" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,.4)" stroke-width=".8"/>
+    <text x="554" y="437" fill="#4f5d75" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle">SPAWN</text>
+    <text x="640" y="458" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">啟動本次擁有的背景 Manager</text>
+    <text x="640" y="476" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">manager-start.lock · readiness ≤10s</text>
+
+    <rect x="340" y="540" width="600" height="104" rx="6" fill="#f5f5f5"/>
+    <rect x="340" y="540" width="600" height="104" rx="6" fill="#fff" stroke="#2d3142"/>
+    <line x1="340" y1="574" x2="940" y2="574" stroke="rgba(45,49,66,.12)"/>
+    <line x1="340" y1="608" x2="940" y2="608" stroke="rgba(45,49,66,.12)"/>
+    <text x="360" y="562" fill="#eb6c36" font-size="8" font-family="'Geist Mono',monospace">READY</text>
+    <text x="452" y="562" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif">plain omw：Manager 留在背景；不啟動 TUI</text>
+    <text x="360" y="596" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace">WRAPPER FAIL</text>
+    <text x="484" y="596" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif">預設：原 argv 啟動 OpenCode，明示「未受 OMW 管理」</text>
+    <text x="360" y="630" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace">REQUIRED / PLAIN</text>
+    <text x="500" y="630" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif">OMW_REQUIRED=1 或 plain omw：回報錯誤並結束</text>
+
+    <line x1="40" y1="676" x2="1240" y2="676" stroke="rgba(45,49,66,.12)" stroke-width=".8"/>
+    <text x="40" y="700" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing=".14em">LEGEND</text>
+    <polygon points="150,690 162,696 150,702 138,696" fill="#fff" stroke="#2d3142"/>
+    <text x="174" y="700" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace">DECISION</text>
+    <rect x="280" y="690" width="18" height="12" rx="2" fill="rgba(235,108,54,.08)" stroke="#eb6c36"/>
+    <text x="310" y="700" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace">IDENTITY / HAPPY PATH</text>
+    <text x="540" y="700" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace">LOCKS MAKE RETRY AND CONCURRENCY IDEMPOTENT</text>
+  </svg>
+  <footer>STATIC FLOWCHART · CANCELLATION IS NOT FAIL-OPEN · PUBLIC REGISTRY Npx NOT VERIFIED</footer>
+</main>
+</body>
+</html>

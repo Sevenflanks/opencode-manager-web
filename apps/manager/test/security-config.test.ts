@@ -7,7 +7,7 @@ import path from "node:path"
 import { PassThrough } from "node:stream"
 import test from "node:test"
 import { SeparateRequestAuthenticator, type StoredCredentials } from "../src/auth.js"
-import { readInstancePortPoolConfig, readRemoteAccessConfig } from "../src/config.js"
+import { readDataDirectory, readInstancePortPoolConfig, readRemoteAccessConfig } from "../src/config.js"
 import { DpapiCredentialStore } from "../src/credential-store.js"
 
 const credentials: StoredCredentials = {
@@ -67,6 +67,12 @@ test("instance pool is fixed, paired, bounded, and identical to remote public po
     OMW_REMOTE_MAPPING_READY: "1",
   }, 4174)
   assert.deepEqual(readInstancePortPoolConfig({}, remote), { min: 44_000, max: 44_009 })
+})
+
+test("Manager data directory is user-scoped and independent from cwd", () => {
+  assert.equal(readDataDirectory({ LOCALAPPDATA: "C:\\Users\\fixture\\AppData\\Local" }), path.resolve("C:\\Users\\fixture\\AppData\\Local", "OMW"))
+  assert.equal(readDataDirectory({ LOCALAPPDATA: "C:\\ignored", OMW_DATA_DIR: "C:\\fixture\\omw-data" }), path.resolve("C:\\fixture\\omw-data"))
+  assert.throws(() => readDataDirectory({}), /LOCALAPPDATA/)
 })
 
 test("launcher token and browser Basic auth are separate audiences", () => {

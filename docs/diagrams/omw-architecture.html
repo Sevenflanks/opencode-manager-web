@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OMW 本機與 Tailnet 架構</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif+TC:wght@400&family=Noto+Sans+TC:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root { --paper:#f5f5f5; --ink:#2d3142; --muted:#4f5d75; --soft:#7a8399; --accent:#eb6c36; --accent-tint:rgba(235,108,54,.08); --link:#2e5aa8; --rule:rgba(45,49,66,.12); }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--paper); color:var(--ink); font-family:'Geist','Noto Sans TC','Microsoft JhengHei',sans-serif; }
+    main { max-width:1360px; margin:0 auto; padding:32px 40px 24px; }
+    .eyebrow { margin:0 0 4px; color:var(--soft); font:500 8px/1 'Geist Mono',monospace; letter-spacing:.18em; text-transform:uppercase; }
+    h1 { margin:0; font:400 28px/1.1 'Instrument Serif','Noto Serif TC',serif; }
+    .subtitle { margin:8px 0 20px; color:var(--muted); font-size:13px; }
+    svg { display:block; width:100%; height:auto; }
+    footer { border-top:1px solid var(--rule); margin-top:16px; padding-top:12px; color:var(--soft); font:400 9px/1.5 'Geist Mono',monospace; }
+  </style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">ARCHITECTURE · DOC-WIDE · MIXED AUDIENCE</p>
+  <h1>OMW 本機與 Tailnet 架構</h1>
+  <p class="subtitle">只有 OMW wrapper 會嘗試登錄 OpenCode；原生 <code>opencode</code> 命令不會被自動接管。</p>
+  <svg viewBox="0 0 1280 720" role="img" aria-labelledby="omw-architecture-title omw-architecture-desc">
+    <title id="omw-architecture-title">OMW 本機與 Tailnet 架構</title>
+    <desc id="omw-architecture-desc">架構圖顯示瀏覽器、OMW wrapper、Manager、OpenCode 執行個體、固定資料目錄與 Tailnet Serve 邊界，並標示原生 OpenCode 不會被 OMW 自動接管。</desc>
+    <defs>
+      <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4f5d75"/></marker>
+      <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#eb6c36"/></marker>
+      <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#2e5aa8"/></marker>
+    </defs>
+    <rect width="1280" height="720" fill="#f5f5f5"/>
+
+    <!-- Trust zones -->
+    <rect x="40" y="48" width="900" height="548" rx="8" fill="rgba(45,49,66,.02)" stroke="rgba(45,49,66,.10)" stroke-width=".8"/>
+    <rect x="56" y="52" width="96" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="104" y="64" fill="#7a8399" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing=".14em">WINDOWS LOCAL</text>
+    <rect x="968" y="48" width="272" height="548" rx="8" fill="rgba(46,90,168,.03)" stroke="rgba(46,90,168,.25)" stroke-width=".8" stroke-dasharray="4,4"/>
+    <rect x="984" y="52" width="96" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="1032" y="64" fill="#2e5aa8" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle" letter-spacing=".14em">TAILNET ONLY</text>
+
+    <!-- Connectors, before nodes -->
+    <line x1="240" y1="136" x2="420" y2="136" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+    <path d="M240 336 H320 Q328 336 328 328 V152 Q328 144 336 144 H420" fill="none" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+    <path d="M240 360 H504 C512 360 512 344 520 344 C528 344 528 360 536 360 H700" fill="none" stroke="#f5f5f5" stroke-width="5"/>
+    <path d="M240 360 H504 C512 360 512 344 520 344 C528 344 528 360 536 360 H700" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <path d="M240 476 H280 Q288 476 288 468 V432 Q288 424 296 424 H504 C512 424 512 408 520 408 C528 408 528 424 536 424 H648 Q656 424 656 416 V384 Q656 376 664 376 H700" fill="none" stroke="#f5f5f5" stroke-width="5"/>
+    <path d="M240 476 H280 Q288 476 288 468 V432 Q288 424 296 424 H504 C512 424 512 408 520 408 C528 408 528 424 536 424 H648 Q656 424 656 416 V384 Q656 376 664 376 H700" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+    <path d="M620 156 H656 Q664 156 664 164 V312 Q664 320 672 320 H700" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="520" y1="184" x2="520" y2="440" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <line x1="1096" y1="172" x2="1096" y2="300" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+    <path d="M1000 324 H960 Q952 324 952 316 V144 Q952 136 944 136 H620" fill="none" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+    <line x1="1000" y1="356" x2="900" y2="356" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+
+    <!-- Connector labels with visible gaps -->
+    <rect x="286" y="116" width="88" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="330" y="125" fill="#2e5aa8" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">LOCAL WEB</text>
+    <rect x="248" y="306" width="72" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="284" y="318" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">啟動／重用</text>
+    <rect x="348" y="340" width="120" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="408" y="349" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" text-anchor="middle">SPAWN + REGISTER</text>
+    <rect x="356" y="402" width="120" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="416" y="414" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">原生啟動，不登錄</text>
+    <rect x="536" y="288" width="40" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="556" y="300" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">寫入</text>
+    <rect x="964" y="194" width="80" height="16" rx="2" fill="#f5f5f5"/>
+    <text x="1004" y="206" fill="#2e5aa8" font-size="12" font-weight="500" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">固定埠映射</text>
+
+    <!-- Nodes -->
+    <g>
+      <rect x="80" y="100" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="80" y="100" width="160" height="72" rx="6" fill="rgba(79,93,117,.10)" stroke="#7a8399"/>
+      <rect x="92" y="108" width="52" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,.45)" stroke-width=".8"/>
+      <text x="118" y="117" fill="#7a8399" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle">BROWSER</text>
+      <text x="160" y="142" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">本機瀏覽器</text>
+      <text x="160" y="158" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">127.0.0.1:4174</text>
+    </g>
+    <g>
+      <rect x="80" y="300" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="80" y="300" width="160" height="72" rx="6" fill="#fff" stroke="#2d3142"/>
+      <rect x="92" y="308" width="52" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,.4)" stroke-width=".8"/>
+      <text x="118" y="317" fill="#4f5d75" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle">WRAPPER</text>
+      <text x="160" y="342" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">OMW wrapper</text>
+      <text x="160" y="358" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">omw opencode</text>
+    </g>
+    <g>
+      <rect x="80" y="440" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="80" y="440" width="160" height="72" rx="6" fill="rgba(45,49,66,.03)" stroke="rgba(45,49,66,.30)"/>
+      <rect x="92" y="448" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,.25)" stroke-width=".8"/>
+      <text x="114" y="457" fill="#7a8399" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle">NATIVE</text>
+      <text x="160" y="482" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">原生 OpenCode</text>
+      <text x="160" y="498" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">opencode ...</text>
+    </g>
+    <g>
+      <rect x="420" y="96" width="200" height="88" rx="6" fill="#f5f5f5"/>
+      <rect x="420" y="96" width="200" height="88" rx="6" fill="rgba(235,108,54,.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <rect x="432" y="104" width="52" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,.55)" stroke-width=".8"/>
+      <text x="458" y="113" fill="#eb6c36" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle">MANAGER</text>
+      <text x="520" y="138" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">OMW Manager + Web</text>
+      <text x="520" y="156" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">loopback only</text>
+      <text x="520" y="172" fill="#7a8399" font-size="9" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">追蹤、狀態、生命週期</text>
+    </g>
+    <g>
+      <rect x="700" y="300" width="200" height="112" rx="6" fill="#f5f5f5"/>
+      <rect x="700" y="300" width="200" height="112" rx="6" fill="#fff" stroke="#2d3142"/>
+      <rect x="712" y="308" width="56" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,.4)" stroke-width=".8"/>
+      <text x="740" y="317" fill="#4f5d75" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle">RUNTIME</text>
+      <text x="800" y="344" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">OpenCode Instances</text>
+      <text x="800" y="364" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">127.0.0.1:&lt;fixed-port&gt;</text>
+      <text x="800" y="384" fill="#7a8399" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">Local TUI + 背景 Instance</text>
+      <text x="800" y="402" fill="#7a8399" font-size="12" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">Session 仍由 OpenCode 保存</text>
+    </g>
+    <g>
+      <rect x="420" y="440" width="200" height="88" rx="6" fill="#f5f5f5"/>
+      <rect x="420" y="440" width="200" height="88" rx="6" fill="rgba(45,49,66,.05)" stroke="#4f5d75"/>
+      <rect x="432" y="448" width="40" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,.45)" stroke-width=".8"/>
+      <text x="452" y="457" fill="#4f5d75" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle">DATA</text>
+      <text x="520" y="482" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">固定使用者資料</text>
+      <text x="520" y="500" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">%LOCALAPPDATA%\OMW</text>
+      <text x="520" y="516" fill="#7a8399" font-size="9" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">SQLite + current-user DPAPI</text>
+    </g>
+    <g>
+      <rect x="1000" y="100" width="192" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="1000" y="100" width="192" height="72" rx="6" fill="rgba(79,93,117,.10)" stroke="#7a8399"/>
+      <rect x="1012" y="108" width="52" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,.45)" stroke-width=".8"/>
+      <text x="1038" y="117" fill="#7a8399" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle">BROWSER</text>
+      <text x="1096" y="142" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">手機瀏覽器</text>
+      <text x="1096" y="158" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">HTTPS · Tailnet policy</text>
+    </g>
+    <g>
+      <rect x="1000" y="300" width="192" height="88" rx="6" fill="#f5f5f5"/>
+      <rect x="1000" y="300" width="192" height="88" rx="6" fill="rgba(46,90,168,.04)" stroke="#2e5aa8"/>
+      <rect x="1012" y="308" width="48" height="12" rx="2" fill="transparent" stroke="rgba(46,90,168,.45)" stroke-width=".8"/>
+      <text x="1036" y="317" fill="#2e5aa8" font-size="7" font-family="'Geist Mono',monospace" text-anchor="middle">PROXY</text>
+      <text x="1096" y="344" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">Tailscale Serve</text>
+      <text x="1096" y="362" fill="#4f5d75" font-size="9" font-family="'Geist Mono',monospace" text-anchor="middle">HTTPS → same loopback port</text>
+      <text x="1096" y="378" fill="#7a8399" font-size="9" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">需由 operator 核對，不由 OMW 設定</text>
+    </g>
+
+    <rect x="76" y="536" width="332" height="36" rx="6" fill="rgba(235,108,54,.08)" stroke="rgba(235,108,54,.55)" stroke-dasharray="4,4"/>
+    <text x="242" y="558" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans TC',sans-serif" text-anchor="middle">原生 opencode 不會被攔截；只有 OMW wrapper 會介入</text>
+
+    <!-- Legend strip -->
+    <line x1="40" y1="644" x2="1240" y2="644" stroke="rgba(45,49,66,.12)" stroke-width=".8"/>
+    <text x="40" y="668" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace" letter-spacing=".14em">LEGEND</text>
+    <rect x="144" y="657" width="18" height="12" rx="2" fill="rgba(235,108,54,.08)" stroke="#eb6c36"/>
+    <text x="172" y="667" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace">OMW CONTROL PLANE</text>
+    <line x1="344" y1="663" x2="376" y2="663" stroke="#2e5aa8" marker-end="url(#arrow-link)"/>
+    <text x="388" y="667" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace">HTTP / HTTPS</text>
+    <line x1="536" y1="663" x2="568" y2="663" stroke="#4f5d75" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+    <text x="580" y="667" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace">NATIVE / UNMANAGED</text>
+    <rect x="796" y="657" width="18" height="12" rx="2" fill="none" stroke="#2e5aa8" stroke-dasharray="4,4"/>
+    <text x="824" y="667" fill="#4f5d75" font-size="8" font-family="'Geist Mono',monospace">TRUST BOUNDARY</text>
+  </svg>
+  <footer>STATIC DIAGRAM · GENERATED FOR ISSUE 11 USER DOCUMENTATION · NO RUNTIME OR MOBILE VERIFICATION CLAIM</footer>
+</main>
+</body>
+</html>

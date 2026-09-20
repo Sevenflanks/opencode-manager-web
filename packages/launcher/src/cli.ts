@@ -7,7 +7,7 @@ import {
 } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
-import { readFile, realpath } from "node:fs/promises"
+import { readFile, realpath, stat } from "node:fs/promises"
 import { constants as osConstants } from "node:os"
 import path from "node:path"
 import process from "node:process"
@@ -53,7 +53,7 @@ export type DpapiSpawn = (
 export interface LauncherDependencies {
   loadCredentials(environment: NodeJS.ProcessEnv, cwd: string): Promise<LauncherCredentials>
   request<T>(origin: string, pathname: string, token: string, body: unknown): Promise<T>
-  resolveExecutable(value: string, launcherPath: string): Promise<string>
+  resolveExecutable(value: string, launcherPath: string, environment: NodeJS.ProcessEnv): Promise<string>
   spawnForeground(executable: string, args: string[], options: SpawnOptions): ChildResult
   invocationId(): string
   diagnostic(message: string): void
@@ -73,7 +73,7 @@ export async function runLauncher(
   launcherPath: string,
   dependencies: LauncherDependencies = defaultDependencies,
 ): Promise<number> {
-  const executable = await dependencies.resolveExecutable(environment.OMW_OPENCODE_EXECUTABLE ?? "", launcherPath)
+  const executable = await dependencies.resolveExecutable(environment.OMW_OPENCODE_EXECUTABLE ?? "", launcherPath, environment)
   if (environment.OMW_LAUNCHER_ACTIVE === "1") throw new Error("拒絕 launcher 自遞迴。")
   const plan = planInvocation(argv)
   if (!plan.managed) {
@@ -86,7 +86,7 @@ export async function runLauncher(
   const invocationId = dependencies.invocationId()
   try {
     credentials = await dependencies.loadCredentials(environment, cwd)
-    const origin = managerOrigin(environment.OMW_MANAGER_ORIGIN ?? "http://127.0.0.1:4174")
+    const origin = configuredManagerOrigin(environment)
     const body: LauncherReservationRequest = {
       clientInvocationId: invocationId,
       directory: plan.projectArgument === undefined ? cwd : path.resolve(cwd, plan.projectArgument),
@@ -114,7 +114,7 @@ export async function runLauncher(
     managedArguments(argv, reservation.port),
     foregroundOptions(cwd, childEnvironment),
   )
-  const origin = managerOrigin(environment.OMW_MANAGER_ORIGIN ?? "http://127.0.0.1:4174")
+  const origin = configuredManagerOrigin(environment)
   const registration: LauncherRegistrationRequest = { clientInvocationId: invocationId, pid: child.pid }
   const register = dependencies.request(
     origin,
@@ -222,14 +222,28 @@ function managerOrigin(value: string): string {
   return url.origin
 }
 
-async function loadCredentials(environment: NodeJS.ProcessEnv, cwd: string): Promise<LauncherCredentials> {
+async function loadCredentials(environment: NodeJS.ProcessEnv, _cwd: string): Promise<LauncherCredentials> {
   if (process.platform !== "win32") throw new Error("DPAPI launcher integration 只支援 Windows current user。")
-  const dataDirectory = path.resolve(environment.OMW_DATA_DIR ?? path.join(cwd, ".omw"))
+  const dataDirectory = resolveDataDirectory(environment)
   const filename = path.join(dataDirectory, "credentials.dpapi")
-  const helper = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../scripts/credential-store.ps1")
+  const helper = resolveCredentialHelper()
   const ciphertext = await readFile(filename, "utf8")
   const plaintext = await runDpapi(environment.OMW_POWERSHELL_EXECUTABLE ?? "pwsh.exe", helper, ciphertext)
   return decodeLauncherCredentials(plaintext)
+}
+
+function configuredManagerOrigin(environment: NodeJS.ProcessEnv): string {
+  return managerOrigin(environment.OMW_MANAGER_ORIGIN ?? `http://127.0.0.1:${environment.OMW_PORT ?? "4174"}`)
+}
+
+export function resolveCredentialHelper(moduleDirectory = path.dirname(fileURLToPath(import.meta.url))): string {
+  const candidates = [
+    path.resolve(moduleDirectory, "../scripts/credential-store.ps1"),
+    path.resolve(moduleDirectory, "../../../../apps/manager/scripts/credential-store.ps1"),
+  ]
+  const helper = candidates.find(existsSync)
+  if (!helper) throw new Error("找不到 OMW DPAPI credential helper。")
+  return helper
 }
 
 export function decodeLauncherCredentials(plaintext: string): LauncherCredentials {
@@ -246,10 +260,20 @@ export function runDpapi(
   ciphertext: string,
   options: { spawnProcess?: DpapiSpawn; timeoutMs?: number } = {},
 ): Promise<string> {
+  return runDpapiAction(powershell, helper, "Unprotect", ciphertext, options)
+}
+
+export function runDpapiAction(
+  powershell: string,
+  helper: string,
+  action: "Protect" | "Unprotect",
+  input: string,
+  options: { spawnProcess?: DpapiSpawn; timeoutMs?: number } = {},
+): Promise<string> {
   return new Promise((resolve, reject) => {
     let child: ChildProcessWithoutNullStreams
     try {
-      child = (options.spawnProcess ?? spawn)(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", helper, "-Action", "Unprotect"], {
+      child = (options.spawnProcess ?? spawn)(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", helper, "-Action", action], {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       })
@@ -309,16 +333,35 @@ export function runDpapi(
     const timeoutMs = options.timeoutMs ?? DPAPI_TIMEOUT_MS
     deadline = setTimeout(() => fail(new Error(`Windows DPAPI helper exceeded its ${timeoutMs}ms deadline.`), true), timeoutMs)
     try {
-      child.stdin.end(ciphertext, "utf8")
+      child.stdin.end(input, "utf8")
     } catch {
       fail(new Error("Windows DPAPI helper input failed."), true)
     }
   })
 }
 
-async function resolveExecutable(value: string, launcherPath: string): Promise<string> {
-  if (!value || !path.isAbsolute(value) || !existsSync(value)) throw new Error("OMW_OPENCODE_EXECUTABLE 必須是存在的 absolute path。")
-  const executable = await realpath(value)
+export function resolveDataDirectory(environment: NodeJS.ProcessEnv): string {
+  if (environment.OMW_DATA_DIR) return path.resolve(environment.OMW_DATA_DIR)
+  if (!environment.LOCALAPPDATA) throw new Error("找不到 LOCALAPPDATA；請明確設定 OMW_DATA_DIR。")
+  return path.resolve(environment.LOCALAPPDATA, "OMW")
+}
+
+export async function resolveExecutable(value: string, launcherPath: string, environment: NodeJS.ProcessEnv = process.env): Promise<string> {
+  const candidates = value
+    ? [value]
+    : [
+        ...(environment.OPENCODE_INSTALL_DIR ? [path.join(environment.OPENCODE_INSTALL_DIR, "opencode.exe")] : []),
+        ...(environment.XDG_BIN_DIR ? [path.join(environment.XDG_BIN_DIR, "opencode.exe")] : []),
+        ...(environment.PATH ?? "").split(path.delimiter).filter(Boolean).map((entry) => path.join(entry, "opencode.exe")),
+      ]
+  if (value && !path.isAbsolute(value)) throw new Error("OMW_OPENCODE_EXECUTABLE 必須是存在的 absolute path。")
+  const candidate = candidates.find((item) => path.isAbsolute(item) && existsSync(item))
+  if (!candidate) {
+    throw new Error("找不到可驗證的 OpenCode executable；請以 OMW_OPENCODE_EXECUTABLE 提供真正 executable 的絕對路徑。")
+  }
+  const details = await stat(candidate)
+  if (!details.isFile()) throw new Error("OpenCode executable 必須是一般檔案。")
+  const executable = await realpath(candidate)
   const launcher = existsSync(launcherPath) ? await realpath(launcherPath) : path.resolve(launcherPath)
   if (samePath(executable, launcher) || /^omw-opencode(?:\.cmd|\.ps1|\.exe)?$/i.test(path.basename(executable))) {
     throw new Error("OMW_OPENCODE_EXECUTABLE 不可指向 omw-opencode launcher。")

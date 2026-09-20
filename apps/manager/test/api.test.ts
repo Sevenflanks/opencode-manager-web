@@ -7,6 +7,8 @@ import { DatabaseSync } from "node:sqlite"
 import test from "node:test"
 import { buildApp } from "../src/app.js"
 import { SeparateRequestAuthenticator, type StoredCredentials } from "../src/auth.js"
+import { CredentialController } from "../src/credential-controller.js"
+import type { CredentialStore } from "../src/credential-store.js"
 import { ManagerError } from "../src/errors.js"
 import { ManagerRepository, type InstanceRecord } from "../src/repository.js"
 import { ManagerService } from "../src/service.js"
@@ -309,8 +311,11 @@ async function dynamicPortPool(): Promise<{ min: number; max: number }> {
 async function fixture(t: test.TestContext, access?: {
   publicOrigin?: string
   credentials?: StoredCredentials
+  authenticator?: SeparateRequestAuthenticator
   launcherCredentials?: StoredCredentials
   portPool?: { min: number; max: number }
+  credentialController?: CredentialController
+  shutdownManager?: () => void
 }) {
   const root = await mkdtemp(path.join(tmpdir(), "omw-api-"))
   const project = path.join(root, "project")
@@ -327,11 +332,13 @@ async function fixture(t: test.TestContext, access?: {
     ...(access?.publicOrigin && access.credentials ? {
       publicOrigin: access.publicOrigin,
       allowedOrigins: new Set([mutationHeaders.origin, access.publicOrigin]),
-      authenticator: new SeparateRequestAuthenticator(access.credentials),
+      authenticator: access.authenticator ?? new SeparateRequestAuthenticator(access.credentials),
     } : {}),
     ...(access?.launcherCredentials ? {
       launcherAuthenticator: new SeparateRequestAuthenticator(access.launcherCredentials),
     } : {}),
+    ...(access?.credentialController ? { credentialController: access.credentialController } : {}),
+    ...(access?.shutdownManager ? { shutdownManager: access.shutdownManager } : {}),
     webRoot: root,
   })
   t.after(async () => {
@@ -377,6 +384,108 @@ test("remote entry requires OMW Basic auth and never trusts forwarded authority"
   })
   assert.equal(forwardedSpoof.statusCode, 403)
   assert.equal(forwardedSpoof.json().error.code, "UNTRUSTED_AUTHORITY")
+})
+
+test("credential update verifies the current password, preserves launcher token, and switches auth immediately", async (t) => {
+  const initial: StoredCredentials = {
+    manager: { username: "omw-user", password: "manager-test-password" },
+    launcherToken: "launcher-test-token-that-is-not-browser-auth",
+  }
+  let saved: StoredCredentials | null = null
+  const store: CredentialStore = {
+    exists: () => true,
+    load: async () => initial,
+    save: async (value) => { saved = value },
+  }
+  const authenticator = new SeparateRequestAuthenticator(initial)
+  const controller = new CredentialController(store, authenticator, initial)
+  const publicOrigin = "https://device.example.ts.net:8443"
+  const { app } = await fixture(t, { publicOrigin, credentials: initial, authenticator, credentialController: controller })
+  const authority = new URL(publicOrigin).host
+  const oldAuthorization = `Basic ${Buffer.from("omw-user:manager-test-password").toString("base64")}`
+  const mutation = { host: authority, origin: publicOrigin, "x-omw-csrf": "1", authorization: oldAuthorization }
+
+  const denied = await app.inject({
+    method: "PATCH",
+    url: "/api/v1/settings/credentials",
+    headers: mutation,
+    payload: { currentPassword: "wrong-current-password", username: "next-user", password: "next-manager-password" },
+  })
+  assert.equal(denied.statusCode, 401)
+  assert.equal(saved, null)
+
+  const updated = await app.inject({
+    method: "PATCH",
+    url: "/api/v1/settings/credentials",
+    headers: mutation,
+    payload: { currentPassword: "manager-test-password", username: "next-user", password: "next-manager-password" },
+  })
+  assert.equal(updated.statusCode, 204)
+  assert.deepEqual(saved, {
+    manager: { username: "next-user", password: "next-manager-password" },
+    launcherToken: initial.launcherToken,
+  })
+
+  const oldRejected = await app.inject({ method: "GET", url: "/api/v1/overview", headers: { host: authority, authorization: oldAuthorization } })
+  assert.equal(oldRejected.statusCode, 401)
+  const nextAuthorization = `Basic ${Buffer.from("next-user:next-manager-password").toString("base64")}`
+  const nextAccepted = await app.inject({ method: "GET", url: "/api/v1/overview", headers: { host: authority, authorization: nextAuthorization } })
+  assert.equal(nextAccepted.statusCode, 200)
+})
+
+test("failed credential persistence keeps the old password usable", async (t) => {
+  const initial: StoredCredentials = {
+    manager: { username: "omw-user", password: "manager-test-password" },
+    launcherToken: "launcher-test-token-that-is-not-browser-auth",
+  }
+  const store: CredentialStore = {
+    exists: () => true,
+    load: async () => initial,
+    save: async () => { throw new Error("fixture write failure") },
+  }
+  const authenticator = new SeparateRequestAuthenticator(initial)
+  const controller = new CredentialController(store, authenticator, initial)
+  const publicOrigin = "https://device.example.ts.net:8443"
+  const { app } = await fixture(t, { publicOrigin, credentials: initial, authenticator, credentialController: controller })
+  const authority = new URL(publicOrigin).host
+  const authorization = `Basic ${Buffer.from("omw-user:manager-test-password").toString("base64")}`
+  const failed = await app.inject({
+    method: "PATCH",
+    url: "/api/v1/settings/credentials",
+    headers: { host: authority, origin: publicOrigin, "x-omw-csrf": "1", authorization },
+    payload: { currentPassword: "manager-test-password", username: "next-user", password: "next-manager-password" },
+  })
+  assert.equal(failed.statusCode, 500)
+  const stillAccepted = await app.inject({ method: "GET", url: "/api/v1/overview", headers: { host: authority, authorization } })
+  assert.equal(stillAccepted.statusCode, 200)
+})
+
+test("manager shutdown endpoint schedules only Manager shutdown", async (t) => {
+  let shutdowns = 0
+  const { app, runtime } = await fixture(t, { shutdownManager: () => { shutdowns++ } })
+  const response = await app.inject({ method: "POST", url: "/api/v1/manager/shutdown", headers: mutationHeaders, payload: {} })
+  assert.equal(response.statusCode, 202)
+  assert.deepEqual(response.json(), { stopping: true })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(shutdowns, 1)
+  assert.equal(runtime.stopCount, 0)
+})
+
+test("launcher identity requires the launcher token and has an exact product marker", async (t) => {
+  const credentials: StoredCredentials = {
+    manager: { username: "omw-user", password: "manager-test-password" },
+    launcherToken: "launcher-test-token-that-is-not-browser-auth",
+  }
+  const { app } = await fixture(t, { launcherCredentials: credentials })
+  const denied = await app.inject({ method: "GET", url: "/api/v1/launcher/identity", headers: readHeaders })
+  assert.equal(denied.statusCode, 401)
+  const accepted = await app.inject({
+    method: "GET",
+    url: "/api/v1/launcher/identity",
+    headers: { ...readHeaders, "x-omw-launcher-token": credentials.launcherToken },
+  })
+  assert.equal(accepted.statusCode, 200)
+  assert.deepEqual(accepted.json(), { product: "omw-manager", protocolVersion: 1 })
 })
 
 test("launcher API rejects an invalid launcher token", async (t) => {
