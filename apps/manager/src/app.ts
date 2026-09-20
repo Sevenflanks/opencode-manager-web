@@ -4,6 +4,7 @@ import process from "node:process"
 import Fastify, { type FastifyInstance } from "fastify"
 import type { ConnectivityInfo, LauncherRegistrationRequest, LauncherReservationRequest, OverviewFilter } from "@omw/contracts"
 import type { RequestAuthenticator } from "./auth.js"
+import { CredentialUpdateError, type CredentialController } from "./credential-controller.js"
 import { ManagerError } from "./errors.js"
 import type { ManagerService } from "./service.js"
 
@@ -24,6 +25,8 @@ export function buildApp(options: {
   publicOrigin?: string
   authenticator?: RequestAuthenticator
   launcherAuthenticator?: RequestAuthenticator
+  credentialController?: CredentialController
+  shutdownManager?: () => void
   connectivity?: { get(): Promise<ConnectivityInfo> }
   webRoot?: string
 }): FastifyInstance {
@@ -68,6 +71,9 @@ export function buildApp(options: {
   })
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof CredentialUpdateError) {
+      return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } })
+    }
     if (error instanceof ManagerError) {
       return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message, details: error.details } })
     }
@@ -92,6 +98,33 @@ export function buildApp(options: {
     return options.connectivity
       ? await options.connectivity.get()
       : fallbackConnectivity(options.authority.port, options.publicOrigin)
+  })
+
+  app.patch<{ Body: { currentPassword: string; username: string; password: string } }>("/api/v1/settings/credentials", {
+    schema: {
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["currentPassword", "username", "password"],
+        properties: {
+          currentPassword: { type: "string", minLength: 1, maxLength: 1024 },
+          username: { type: "string", minLength: 1, maxLength: 256 },
+          password: { type: "string", minLength: 16, maxLength: 4096 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (!options.credentialController) {
+      throw new ManagerError("CREDENTIAL_UPDATE_UNAVAILABLE", "目前無法更新 OMW 帳密。", 503)
+    }
+    await options.credentialController.update(request.body)
+    return reply.code(204).send()
+  })
+
+  app.post("/api/v1/manager/shutdown", async (_request, reply) => {
+    if (!options.shutdownManager) throw new ManagerError("SHUTDOWN_UNAVAILABLE", "目前無法從 Web 停止 OMW。", 503)
+    setImmediate(options.shutdownManager)
+    return reply.code(202).send({ stopping: true })
   })
 
   app.get<{ Querystring: { path?: string } }>("/api/v1/directories", async (request) => {
@@ -185,6 +218,7 @@ export function buildApp(options: {
   }, async (request) => await options.service.selectPrimarySession(request.params.id, request.body.sessionId))
 
   if (options.launcherAuthenticator) {
+    app.get("/api/v1/launcher/identity", async () => ({ product: "omw-manager", protocolVersion: 1 }))
     app.post<{ Body: LauncherReservationRequest }>("/api/v1/launcher/reservations", {
       schema: {
         body: {

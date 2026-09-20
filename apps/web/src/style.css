@@ -19,6 +19,9 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 .topbar, .section-heading, .detail-head, .current-directory, .detail-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .topbar { min-height: 72px; border-bottom: 1px solid #2c3236; margin-bottom: 16px; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
+.manager-stopped { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; border: 1px solid #765b2f; padding: 14px; color: #f0c77f; background: #211a12; }
+.manager-stopped > svg { width: 20px; flex: 0 0 20px; }
+.manager-stopped p { margin-top: 5px; color: #c7b38d; font-size: .76rem; line-height: 1.5; }
 h1, h2, h3, h4, p { margin: 0; }
 h1 { font-size: clamp(1.3rem, 3vw, 1.8rem); letter-spacing: -.035em; }
 h2 { font-size: 1rem; }
@@ -229,6 +232,13 @@ h3 { font-size: .95rem; }
 .start-panel-body { min-width: 0; overflow-y: auto; overscroll-behavior: contain; padding: 14px; }
 .start-panel-body .shortcut-rail, .start-panel-body .browser-panel { margin-bottom: 14px; }
 .start-panel-body .browser-panel { margin-bottom: 0; }
+.manager-settings { width: min(620px, 100%); border: 1px solid #465055; border-radius: 10px; background: #111416; box-shadow: 0 24px 70px #050607cc; }
+.manager-settings-body { display: grid; gap: 14px; padding: 14px; }
+.credential-form, .manager-shutdown-panel { display: grid; gap: 10px; border: 1px solid #30373b; padding: 14px; background: #15191b; }
+.credential-form > p, .manager-shutdown-panel > p { color: #929da2; font-size: .74rem; line-height: 1.5; }
+.credential-form label { display: grid; gap: 5px; color: #aeb8bd; font-size: .72rem; }
+.credential-form > button, .manager-shutdown-panel > button { justify-self: start; }
+.manager-shutdown-panel { border-color: #5d3531; background: #1d1514; }
 
 .start-panel-enter-active[data-motion="pointer"] { transition: opacity 180ms cubic-bezier(.23, 1, .32, 1); }
 .start-panel-leave-active[data-motion="pointer"] { transition: opacity 120ms cubic-bezier(.23, 1, .32, 1); pointer-events: none; }
@@ -292,6 +302,7 @@ h3 { font-size: .95rem; }
   .topbar { min-height: 60px; flex-wrap: wrap; padding-bottom: 10px; }
   .topbar-actions { width: 100%; }
   .topbar-actions > :first-child { flex: 1; }
+  .topbar-actions { flex-wrap: wrap; }
   .connectivity { grid-template-columns: minmax(0, 1fr); padding: 9px 10px; }
   .connectivity-status h2 { white-space: normal; }
   .connectivity-access { border-top: 1px solid #30383d; border-left: 0; padding: 8px 0 0; }
@@ -327,6 +338,8 @@ h3 { font-size: .95rem; }
   .shortcut-form input, .shortcut-form input:first-child, .browse-form input { max-width: none; flex: 1 1 100%; }
   .start-panel-overlay { place-items: end center; padding: max(8px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom)); }
   .start-panel { max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); border-radius: 10px 10px 0 0; }
+  .manager-settings { max-height: calc(100dvh - 16px); overflow-y: auto; border-radius: 10px 10px 0 0; }
+  .credential-form > button, .manager-shutdown-panel > button { width: 100%; }
   .start-panel-enter-from[data-motion="pointer"] .start-panel, .start-panel-leave-to[data-motion="pointer"] .start-panel { transform: translateY(8px); }
   .start-panel-body { padding: 10px; }
   .confirmation-content { width: calc(100vw - 16px - env(safe-area-inset-left) - env(safe-area-inset-right)); padding: 16px; }

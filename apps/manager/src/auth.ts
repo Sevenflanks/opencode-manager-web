@@ -19,7 +19,7 @@ export interface RequestAuthenticator {
 }
 
 export class SeparateRequestAuthenticator implements RequestAuthenticator {
-  constructor(private readonly credentials: StoredCredentials) {}
+  constructor(private credentials: StoredCredentials) {}
 
   authorize(headers: IncomingHttpHeaders, audience: AuthAudience): boolean {
     if (audience === "launcher") {
@@ -34,6 +34,14 @@ export class SeparateRequestAuthenticator implements RequestAuthenticator {
 
   challenge(audience: AuthAudience): string | null {
     return audience === "browser" ? 'Basic realm="OMW", charset="UTF-8"' : null
+  }
+
+  matchesManagerPassword(password: string): boolean {
+    return secretEqual(password, this.credentials.manager.password)
+  }
+
+  replace(credentials: StoredCredentials): void {
+    this.credentials = credentials
   }
 }
 

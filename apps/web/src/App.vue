@@ -15,6 +15,7 @@ import {
   LoaderCircleIcon,
   PencilIcon,
   PlayIcon,
+  PowerIcon,
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
@@ -114,6 +115,14 @@ const confirmation = ref<ConfirmationRequest | null>(null)
 const confirmationDisplay = ref<ConfirmationRequest | null>(null)
 const confirmationAccepting = ref(false)
 const confirmationReturnFocus = ref<HTMLElement | null>(null)
+const managerSettingsOpen = ref(false)
+const managerSettingsBusy = ref(false)
+const managerSettingsError = ref("")
+const managerUsername = ref("omw")
+const currentManagerPassword = ref("")
+const nextManagerPassword = ref("")
+const confirmManagerPassword = ref("")
+const managerStopped = ref(false)
 let confirmationClosing = false
 let confirmationLeaveCompleted = false
 let pollTimer: number | undefined
@@ -1098,6 +1107,65 @@ async function mutate(operation: () => Promise<void>): Promise<void> {
   }
 }
 
+function openManagerSettings(): void {
+  beginUserAction()
+  managerSettingsError.value = ""
+  currentManagerPassword.value = ""
+  nextManagerPassword.value = ""
+  confirmManagerPassword.value = ""
+  managerSettingsOpen.value = true
+}
+
+async function updateManagerCredentials(): Promise<void> {
+  managerSettingsError.value = ""
+  if (nextManagerPassword.value !== confirmManagerPassword.value) {
+    managerSettingsError.value = "兩次輸入的新密碼不一致。"
+    return
+  }
+  managerSettingsBusy.value = true
+  try {
+    await managerApi.updateCredentials({
+      currentPassword: currentManagerPassword.value,
+      username: managerUsername.value,
+      password: nextManagerPassword.value,
+    })
+    currentManagerPassword.value = ""
+    nextManagerPassword.value = ""
+    confirmManagerPassword.value = ""
+    showNotice("OMW 帳密已更新；後續請求將使用新帳密，遠端瀏覽器可能要求重新登入。")
+  } catch (cause) {
+    managerSettingsError.value = message(cause)
+  } finally {
+    managerSettingsBusy.value = false
+  }
+}
+
+function stopManager(): void {
+  requestConfirmation({
+    title: "停止 OMW Manager？",
+    description: "管理介面將立即中斷，但所有 OpenCode TUI、背景執行個體、Sessions 與 Project 工作都會繼續運作。這不是停止執行個體，也不是停止追蹤。",
+    confirmLabel: "只停止 OMW",
+    tone: "danger",
+    accept: performStopManager,
+  })
+}
+
+async function performStopManager(): Promise<void> {
+  beginUserAction()
+  managerSettingsBusy.value = true
+  try {
+    await managerApi.shutdown()
+    window.clearInterval(pollTimer)
+    window.clearInterval(connectivityPollTimer)
+    managerSettingsOpen.value = false
+    managerStopped.value = true
+  } catch (cause) {
+    managerSettingsError.value = message(cause)
+  } finally {
+    managerSettingsBusy.value = false
+  }
+}
+
 function beginUserAction(): void {
   actionError.value = ""
   clearNotice()
@@ -1336,11 +1404,17 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
       </div>
       <div class="topbar-actions">
         <Button variant="success" data-dialog-focus-fallback @click="openStartPanel"><PlusIcon />啟動執行個體</Button>
+        <Button variant="outline" size="sm" class="no-press-transform" @click="openManagerSettings"><Settings2Icon />OMW 設定</Button>
         <Button variant="outline" size="sm" class="no-press-transform" :disabled="loading" @click="loadOverview(true, 'user')">
           <RefreshCwIcon :class="{ spin: loading }" />重新整理
         </Button>
       </div>
     </header>
+
+    <section v-if="managerStopped" class="manager-stopped" role="status">
+      <PowerIcon />
+      <div><strong>OMW Manager 已停止</strong><p>OpenCode TUI、背景執行個體、Sessions 與 Project 工作仍繼續運作。重新執行 <code>omw</code> 可恢復管理介面。</p></div>
+    </section>
 
     <section class="connectivity" :data-tone="connectivityTone" aria-labelledby="connectivity-title" :aria-busy="connectivityLoading">
       <div class="connectivity-status">
@@ -1686,6 +1760,32 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
     </section>
   </div>
   </Transition>
+
+  <div v-if="managerSettingsOpen" class="start-panel-overlay manager-settings-overlay" @pointerdown.self="managerSettingsOpen = false">
+    <section class="manager-settings" role="dialog" aria-modal="true" aria-labelledby="manager-settings-title">
+      <header class="start-panel-head">
+        <div><p class="eyebrow">MANAGER SETTINGS</p><h2 id="manager-settings-title">OMW 設定</h2></div>
+        <Button variant="ghost" size="icon" aria-label="關閉 OMW 設定" :disabled="managerSettingsBusy" @click="managerSettingsOpen = false"><XIcon /></Button>
+      </header>
+      <div class="manager-settings-body">
+        <form class="credential-form" @submit.prevent="updateManagerCredentials">
+          <div><p class="eyebrow">ACCOUNT</p><h3>修改 OMW 帳號與密碼</h3></div>
+          <p>本機與遠端模式都必須驗證目前密碼。更新不會變更 launcher token、資料目錄、SQLite 或 OpenCode Sessions。</p>
+          <label><span>帳號</span><Input v-model="managerUsername" autocomplete="username" required /></label>
+          <label><span>目前密碼</span><Input v-model="currentManagerPassword" type="password" autocomplete="current-password" required /></label>
+          <label><span>新密碼（至少 16 字元）</span><Input v-model="nextManagerPassword" type="password" autocomplete="new-password" minlength="16" required /></label>
+          <label><span>再次輸入新密碼</span><Input v-model="confirmManagerPassword" type="password" autocomplete="new-password" minlength="16" required /></label>
+          <Button type="submit" :disabled="managerSettingsBusy">{{ managerSettingsBusy ? '更新中…' : '更新帳密' }}</Button>
+        </form>
+        <section class="manager-shutdown-panel">
+          <div><p class="eyebrow">MANAGER LIFECYCLE</p><h3>停止 OMW</h3></div>
+          <p>只停止管理介面。OpenCode TUI、背景執行個體、Sessions 與 Project 工作不會被停止或刪除。</p>
+          <Button variant="destructive" :disabled="managerSettingsBusy" @click="stopManager"><PowerIcon />停止 OMW</Button>
+        </section>
+        <p v-if="managerSettingsError" class="lifecycle-error" role="alert"><AlertTriangleIcon />{{ managerSettingsError }}</p>
+      </div>
+    </section>
+  </div>
 
   <ConfirmationDialog
     :open="Boolean(confirmation)"

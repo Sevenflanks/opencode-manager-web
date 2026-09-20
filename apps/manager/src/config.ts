@@ -1,3 +1,5 @@
+import path from "node:path"
+
 export interface RemoteAccessConfig {
   publicManagerOrigin: string
   expectedLoopbackOrigin: string
@@ -9,6 +11,12 @@ export interface RemoteAccessConfig {
 export interface InstancePortPoolConfig {
   min: number
   max: number
+}
+
+export function readDataDirectory(environment: NodeJS.ProcessEnv): string {
+  if (environment.OMW_DATA_DIR) return path.resolve(environment.OMW_DATA_DIR)
+  if (!environment.LOCALAPPDATA) throw new Error("找不到 LOCALAPPDATA；請明確設定 OMW_DATA_DIR。")
+  return path.resolve(environment.LOCALAPPDATA, "OMW")
 }
 
 export function readRemoteAccessConfig(environment: NodeJS.ProcessEnv, managerPort: number): RemoteAccessConfig | null {

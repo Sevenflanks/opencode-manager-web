@@ -3,8 +3,9 @@ import process from "node:process"
 import { fileURLToPath } from "node:url"
 import { buildApp } from "./app.js"
 import { SeparateRequestAuthenticator, type StoredCredentials } from "./auth.js"
-import { readInstancePortPoolConfig, readRemoteAccessConfig } from "./config.js"
+import { readDataDirectory, readInstancePortPoolConfig, readRemoteAccessConfig } from "./config.js"
 import { ConnectivityService, tailscaleExecutable } from "./connectivity.js"
+import { CredentialController } from "./credential-controller.js"
 import { DpapiCredentialStore } from "./credential-store.js"
 import { ManagerRepository } from "./repository.js"
 import { OpenCodeRuntime } from "./runtime.js"
@@ -12,19 +13,18 @@ import { ManagerService } from "./service.js"
 
 const host = "127.0.0.1"
 const port = parsePort(process.env.OMW_PORT ?? "4174")
-const dataDirectory = path.resolve(process.env.OMW_DATA_DIR ?? path.join(process.cwd(), ".omw"))
+const dataDirectory = readDataDirectory(process.env)
 const remoteAccess = readRemoteAccessConfig(process.env, port)
 const portPool = readInstancePortPoolConfig(process.env, remoteAccess)
 const launcherIntegration = process.env.OMW_LAUNCHER_INTEGRATION === "1"
-let credentials: StoredCredentials | undefined
-if (remoteAccess || launcherIntegration) {
-  const credentialStore = new DpapiCredentialStore({
-    dataDirectory,
-    ...(process.env.OMW_POWERSHELL_EXECUTABLE ? { powershell: process.env.OMW_POWERSHELL_EXECUTABLE } : {}),
-  })
-  if (!credentialStore.exists()) throw new Error("Remote access 或 launcher integration 需要先建立 Windows current-user DPAPI credential store。")
-  credentials = await credentialStore.load()
-}
+const credentialStore = new DpapiCredentialStore({
+  dataDirectory,
+  ...(process.env.OMW_POWERSHELL_EXECUTABLE ? { powershell: process.env.OMW_POWERSHELL_EXECUTABLE } : {}),
+})
+if (!credentialStore.exists()) throw new Error("請先執行 omw，在互動式終端完成初始設定。")
+const credentials: StoredCredentials = await credentialStore.load()
+const authenticator = new SeparateRequestAuthenticator(credentials)
+const credentialController = new CredentialController(credentialStore, authenticator, credentials)
 const repository = new ManagerRepository(path.join(dataDirectory, "omw.sqlite"))
 const runtime = new OpenCodeRuntime({
   executable: process.env.OMW_OPENCODE_EXECUTABLE ?? "",
@@ -40,7 +40,7 @@ const connectivity = new ConnectivityService({
   executable: tailscaleExecutable(process.env),
 })
 const allowedOrigins = readAllowedOrigins(port, remoteAccess?.publicManagerOrigin)
-const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist")
+const webRoot = path.resolve(process.env.OMW_WEB_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist"))
 const app = buildApp({
   service,
   connectivity,
@@ -48,8 +48,10 @@ const app = buildApp({
   allowedOrigins,
   webRoot,
   ...(remoteAccess ? { publicOrigin: remoteAccess.publicManagerOrigin } : {}),
-  ...(remoteAccess && credentials ? { authenticator: new SeparateRequestAuthenticator(credentials) } : {}),
-  ...(launcherIntegration && credentials ? { launcherAuthenticator: new SeparateRequestAuthenticator(credentials) } : {}),
+  credentialController,
+  shutdownManager: () => { void app.close() },
+  ...(remoteAccess ? { authenticator } : {}),
+  ...(launcherIntegration ? { launcherAuthenticator: authenticator } : {}),
 })
 
 app.addHook("onClose", async () => {

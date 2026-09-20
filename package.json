@@ -6,10 +6,10 @@
   "engines": { "node": ">=24.0.0" },
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "build": "npm run build -w @omw/contracts && npm run build -w @omw/manager && npm run build -w @omw/launcher && npm run build -w @omw/web",
+    "build": "npm run build -w @omw/contracts && npm run build -w @omw/manager && npm run build -w @sevenflanks/omw && npm run build -w @omw/web",
     "dev": "npm run dev -w @omw/manager",
-    "test": "npm run test -w @omw/manager && npm run test -w @omw/launcher",
-    "typecheck": "npm run typecheck -w @omw/contracts && npm run typecheck -w @omw/manager && npm run typecheck -w @omw/launcher && npm run typecheck -w @omw/web"
+    "test": "npm run test -w @omw/manager && npm run test -w @sevenflanks/omw",
+    "typecheck": "npm run typecheck -w @omw/contracts && npm run typecheck -w @omw/manager && npm run typecheck -w @sevenflanks/omw && npm run typecheck -w @omw/web"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
