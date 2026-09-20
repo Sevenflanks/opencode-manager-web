@@ -14,3 +14,8 @@
 
 採單一領域文件結構。
 探索與設計前依 `docs/agents/domain.md` 讀取詞彙表及相關 ADR。
+
+### Historical research
+
+使用 phase-1 spike、prototype 或 handoff 作為證據前，先讀取
+`docs/archive/phase1/README.md`；歸檔內容保留歷史觀察，不是現行契約。
