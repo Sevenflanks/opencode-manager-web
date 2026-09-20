@@ -199,3 +199,5 @@ loopback 開發模式，不會自動建立對外入口。
 - [MVP 規格](https://github.com/Sevenflanks/opencode-manager-web/issues/1)
 - [工作票索引](docs/specs/omw-mvp-work-plan.md)
 - [領域詞彙](CONTEXT.md)
+- [文件與研究物件盤點](docs/project-inventory.md)
+- [Phase-1 歷史研究歸檔](docs/archive/phase1/README.md)

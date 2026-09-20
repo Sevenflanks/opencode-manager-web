@@ -1,0 +1,28 @@
+{
+  "name": "omw-console-prototype",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "build": "vue-tsc --noEmit && vite build"
+  },
+  "dependencies": {
+    "@vueuse/core": "^15.0.0",
+    "class-variance-authority": "latest",
+    "clsx": "latest",
+    "lucide-vue-next": "0.577.0",
+    "reka-ui": "^2.10.4",
+    "tailwind-merge": "latest",
+    "vue": "latest"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "latest",
+    "@types/node": "latest",
+    "@vitejs/plugin-vue": "latest",
+    "tailwindcss": "latest",
+    "typescript": "5.9.3",
+    "vite": "latest",
+    "vue-tsc": "latest"
+  }
+}
