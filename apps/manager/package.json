@@ -6,9 +6,10 @@
   "scripts": {
     "prebuild": "npm run build -w @omw/contracts",
     "build": "tsc -p tsconfig.json",
-    "dev": "npm run build && node dist/src/server.js",
+    "dev": "npm run build && node ../../scripts/isolated-entry.mjs development node dist/src/server.js",
+    "start:configured": "npm run build && node dist/src/server.js",
     "credentials:setup": "npm run build && node dist/src/credential-setup.js",
-    "test": "npm run build && node --test dist/test/*.test.js",
+    "test": "npm run build && node ../../scripts/isolated-entry.mjs test node --test dist/test/*.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

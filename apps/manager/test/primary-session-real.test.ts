@@ -6,6 +6,7 @@ import net from "node:net"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
+import { prepareIsolatedEnvironment } from "../src/isolation.js"
 import { ManagerRepository, type InstanceRecord } from "../src/repository.js"
 import {
   OpenCodeRuntime,
@@ -84,12 +85,14 @@ test("real OpenCode SSE pins each instance's first native activity without UI po
   await Promise.all([mkdir(project, { recursive: true }), mkdir(config, { recursive: true }), mkdir(data, { recursive: true })])
 
   const provider = await startMockProvider()
-  await writeFile(path.join(config, "opencode.json"), `${JSON.stringify(mockConfig(provider.port), null, 2)}\n`, "utf8")
+  const configFile = path.join(config, "opencode.json")
+  await writeFile(configFile, `${JSON.stringify(mockConfig(provider.port), null, 2)}\n`, "utf8")
+  const isolation = await prepareIsolatedEnvironment({ mode: "test", root: sandbox, configFile, sourceEnvironment: process.env })
   const [portMin, portMax] = await freeAdjacentPorts()
   const runtime = new RecordingOpenCodeRuntime({
     executable,
     dataDirectory: data,
-    environment: isolatedEnvironment(sandbox, config),
+    environment: isolation.environment,
   })
   const repository = new ManagerRepository(managerDatabase)
   const service = new ManagerService(repository, runtime, { min: portMin, max: portMax })
@@ -287,37 +290,6 @@ function mockConfig(providerPort: number): object {
       },
     },
     permission: { bash: "deny", edit: "deny", write: "deny", external_directory: "deny", webfetch: "deny" },
-  }
-}
-
-function isolatedEnvironment(sandbox: string, config: string): NodeJS.ProcessEnv {
-  const allowed = new Set(["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "COMSPEC"])
-  const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => allowed.has(name.toUpperCase())))
-  const home = path.join(sandbox, "home")
-  return {
-    ...environment,
-    HOME: home,
-    USERPROFILE: home,
-    OPENCODE_TEST_HOME: home,
-    XDG_CONFIG_HOME: path.join(sandbox, "xdg-config"),
-    XDG_DATA_HOME: path.join(sandbox, "xdg-data"),
-    XDG_CACHE_HOME: path.join(sandbox, "xdg-cache"),
-    XDG_STATE_HOME: path.join(sandbox, "xdg-state"),
-    OPENCODE_DB: path.join(sandbox, "opencode.sqlite"),
-    OPENCODE_CONFIG: path.join(config, "opencode.json"),
-    OPENCODE_CONFIG_DIR: config,
-    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-    OPENCODE_PURE: "1",
-    OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-    OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
-    OPENCODE_DISABLE_CLAUDE_CODE: "1",
-    OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: "1",
-    OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1",
-    OPENCODE_DISABLE_MODELS_FETCH: "1",
-    OPENCODE_DISABLE_AUTOUPDATE: "1",
-    OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
-    OPENCODE_DISABLE_PRUNE: "1",
-    OPENCODE_AUTO_SHARE: "false",
   }
 }
 

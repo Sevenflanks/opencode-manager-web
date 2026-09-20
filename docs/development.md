@@ -176,9 +176,83 @@ cleanup 通過。這些證據只支持 OMW 已觀測到的活動與 explicit mut
 TUI 直接建立 Session 會自動改綁、native TUI 知道 selected Session，或 SSE 漏接後 OMW 能從歷史
 metadata 還原 binding。
 
+## 隔離的開發、測試與驗收入口
+
+Repository 內的 `npm run dev`、`npm run dev:credentials`、`npm run dev:omw -- ...`、`npm test` 與
+`npm run acceptance:isolated -- <bounded-command>` 都透過同一套 child environment policy 執行，不修改
+呼叫端 shell、使用者 profile、`PATH` 或全域設定。該 policy 只保留 child 啟動所需的 Windows process
+keys、`PATH`、locale、CI/color、明示的 executable/test opt-in，以及唯讀使用的
+`NODE_EXTRA_CA_CERTS`。它刻意不繼承 `NODE_OPTIONS`，避免 host 透過 preload 或其他 Node flags 將 code
+注入隔離 child；也不自動繼承 provider credentials 或其他企業環境設定。Policy 並覆寫：
+
+- OMW data、credentials、launcher token 與 SQLite 所在的 `OMW_DATA_DIR`
+- OpenCode 的 `HOME`、`USERPROFILE`、`OPENCODE_TEST_HOME`、XDG directories、absolute
+  `OPENCODE_DB`、config directory、`TEMP` 與 `TMP`
+- Manager port 與固定 Instance port pool；port 由 isolation root 穩定導出，但不是全域 reservation，hash
+  仍可能碰撞。若被 foreign process 佔用只會失敗，不停止或取代該 process
+
+開發環境固定保存在 worktree 的 `.omw/development`，因此同一 worktree 重啟會保留自己的 OMW
+與 OpenCode data，但不會讀取日常 `%LOCALAPPDATA%\OMW`、OpenCode DB、credentials、token 或 API target。
+每次 launch 都會先 canonicalize isolation root 最近的既存 ancestor，並拒絕 root 或已知可寫 endpoint
+中的 symlink、junction、其他 canonical alias 或 `nlink > 1` 的 mutable file，避免既存 reparse point
+或 NTFS hard link 將寫入導向日常資料。明示的
+`OMW_DEV_SHARED_CONFIG` source 是唯一例外：entry 可經 alias 讀取其 canonical regular file，但只將該檔案
+當下的 bytes 寫入受 guard 保護的 private snapshot；read-only source 即使有其他 hard link也不會成為
+mutable target，`OPENCODE_CONFIG` 只會指向 snapshot。
+第一次啟動前，需在 isolated data root 建立專用 OMW credentials：
+
+```powershell
+# 互動式 masked setup，只寫入此 worktree 的 .omw/development
+npm run dev:credentials
+
+# 後續啟動重用同一份 worktree-local data
+npm run dev
+
+# 啟動或重用同一份 worktree-local Manager
+npm run dev:omw
+
+# 透過同一份隔離 context 啟動目前 Project 的 Local TUI；-- 後參數原樣交給 omw
+npm run dev:omw -- opencode (Get-Location).Path
+```
+
+預設 OpenCode config 是自建的最小 `plugin: []`、`mcp: {}` config，且停用 default plugins、external
+skills、model fetch、autoupdate、LSP download 與 Claude Code integration。只有明確設定 absolute
+`OMW_DEV_SHARED_CONFIG` 才會 opt in 共用 config：
+
+```powershell
+$env:OMW_DEV_SHARED_CONFIG = (Resolve-Path 'C:\path\to\opencode.json').Path
+npm run dev
+```
+
+此 opt-in 只 snapshot 所選檔案本身，不複製同目錄其他設定、secret 或 plugin 檔案；若 secret 直接寫在
+所選檔案內，則它屬於明示選取的 bytes，仍會進入 snapshot。可寫的 `OPENCODE_CONFIG`、
+`OPENCODE_CONFIG_DIR`、DB、cache、state 與 temp 全部位於 `.omw/development`，OpenCode 即使 write back
+也只會改 private snapshot，原檔不會成為 mutable target。Entry 不轉傳宿主的 API keys、tokens、
+passwords 或 auth variables。
+
+Snapshot 位於 isolated config directory；entry 不實作 OpenCode config parser，也不重寫相對路徑，
+因此依賴原始 config 所在目錄作為基底的相對引用不受支援，應改用 absolute path 或不依賴該基底的
+package identifier。Snapshot 內明示的 plugin／MCP 仍會照 OpenCode 行為執行並可能產生外部副作用；
+snapshot 只防止 source write-back，不代表 plugin 安全。使用者必須先檢查內容，需要 provider credential
+時應另建 development-only credential，不可依賴自動複製日常 secret。
+
+每次 `npm test` 與 `acceptance:isolated` 都建立不重用的 fresh temporary root，先建立 `OPENCODE_DB`
+parent。Generic entry 不會因 direct child exit 就推論 descendants 已全部退出，因此成功或失敗都保留 root
+並輸出路徑供診斷；只有知道 process exact identity 的 test/harness owner 證明其 descendants 已結束後，
+才能清理該次 root。Test/acceptance 另設定
+`OPENCODE_TEST_MANAGED_CONFIG_DIR`；這是綁定 OpenCode 1.18.31 的 test-only capability，不是產品契約，
+也不是偵測到 managed config 就拒絕執行。`acceptance:isolated` 只負責 environment、fresh root allocation 與
+保留診斷；
+傳入的 bounded harness 仍須以 exact identity 管理自己啟動的 process，不能用 port 或 timeout 猜 ownership：
+
+```powershell
+npm run acceptance:isolated -- node '<bounded-acceptance-harness.mjs>'
+```
+
 ## Runtime data
 
-- `OMW_DATA_DIR`：預設 `%LOCALAPPDATA%\OMW`；只有明確設定時才使用 override
+- `OMW_DATA_DIR`：產品／明示 configured startup 預設 `%LOCALAPPDATA%\OMW`；repository 的隔離
+  dev/test/acceptance entry 一律傳入 owned override
 - SQLite：`<OMW_DATA_DIR>/omw.sqlite`
 - OpenCode child stdout/stderr：production 預設 `ignore`，不寫入 OMW data directory、SQLite 或 API
 - Runtime diagnostics：不執行為 redaction 目的的全表批次清除或資料 migration。讀取 free-form
@@ -202,9 +276,20 @@ Tailnet policy 將 OpenCode ports 限制為 user devices。
 
 ## Local TUI launcher
 
-`@sevenflanks/omw` 尚未確認已發布至 public npm registry。從 repository root 建立 local package，
-再透過該 package 的 `omw` bin 初始化 credentials 與啟動 Manager；不可把正式 credentials 放入
-tracked 檔案，也不要改用舊的 `credentials:setup` 開發 script：
+Repository development 不可直接執行 local package 的裸 `omw`，因為它會使用日常
+`%LOCALAPPDATA%\OMW`。請用實際的 development wrapper；它與 `dev:credentials` 共用
+`.omw/development`、相同 ports 與相同 child environment policy，`--` 後的 `omw` arguments 原樣傳遞：
+
+```powershell
+# PowerShell，工作目錄為 repository root
+npm run dev:credentials
+npm run dev:omw
+npm run dev:omw -- opencode (Get-Location).Path
+```
+
+`@sevenflanks/omw` 尚未確認已發布至 public npm registry。只有驗證日常／configured product flow 時，
+才從 repository root 建立 local package 並執行下列命令；它們刻意使用日常 data，不是 development entry。
+不可把正式 credentials 放入 tracked 檔案：
 
 ```powershell
 # PowerShell，工作目錄為 repository root
@@ -214,12 +299,13 @@ New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
 npm pack --pack-destination $packageDir -w @sevenflanks/omw
 $omwPackage = Join-Path $packageDir 'sevenflanks-omw-0.1.0.tgz'
 
-# 第一次執行會互動建立 credentials；之後會重用既有 Manager。
+# 日常 configured flow：第一次互動建立 credentials；之後重用既有 Manager。
 npm exec --yes --package="$omwPackage" -- omw
-npm exec --yes --package="$omwPackage" -- omw opencode 'C:\work\project' -s '<session-id>'
+npm exec --yes --package="$omwPackage" -- omw opencode (Get-Location).Path
 ```
 
-沒有提供 Project 時，`omw opencode` 使用目前工作目錄；`-s` 可省略。若 `opencode.exe` 不在已知
+沒有提供 Project 時，`omw opencode` 使用目前工作目錄；需要既有 Session 時可在實際命令後加上
+`-s` 與真實 Session ID。若 `opencode.exe` 不在已知
 安裝目錄或 `PATH`，再以 `OMW_OPENCODE_EXECUTABLE` 指定可信任 `.exe` 的絕對路徑。
 
 Manager 與 launcher 必須使用相同 `OMW_DATA_DIR` 與 Windows 使用者。`omw opencode` 不取代原本的 `opencode`。Known subcommands、

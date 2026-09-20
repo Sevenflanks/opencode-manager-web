@@ -221,14 +221,22 @@ test("project-scoped SSE preserves a short busy ID even when the connected snaps
 test("managed headless environment removes inherited OpenCode server auth", () => {
   const parent = {
     PATH: "fixture-path",
+    TEMP: "C:\\fixture\\temp",
+    OPENCODE_DB: "C:\\fixture\\opencode.sqlite",
     OPENCODE_SERVER_USERNAME: "inherited-user-sentinel",
     OPENCODE_SERVER_PASSWORD: "inherited-password-sentinel",
   }
   const child = managedServerEnvironment(parent)
 
-  assert.deepEqual(child, { PATH: "fixture-path" })
+  assert.deepEqual(child, {
+    PATH: "fixture-path",
+    TEMP: "C:\\fixture\\temp",
+    OPENCODE_DB: "C:\\fixture\\opencode.sqlite",
+  })
   assert.deepEqual(parent, {
     PATH: "fixture-path",
+    TEMP: "C:\\fixture\\temp",
+    OPENCODE_DB: "C:\\fixture\\opencode.sqlite",
     OPENCODE_SERVER_USERNAME: "inherited-user-sentinel",
     OPENCODE_SERVER_PASSWORD: "inherited-password-sentinel",
   })

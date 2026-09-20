@@ -189,8 +189,12 @@ node "<repo>\packages\launcher\dist\src\cli.js"
 這是規劃 command，僅由 user／operator 在前述步驟完成且取得授權後執行；本輪不啟動 server：
 
 ```powershell
-npm run dev -w @omw/manager
+npm run start:configured -w @omw/manager
 ```
+
+`start:configured` 是此 deployed acceptance 明確使用上方既有 `OMW_DATA_DIR`、remote mapping 與
+credentials 的 opt-in 入口；一般 repository 開發應使用隔離的 `npm run dev`，不可用
+`start:configured` 連入日常環境。
 
 ## 已核對證據（依平台與日期）
 

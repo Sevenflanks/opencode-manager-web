@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build --prefix ../.. && node scripts/prepare-package.mjs",
-    "test": "npm run build && node --test dist/test/*.test.js",
+    "test": "npm run build && npm run build -w @omw/manager && node ../../scripts/isolated-entry.mjs test node --test dist/test/*.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
