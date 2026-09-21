@@ -48,7 +48,9 @@ OMW 不會安裝 OpenCode，也不會修改 `PATH`。如果 `opencode.exe` 不�
 $env:OMW_OPENCODE_EXECUTABLE = 'C:\path\to\opencode.exe'
 ```
 
-此值必須是絕對路徑、存在且為一般檔案。OMW 不會掃描整顆磁碟，也不會任意猜測 shim。若沒有設定，OMW 只會依序查看已知安裝提示與 `PATH`；它也會拒絕解析回 OMW launcher 自己，避免遞迴啟動。
+此值必須是絕對路徑、存在且為一般檔案。若沒有設定，OMW 會先依序查看已知安裝提示與 `PATH` 中的 `opencode.exe`；找不到時，才會靜態辨識 `PATH` 中由 npm 產生、直接轉呼叫 `node_modules\opencode-ai\bin\opencode.exe` 的已知 `opencode.cmd` 格式。OMW 不會執行 shim，也不會解析一般 batch script。推導出的 `.exe` 仍須通過 Windows PE 與非 OMW launcher 驗證。
+
+OMW 不會掃描整顆磁碟、修改 `PATH` 或猜測其他 shim 格式。明確設定 `OMW_OPENCODE_EXECUTABLE` 時仍須指向真正的 `.exe`，不可指向 `.cmd`；若已知 shim 的 target 可驗證，錯誤訊息會提供可設定的 `.exe` 路徑。
 
 ## Quick Start
 
@@ -376,10 +378,26 @@ npm exec --yes --package="$omwPackage" -- omw
 先在 PowerShell 執行：
 
 ```powershell
-Get-Command opencode
+$command = Get-Command opencode -ErrorAction Stop
+$command | Format-List CommandType, Source, Path
 ```
 
-如果找不到，確認 OpenCode 已安裝；若已知可信任的 `opencode.exe` 路徑，設定 `OMW_OPENCODE_EXECUTABLE`。OMW 不會修改 `PATH`，也不會自動安裝或全磁碟搜尋。
+如果結果指向 `opencode.cmd`，可先查看內容並確認它是否直接轉呼叫 npm package 內的 executable：
+
+```powershell
+$shim = (Get-Command opencode.cmd -ErrorAction Stop).Source
+Get-Content -LiteralPath $shim
+$target = Join-Path (Split-Path -Parent $shim) 'node_modules\opencode-ai\bin\opencode.exe'
+Test-Path -LiteralPath $target -PathType Leaf
+```
+
+已知格式最後一行會直接呼叫 `"%dp0%\node_modules\opencode-ai\bin\opencode.exe" %*`。若 OMW 回報格式未知、target 不存在或不是有效 Windows PE，訊息會列出 shim/target 路徑與原因；OMW 不會嘗試執行該 shim。確認 `$target` 是可信任的真正 executable 後，可在目前 PowerShell 視窗設定：
+
+```powershell
+$env:OMW_OPENCODE_EXECUTABLE = (Resolve-Path -LiteralPath $target).Path
+```
+
+如果 `Get-Command` 找不到，請確認 OpenCode 已安裝。OMW 不會修改 `PATH`、自動安裝或全磁碟搜尋。
 
 ### 4174 或指定 port 已被其他程序使用
 
