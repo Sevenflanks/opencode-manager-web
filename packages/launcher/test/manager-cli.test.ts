@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import net from "node:net"
 import path from "node:path"
 import test from "node:test"
+import { pathToFileURL } from "node:url"
 import { resolveCredentialHelper, resolveDataDirectory, resolveExecutable } from "../src/cli.js"
 import {
   CredentialInitializationCancelledError,
@@ -13,6 +14,7 @@ import {
   decodeManagerCredentials,
   ensureCredentials,
   isLoopbackPortOccupied,
+  readCliVersion,
   runManagerCli,
   type CredentialInitializationDependencies,
   type LocalCredentials,
@@ -97,6 +99,7 @@ function fixture(statuses: Array<"omw" | "absent" | "foreign">): {
       output: (message) => { output.push(message) },
       diagnostic: (message) => { diagnostics.push(message) },
       runOpenCode: async () => { events.push("run"); return 0 },
+      cliVersion: async () => "fixture-cli-version",
     },
   }
 }
@@ -166,6 +169,7 @@ test("bare Manager CLI reuses an exact OMW identity without spawning", async () 
   const { dependencies, spawned, output } = fixture(["omw"])
   assert.equal(await runManagerCli([], { OMW_DATA_DIR: "C:\\fixture\\data" }, dependencies), 0)
   assert.equal(spawned.length, 0)
+  assert.match(output.join("\n"), /OMW CLI version: fixture-cli-version/)
   assert.match(output.join("\n"), /OMW Manager ready: http:\/\/127\.0\.0\.1:4174/)
   assert.match(output.join("\n"), /OpenCode TUI: omw opencode/)
   assert.doesNotMatch(output.join("\n"), /npx/)
@@ -221,6 +225,32 @@ test("opencode subcommand starts Manager before dispatching the native wrapper",
   assert.deepEqual(received, ["project", "-s", "session-1"])
   assert.equal(spawned.length, 1)
   assert.deepEqual(events, ["ensure", "probe", "probe", "spawn", "probe", "run"])
+})
+
+test("CLI version reads package metadata from source and published layouts", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-cli-version-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  for (const [relativeModule, packageRootParts] of [
+    [path.join("packages", "launcher", "dist", "src", "manager-cli.js"), ["..", ".."]],
+    [path.join("node_modules", "@sevenflanks", "omw", "dist", "src", "manager-cli.js"), ["..", ".."]],
+  ] as const) {
+    const moduleFile = path.join(root, relativeModule)
+    await mkdir(path.dirname(moduleFile), { recursive: true })
+    await writeFile(
+      path.join(path.dirname(moduleFile), ...packageRootParts, "package.json"),
+      JSON.stringify({ version: "fixture-package-version" }),
+      "utf8",
+    )
+    assert.equal(await readCliVersion(pathToFileURL(moduleFile).href), "fixture-package-version")
+  }
+})
+
+test("opencode subcommand does not request or print the CLI version", async () => {
+  const { dependencies, output } = fixture(["omw"])
+  dependencies.cliVersion = async () => { throw new Error("version should not be read") }
+  assert.equal(await runManagerCli(["opencode"], { OMW_DATA_DIR: "C:\\fixture\\data" }, dependencies), 0)
+  assert.deepEqual(output, [])
 })
 
 test("opencode bootstrap keeps cancelled and non-TTY initialization fail-closed", async () => {
@@ -345,6 +375,7 @@ test("Manager startup lock is released by the OS when its owner exits", async (t
       output: () => {},
       diagnostic: () => {},
       runOpenCode: async () => 0,
+      cliVersion: async () => "fixture-cli-version",
     })
   `
   const owner = await startLockOwner(script, root)

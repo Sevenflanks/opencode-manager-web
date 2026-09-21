@@ -29,7 +29,7 @@ omw
 
 3. 第一次執行時建立 OMW 帳號與至少 16 個字元的密碼，然後開啟終端顯示的 URL。
 
-**完成指標：**終端顯示 `OMW Manager ready: http://127.0.0.1:4174`（port 可能不同），瀏覽器可開啟登入頁。Plain `omw` 只會初始化、啟動或重用 Manager，不會啟動 OpenCode TUI。
+**完成指標：**終端先顯示 `OMW CLI version: <package version>`，再顯示 `OMW Manager ready: http://127.0.0.1:4174`（port 可能不同），瀏覽器可開啟登入頁。版本來自實際安裝的 `@sevenflanks/omw` package metadata。Plain `omw` 只會初始化、啟動或重用 Manager，不會啟動 OpenCode TUI。
 
 不做 global install 時，也可直接執行固定版本：
 

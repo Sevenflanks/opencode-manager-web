@@ -45,6 +45,7 @@ export interface ManagerCliDependencies {
   output(message: string): void
   diagnostic(message: string): void
   runOpenCode(argv: string[], environment: NodeJS.ProcessEnv): Promise<number>
+  cliVersion(): Promise<string>
 }
 
 export interface OwnedManagerProcess {
@@ -88,10 +89,30 @@ export async function runManagerCli(
     dependencies.diagnostic(`OMW Manager bootstrap failed; continuing with native OpenCode: ${safeMessage(cause)}`)
   }
   if (wrapperArguments) return await dependencies.runOpenCode(wrapperArguments, environment)
+  dependencies.output(`OMW CLI version: ${await dependencies.cliVersion()}`)
   dependencies.output(`OMW Manager ready: ${ready!.origin}`)
   dependencies.output(`Data directory: ${ready!.dataDirectory}`)
   dependencies.output("OpenCode TUI: omw opencode [project] [-s session]")
   return 0
+}
+
+export async function readCliVersion(moduleUrl: string = import.meta.url): Promise<string> {
+  let directory = path.dirname(fileURLToPath(moduleUrl))
+  while (true) {
+    const filename = path.join(directory, "package.json")
+    try {
+      const metadata = JSON.parse(await readFile(filename, "utf8")) as unknown
+      if (!isRecord(metadata) || typeof metadata.version !== "string" || !metadata.version) {
+        throw new Error(`OMW package metadata 缺少有效 version：${filename}`)
+      }
+      return metadata.version
+    } catch (cause) {
+      if (!(cause instanceof Error) || !("code" in cause) || cause.code !== "ENOENT") throw cause
+    }
+    const parent = path.dirname(directory)
+    if (parent === directory) throw new Error("找不到 OMW package metadata。")
+    directory = parent
+  }
 }
 
 async function ensureManagerReady(
@@ -497,6 +518,7 @@ const defaultDependencies: ManagerCliDependencies = {
   output: (message) => process.stdout.write(`${message}\n`),
   diagnostic: (message) => process.stderr.write(`${message}\n`),
   runOpenCode: (argv, environment) => runLauncher(argv, environment, process.cwd(), process.argv[1] ?? fileURLToPath(import.meta.url)),
+  cliVersion: () => readCliVersion(),
 }
 
 if (process.argv[1] && samePath(fileURLToPath(import.meta.url), process.argv[1])) {
