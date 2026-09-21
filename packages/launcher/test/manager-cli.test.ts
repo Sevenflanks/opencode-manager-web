@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { spawn, type ChildProcess } from "node:child_process"
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { existsSync } from "node:fs"
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import net from "node:net"
 import path from "node:path"
@@ -24,6 +25,21 @@ function windowsPeFixture(): Buffer {
   fixture.writeUInt32LE(64, 0x3c)
   fixture.write("PE\0\0", 64, "binary")
   return fixture
+}
+
+function knownOpenCodeShim(): string {
+  return [
+    "@ECHO off",
+    "GOTO start",
+    ":find_dp0",
+    "SET dp0=%~dp0",
+    "EXIT /b",
+    ":start",
+    "SETLOCAL",
+    "CALL :find_dp0",
+    '"%dp0%\\node_modules\\opencode-ai\\bin\\opencode.exe"   %*',
+    "",
+  ].join("\r\n")
 }
 
 function fixture(statuses: Array<"omw" | "absent" | "foreign">): {
@@ -400,6 +416,126 @@ test("OpenCode executable resolution accepts only a Windows PE executable and re
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test("OpenCode executable resolution discovers a known PATH shim without executing it", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw executable shim "))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const shim = path.join(root, "opencode.cmd")
+  const executable = path.join(root, "node_modules", "opencode-ai", "bin", "opencode.exe")
+  await mkdir(path.dirname(executable), { recursive: true })
+  await writeFile(shim, knownOpenCodeShim(), "utf8")
+  await writeFile(executable, windowsPeFixture())
+
+  assert.equal(
+    await resolveExecutable("", path.join(root, "omw-opencode.cmd"), { PATH: root }),
+    await realpath(executable),
+  )
+})
+
+test("OpenCode executable resolution tolerates horizontal whitespace in the known shim", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw whitespace shim "))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const shim = path.join(root, "opencode.cmd")
+  const executable = path.join(root, "node_modules", "opencode-ai", "bin", "opencode.exe")
+  const contents = knownOpenCodeShim()
+    .replace("@ECHO off", " \t@ECHO\toff\t ")
+    .replace("CALL :find_dp0", "\tCALL\t:find_dp0 ")
+  await mkdir(path.dirname(executable), { recursive: true })
+  await writeFile(shim, contents, "utf8")
+  await writeFile(executable, windowsPeFixture())
+
+  assert.equal(await resolveExecutable("", path.join(root, "omw-opencode.cmd"), { PATH: root }), await realpath(executable))
+})
+
+test("OpenCode executable resolution ignores relative PATH entries when discovering shims", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw relative shim "))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const shim = path.join(root, "opencode.cmd")
+  const executable = path.join(root, "node_modules", "opencode-ai", "bin", "opencode.exe")
+  const relativeEntry = path.relative(process.cwd(), root)
+  assert.equal(path.isAbsolute(relativeEntry), false)
+  await mkdir(path.dirname(executable), { recursive: true })
+  await writeFile(shim, knownOpenCodeShim(), "utf8")
+  await writeFile(executable, windowsPeFixture())
+
+  await assert.rejects(
+    resolveExecutable("", path.join(root, "omw-opencode.cmd"), { PATH: relativeEntry }),
+    /找不到可驗證的 OpenCode executable/,
+  )
+})
+
+test("OpenCode executable resolution rejects an explicit known shim with a validated target suggestion", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw explicit shim "))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const shim = path.join(root, "opencode.cmd")
+  const executable = path.join(root, "node_modules", "opencode-ai", "bin", "opencode.exe")
+  await mkdir(path.dirname(executable), { recursive: true })
+  await writeFile(shim, knownOpenCodeShim(), "utf8")
+  await writeFile(executable, windowsPeFixture())
+
+  await assert.rejects(
+    resolveExecutable(shim, path.join(root, "omw-opencode.cmd")),
+    (error: Error) => error.message.includes(shim)
+      && error.message.includes(executable)
+      && /不可.*shim/.test(error.message)
+      && /請改設/.test(error.message),
+  )
+})
+
+test("OpenCode executable resolution reports why PATH shims cannot produce a verified executable", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw shim diagnostics "))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const launcher = path.join(root, "omw-opencode.cmd")
+
+  await t.test("does not execute an unknown shim", async () => {
+    const directory = path.join(root, "unknown")
+    const shim = path.join(directory, "opencode.cmd")
+    const sentinel = path.join(directory, "executed.txt")
+    await mkdir(directory, { recursive: true })
+    await writeFile(shim, `${knownOpenCodeShim()}ECHO executed>"${sentinel}"\r\n`, "utf8")
+
+    await assert.rejects(
+      resolveExecutable("", launcher, { PATH: directory }),
+      (error: Error) => error.message.includes(shim)
+        && error.message.includes("格式不符合")
+        && error.message.includes("OMW_OPENCODE_EXECUTABLE"),
+    )
+    assert.equal(existsSync(sentinel), false)
+  })
+
+  await t.test("identifies a missing inferred target", async () => {
+    const directory = path.join(root, "missing")
+    const shim = path.join(directory, "opencode.cmd")
+    const target = path.join(directory, "node_modules", "opencode-ai", "bin", "opencode.exe")
+    await mkdir(directory, { recursive: true })
+    await writeFile(shim, knownOpenCodeShim(), "utf8")
+
+    await assert.rejects(
+      resolveExecutable("", launcher, { PATH: directory }),
+      (error: Error) => error.message.includes(shim)
+        && error.message.includes(target)
+        && error.message.includes("不存在")
+        && error.message.includes("OMW_OPENCODE_EXECUTABLE"),
+    )
+  })
+
+  await t.test("identifies an inferred target that is not a Windows PE", async () => {
+    const directory = path.join(root, "invalid")
+    const shim = path.join(directory, "opencode.cmd")
+    const target = path.join(directory, "node_modules", "opencode-ai", "bin", "opencode.exe")
+    await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(shim, knownOpenCodeShim(), "utf8")
+    await writeFile(target, "not a Windows executable", "utf8")
+
+    await assert.rejects(
+      resolveExecutable("", launcher, { PATH: directory }),
+      (error: Error) => error.message.includes(shim)
+        && error.message.includes(target)
+        && error.message.includes("Windows PE executable")
+        && error.message.includes("OMW_OPENCODE_EXECUTABLE"),
+    )
+  })
 })
 
 test("credential helper resolution supports the staged package layout", async (t) => {
