@@ -63,6 +63,10 @@ OMW 不會安裝 OpenCode、修改 `PATH` 或攔截原生 `opencode`。只有 `o
 
 Repository 開發、測試與驗收使用 worktree-local 或 fresh temporary isolation，不使用上述日常 package 命令。從[開發說明的 Quick Start](docs/development.md#quick-start)開始。
 
+## License
+
+OMW-authored software 使用 [Sustainable Use License 1.0](LICENSE.md)，是 source-available software，不是 OSI 定義的 open source software。第三方元件仍使用各自權利人提供的原始授權。
+
 ## Reference
 
 - [使用手冊](docs/user-guide.md)

@@ -2,13 +2,32 @@
   "name": "@sevenflanks/omw",
   "private": false,
   "version": "0.1.0",
+  "description": "Windows CLI and Web manager for local OpenCode instances",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "homepage": "https://github.com/Sevenflanks/opencode-manager-web#readme",
+  "bugs": {
+    "url": "https://github.com/Sevenflanks/opencode-manager-web/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sevenflanks/opencode-manager-web.git",
+    "directory": "packages/launcher"
+  },
+  "keywords": ["opencode", "manager", "cli", "web"],
   "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "os": ["win32"],
   "bin": {
     "omw": "dist/src/manager-cli.js",
     "omw-opencode": "dist/src/cli.js"
   },
-  "files": ["dist"],
-  "publishConfig": { "access": "public" },
+  "files": ["dist", "THIRD_PARTY_NOTICES.md"],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build --prefix ../.. && node scripts/prepare-package.mjs",
