@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.1.1...v0.2.0) (2026-09-21)
+## [0.1.2](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.1.1...v0.1.2) (2026-09-22)
 
 
 ### Features
