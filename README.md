@@ -10,6 +10,7 @@ OMW 是 Windows 本機的 OpenCode 管理介面，用來檢視 Project、Instanc
 ## Prerequisites
 
 - Windows 11
+- PowerShell 7，且 `pwsh.exe` 可由 `PATH` 找到（不是 Windows PowerShell 5.1 的 `powershell.exe`）。OMW launcher 與 Manager runtime 預設使用此命令；若需指定位置，可在啟動 OMW process 的環境設定 `OMW_POWERSHELL_EXECUTABLE`。此設定只覆蓋 OMW runtime 內採用它的 PowerShell 呼叫，不會覆蓋其他 scripts 或手動指令。
 - Node.js 24 以上與 npm
 - 已安裝的 OpenCode CLI
 - 本 repository 的本機 checkout
