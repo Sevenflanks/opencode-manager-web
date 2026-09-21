@@ -105,6 +105,7 @@ OMW-authored software 使用 [Sustainable Use License 1.0](LICENSE.md)，是 sou
 
 - [使用手冊](docs/user-guide.md)
 - [Development](docs/development.md)
+- [Release process](docs/releasing.md)
 - [Technical Reference](docs/reference.md)
 - [Launcher and authentication contract](docs/security/launcher-contract.md)
 - [Tailnet access runbook](docs/security/tailnet-access.md)
