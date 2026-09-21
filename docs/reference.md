@@ -2,6 +2,13 @@
 
 本頁是 OMW 現行技術契約的索引，不複製各文件的規則。實作、操作或驗收若有歧義，以連結的權威文件與目前程式碼為準；`docs/archive/phase1/` 只保存歷史觀察。
 
+## 閱讀導覽
+
+1. 安裝與日常操作：[使用手冊](user-guide.md)。
+2. Repository development：[開發說明](development.md)。
+3. Launcher、Tailnet 或 authentication：[Security](#security)。
+4. Release 與驗收證據：[Validation](#validation)。
+
 ## CLI
 
 | 介面 | 用途 | 權威文件 |
@@ -10,7 +17,7 @@
 | `omw opencode [project] [-s session]` | 透過 OMW wrapper 啟動 Local TUI Instance | [Local TUI launcher](development.md#local-tui-launcher) |
 | `opencode ...` | 原生 OpenCode；OMW 不攔截、不自動登錄 | [Launcher contract](security/launcher-contract.md#local-cli-invocation) |
 
-`@sevenflanks/omw` 尚未確認已發布至 public npm registry；日常操作目前只以 repository 建出的 local `.tgz` 為準。
+`@sevenflanks/omw@0.1.0` 已發布至 public npm registry；日常操作優先使用[使用手冊 Quick Start](user-guide.md#quick-start) 的 exact-version global install，原始碼／本機 `.tgz` 是替代路徑，已發布 package 的安裝與 smoke 範圍見[release verification 紀錄](acceptance/release-verification-0.1.0-2026-09-21.md)。
 
 ## Runtime
 
@@ -49,6 +56,7 @@ SVG 是由同名 HTML 的第一個 `<svg>` 匯出。需要修改圖時先改 HTM
 ## Validation
 
 - [目前驗收狀態與限制](user-guide.md#validation-status)
+- [Release verification：`@sevenflanks/omw@0.1.0`](acceptance/release-verification-0.1.0-2026-09-21.md)
 - [Issue #11 人工本機驗收](acceptance/issue11-manual-local-acceptance-2026-09-20.md)
 - [Issue #11 正式 Vue UI + isolated mock acceptance](acceptance/issue11-ui-acceptance-2026-09-20.md)
 - [Issue #12 A/B isolation acceptance](acceptance/issue12-ab-isolation-acceptance-2026-09-20.md)

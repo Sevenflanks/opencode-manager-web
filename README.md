@@ -3,21 +3,59 @@
 OMW 是 Windows 本機的 OpenCode 管理介面，用來檢視 Project、Instance 與 Session，並啟動 OMW 管理的背景 OpenCode Instance。
 
 > [!IMPORTANT]
-> `@sevenflanks/omw` 尚未確認已發布至 public npm registry。以下步驟只使用此 repository 建出的 local `.tgz`，不把 `npx @sevenflanks/omw` 當成可用的安裝方式。
+> `@sevenflanks/omw@0.1.0` 已發布至 public npm registry；Quick Start 優先使用 exact-version global install。原始碼／本機 `.tgz` 仍保留為替代路徑；已發布 package 的 fresh consumer 安裝與 CLI/Manager/Web smoke 見[release verification 紀錄](docs/acceptance/release-verification-0.1.0-2026-09-21.md)。
 >
-> Local package 是日常／configured product flow，會使用 `%LOCALAPPDATA%\OMW`。Repository development 必須改用[隔離的開發入口](docs/development.md#quick-start)，避免讀寫日常 credentials、token、SQLite 與 OpenCode data。
+> Published package 的 global `omw` 是日常／configured product flow，會使用 `%LOCALAPPDATA%\OMW`；原始碼／本機 package 替代路徑也會連到同一份日常資料。Repository development 必須改用[隔離的開發入口](docs/development.md#quick-start)，避免讀寫日常 credentials、token、SQLite 與 OpenCode data。
 
 ## Prerequisites
 
 - Windows 11
-- PowerShell 7，且 `pwsh.exe` 可由 `PATH` 找到（不是 Windows PowerShell 5.1 的 `powershell.exe`）。OMW launcher 與 Manager runtime 預設使用此命令；若需指定位置，可在啟動 OMW process 的環境設定 `OMW_POWERSHELL_EXECUTABLE`。此設定只覆蓋 OMW runtime 內採用它的 PowerShell 呼叫，不會覆蓋其他 scripts 或手動指令。
+- PowerShell 7，且 `pwsh.exe` 可由 `PATH` 找到
 - Node.js 24 以上與 npm
 - 已安裝的 OpenCode CLI
-- 本 repository 的本機 checkout
+- 本 repository 的本機 checkout（僅原始碼／本機 artifact 替代路徑需要）
 
 ## Quick Start
 
-在 repository root 開啟 PowerShell：
+日常使用約 3 步：
+
+1. 在 PowerShell 安裝固定版本：
+
+```powershell
+npm install --global @sevenflanks/omw@0.1.0
+```
+
+2. 啟動 OMW：
+
+```powershell
+omw
+```
+
+3. 第一次執行時建立 OMW 帳密，然後開啟終端顯示的 URL。
+
+**完成指標：**終端顯示 `OMW Manager ready: http://127.0.0.1:4174`（port 可能不同），瀏覽器可開啟登入頁。Plain `omw` 不會啟動 OpenCode TUI。
+
+Global install 是建議的正式使用路徑。本次 [release verification](docs/acceptance/release-verification-0.1.0-2026-09-21.md) 已驗證 public registry 的 exact-version fresh consumer 安裝與 CLI/Manager/Web smoke，但未將 global install 本身宣稱為已單獨測試。
+
+## Usage
+
+1. 在要工作的 Project 目錄啟動 OpenCode：
+
+```powershell
+omw opencode
+```
+
+2. 需要指定 Project 與既有 Session 時執行：
+
+```powershell
+omw opencode 'C:\develop\projects\example' -s '<session-id>'
+```
+
+OMW 不會安裝 OpenCode、修改 `PATH` 或攔截原生 `opencode`。只有 `omw opencode ...` 進入 wrapper。完整操作、不同停止語意、資料保留與問題排除見[使用手冊](docs/user-guide.md)。
+
+## 原始碼／本機 artifact 替代路徑
+
+只有需要從目前 repository 建置或驗證 package 時，才在 repository root 執行：
 
 ```powershell
 npm ci
@@ -28,23 +66,18 @@ $omwPackage = Join-Path $packageDir $packageName
 npm exec --yes --package="$omwPackage" -- omw
 ```
 
-第一次執行會在互動式終端建立 OMW 帳密；之後會重用既有 Manager。成功後開啟終端顯示的 URL，預設為 `http://127.0.0.1:4174`。Plain `omw` 不會啟動 OpenCode TUI。
+這條路徑使用與 global `omw` 相同的日常 `%LOCALAPPDATA%\OMW` 資料。後續命令請將 `omw` 替換為 `npm exec --yes --package="$omwPackage" -- omw`；repository development 不可使用這條路徑。
 
-## Usage
+## Troubleshooting
 
-在目前目錄透過 OMW wrapper 啟動 OpenCode：
-
-```powershell
-npm exec --yes --package="$omwPackage" -- omw opencode
-```
-
-指定 Project 與既有 Session：
+若 `pwsh.exe` 不在 `PATH`，可在啟動 OMW 的環境指定 PowerShell 7：
 
 ```powershell
-npm exec --yes --package="$omwPackage" -- omw opencode 'C:\develop\projects\example' -s '<session-id>'
+$env:OMW_POWERSHELL_EXECUTABLE = 'C:\Program Files\PowerShell\7\pwsh.exe'
+omw
 ```
 
-OMW 不會安裝 OpenCode、修改 `PATH` 或攔截原生 `opencode`。只有 `omw opencode ...` 進入 wrapper。完整操作、不同停止語意、資料保留與問題排除見[使用手冊](docs/user-guide.md)。
+此設定只覆蓋 OMW runtime 內採用它的 PowerShell 呼叫，不會改變其他 scripts 或手動指令。更多 executable、port 與連線問題見[使用手冊的 Troubleshooting](docs/user-guide.md#troubleshooting)。
 
 ## Architecture
 
@@ -81,4 +114,4 @@ OMW-authored software 使用 [Sustainable Use License 1.0](LICENSE.md)，是 sou
 
 ## Validation Status
 
-Local package pack、`.tgz` 的 `omw` bin resolution，以及指定的人工本機流程已有證據；public npm publication、`npx @sevenflanks/omw` end-to-end、真實 Manager 的完整 Web walkthrough、Tailnet 與真手機仍不可由本文件或圖表推定完成。精確界線見[使用手冊的驗收證據](docs/user-guide.md#validation-status)。
+Public npm exact-version publication、fresh consumer install，以及 packaged CLI/Manager/Web smoke 已有證據；local package pack 與 `.tgz` 的 `omw` bin resolution 是原始碼／本機 artifact 替代路徑。`npx @sevenflanks/omw` end-to-end、global install 本身、真實 OpenCode TUI、完整 Web walkthrough、Tailnet 與真手機仍不可由本文件或圖表推定完成。精確界線見[使用手冊的驗收證據](docs/user-guide.md#validation-status)。

@@ -1,6 +1,56 @@
 # 開發說明
 
+本頁只供 repository development、test 與 acceptance 使用。若只要安裝或操作 OMW，從[使用手冊 Quick Start](user-guide.md#quick-start)開始。
+
+## 閱讀導覽
+
+1. 第一次開發：完成下方 [Quick Start](#quick-start)。
+2. 查隔離與環境變數：[隔離的開發、測試與驗收入口](#隔離的開發測試與驗收入口)。
+3. 查 Manager API：[Manager API contract](#manager-api-contract)。
+4. 查 launcher 行為：[Local TUI launcher](#local-tui-launcher)。
+5. 遇到問題：[Troubleshooting](#troubleshooting)。
+
 ## Prerequisites
+
+- Windows 11
+- Node.js 24 以上與 npm
+- OpenCode CLI（只有執行 OpenCode 整合路徑時需要）
+
+OMW 不會安裝 OpenCode 或修改 `PATH`。
+
+## Quick Start
+
+Repository 內一律使用隔離入口，不執行 local package 的裸 `omw`：
+
+1. 安裝 dependencies：
+
+```powershell
+npm ci
+```
+
+2. 第一次為此 worktree 建立 masked credentials：
+
+```powershell
+npm run dev:credentials
+```
+
+3. 啟動使用 `.omw/development` 的 Manager 開發流程：
+
+```powershell
+npm run dev
+```
+
+4. 需要測試 launcher 時，另開 PowerShell 並透過相同隔離 context 啟動 Local TUI：
+
+```powershell
+npm run dev:omw -- opencode (Get-Location).Path
+```
+
+**完成指標：**development Manager 成功啟動，且資料只出現在目前 worktree 的 `.omw/development`；日常 `%LOCALAPPDATA%\OMW` 不應被讀寫。
+
+這些命令不讀取日常 `%LOCALAPPDATA%\OMW`、OpenCode DB、credentials、token 或 API target。`npm run dev` 是前景開發程序；結束時使用該終端的正常中斷，不要依 port 或猜測 PID 清理 process。
+
+## Safety Boundaries
 
 OMW MVP 與 Manager-launched OpenCode 都只監聽 `127.0.0.1`。Remote mode 的 OMW 有 Basic auth、
 current-user DPAPI credential store 與固定 remote URL validation，並會保守新增缺少的 Tailscale Serve
@@ -9,27 +59,6 @@ HTTPS mappings；不會 login/up、啟動 OS service、開啟 Funnel，或設定
 
 Directory Shortcut 只提供操作入口，不是 allowlist。Manager 可瀏覽及啟動其 OS identity
 原本可存取的既有目錄；所有路徑都先解析成 canonical path，並以結構化 argv 傳給程序。
-
-開發環境需要 Windows 11、Node.js 24 以上與 npm。需要執行 OpenCode 整合路徑時，另須安裝 OpenCode CLI；OMW 不會代為安裝或修改 `PATH`。
-
-## Quick Start
-
-Repository 內一律使用隔離入口，不執行 local package 的裸 `omw`：
-
-```powershell
-npm ci
-
-# 第一次：建立此 worktree 專用的 masked credentials。
-npm run dev:credentials
-
-# 啟動使用 .omw/development 的 Manager 開發流程。
-npm run dev
-
-# 需要測試 launcher 時，透過相同隔離 context 啟動目前 Project 的 Local TUI。
-npm run dev:omw -- opencode (Get-Location).Path
-```
-
-這些命令不讀取日常 `%LOCALAPPDATA%\OMW`、OpenCode DB、credentials、token 或 API target。`npm run dev` 是前景開發程序；結束時使用該終端的正常中斷，不要依 port 或猜測 PID 清理 process。
 
 ## Reference
 
@@ -299,7 +328,7 @@ Tailnet policy 將 OpenCode ports 限制為 user devices。
 
 Repository development 不可直接執行 local package 的裸 `omw`，因為它會使用日常 `%LOCALAPPDATA%\OMW`。請使用 [Quick Start](#quick-start) 的 development wrapper；它與 `dev:credentials` 共用 `.omw/development`、相同 ports 與相同 child environment policy，`--` 後的 `omw` arguments 原樣傳遞。
 
-日常／configured product flow 的 local `.tgz` 操作只記錄在[使用手冊 Quick Start](user-guide.md#quick-start)，避免把日常與 development 命令混在同一份操作步驟。`@sevenflanks/omw` 尚未確認已發布至 public npm registry，不可把正式 credentials 放入 tracked 檔案。
+日常／configured product flow 優先使用[使用手冊 Quick Start](user-guide.md#quick-start) 的 public exact-version global install；原始碼／本機 `.tgz` 只作替代路徑，避免把日常與 development 命令混在同一份操作步驟。`@sevenflanks/omw@0.1.0` 已發布至 public npm registry；fresh consumer 與 packaged CLI/Manager/Web smoke 的邊界見[release verification 紀錄](acceptance/release-verification-0.1.0-2026-09-21.md)。Development 仍不可直接使用日常 `omw` 或正式 credentials，必須維持隔離入口。
 
 沒有提供 Project 時，`omw opencode` 使用目前工作目錄；需要既有 Session 時可在實際命令後加上
 `-s` 與真實 Session ID。若 `opencode.exe` 不在已知

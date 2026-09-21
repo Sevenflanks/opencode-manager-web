@@ -7,35 +7,35 @@ OMW 是 source-available software，不是 OSI 定義的 open source software。
 ## Requirements
 
 - Windows 11
-- PowerShell 7，且 `pwsh.exe` 可由 `PATH` 找到（不是 Windows PowerShell 5.1 的 `powershell.exe`）。OMW launcher 與 Manager runtime 預設使用此命令；若需指定位置，可在啟動 OMW process 的環境設定 `OMW_POWERSHELL_EXECUTABLE`。此設定只覆蓋 OMW runtime 內採用它的 PowerShell 呼叫，不會覆蓋其他 scripts 或手動指令。
+- PowerShell 7，且 `pwsh.exe` 可由 `PATH` 找到
 - Node.js 24 以上與 npm
 - 已安裝的 OpenCode CLI
 
-OMW 不會安裝 OpenCode，也不會修改 `PATH`。如果 OMW 無法找到真正的 `opencode.exe`，請將 `OMW_OPENCODE_EXECUTABLE` 設為該執行檔的絕對路徑。
+OMW 不會安裝 OpenCode，也不會修改 `PATH`。
 
-## Install
+## Quick Start
 
-從 public npm registry 安裝固定版本：
+1. 從 public npm registry 安裝固定版本：
 
 ```powershell
 npm install --global @sevenflanks/omw@0.1.0
 ```
 
-也可以不做 global install，直接執行固定版本：
-
-```powershell
-npm exec --yes --package=@sevenflanks/omw@0.1.0 -- omw
-```
-
-## Start CLI And Web
-
-Global install 後執行：
+2. 啟動 CLI 與 Web 管理介面：
 
 ```powershell
 omw
 ```
 
-第一次執行會在互動式終端要求建立 OMW 帳號與至少 16 個字元的密碼。成功後終端會顯示 Web 管理介面的 loopback URL，預設為 `http://127.0.0.1:4174`。Plain `omw` 只會初始化、啟動或重用 Manager，不會啟動 OpenCode TUI。
+3. 第一次執行時建立 OMW 帳號與至少 16 個字元的密碼，然後開啟終端顯示的 URL。
+
+**完成指標：**終端顯示 `OMW Manager ready: http://127.0.0.1:4174`（port 可能不同），瀏覽器可開啟登入頁。Plain `omw` 只會初始化、啟動或重用 Manager，不會啟動 OpenCode TUI。
+
+不做 global install 時，也可直接執行固定版本：
+
+```powershell
+npm exec --yes --package=@sevenflanks/omw@0.1.0 -- omw
+```
 
 OMW 將 credentials、SQLite 與其他持久資料放在 `%LOCALAPPDATA%\OMW`。Credentials 使用 Windows current-user DPAPI 保護。
 
@@ -54,6 +54,24 @@ omw opencode 'C:\develop\projects\example' -s '<session-id>'
 ```
 
 OMW 不會攔截原生 `opencode`。只有 `omw opencode ...` 會進入 OMW wrapper。
+
+## Troubleshooting
+
+若 `pwsh.exe` 不在 `PATH`，可在啟動 OMW 的環境指定 PowerShell 7：
+
+```powershell
+$env:OMW_POWERSHELL_EXECUTABLE = 'C:\Program Files\PowerShell\7\pwsh.exe'
+omw
+```
+
+此設定只覆蓋 OMW runtime 內採用它的 PowerShell 呼叫，不會覆蓋其他 scripts 或手動指令。
+
+若 OMW 無法找到真正的 `opencode.exe`，請指定可信任 executable 的絕對路徑：
+
+```powershell
+$env:OMW_OPENCODE_EXECUTABLE = 'C:\path\to\opencode.exe'
+omw
+```
 
 ## License
 

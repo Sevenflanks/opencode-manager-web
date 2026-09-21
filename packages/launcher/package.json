@@ -3,7 +3,7 @@
   "private": false,
   "version": "0.1.0",
   "description": "Windows CLI and Web manager for local OpenCode instances",
-  "license": "SEE LICENSE IN LICENSE.md",
+  "license": "SUL-1.0",
   "homepage": "https://github.com/Sevenflanks/opencode-manager-web#readme",
   "bugs": {
     "url": "https://github.com/Sevenflanks/opencode-manager-web/issues"
