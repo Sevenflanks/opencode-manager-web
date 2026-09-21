@@ -2,6 +2,8 @@ import { cp, mkdir, rm } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
+await import("./generate-third-party-notices.mjs")
+
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const repositoryRoot = path.resolve(packageRoot, "../..")
 const destination = path.join(packageRoot, "dist")
