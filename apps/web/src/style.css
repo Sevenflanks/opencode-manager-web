@@ -42,6 +42,8 @@ h3 { font-size: .95rem; }
 .connectivity-qualifier { overflow: hidden; margin-top: 3px; color: #7f8b91; font-size: .67rem; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .connectivity-refresh { width: 44px; min-width: 44px; height: 44px; min-height: 44px; flex: 0 0 44px; padding: 0; }
 .connectivity-refresh svg { width: 16px; }
+.connectivity-register { flex: 0 0 auto; white-space: nowrap; }
+.connectivity-register svg { width: 15px; }
 .connectivity-access { display: grid; grid-template-columns: minmax(0, 1fr) auto; min-width: 0; align-items: center; gap: 10px; border-left: 1px solid #30383d; padding-left: 14px; }
 .connectivity-entry { display: grid; min-width: 0; gap: 3px; }
 .connectivity-entry > span { color: #7f8b91; font-size: .66rem; }

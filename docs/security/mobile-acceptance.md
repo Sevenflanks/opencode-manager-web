@@ -108,40 +108,7 @@ $env:OMW_OPENCODE_EXECUTABLE = '<absolute-opencode.exe>'
 本流程不查看、不寫入、不回報真正 password、launcher token 或 DPAPI plaintext；不得將它們
 放入 command argv、受版本控制的檔案、URL、log 或未清理的 HAR。
 
-### 3. 新增沒有衝突的 Serve entries
-
-確認既有 mappings 已保留、實際 bind 與 Windows excluded range 沒有衝突，且 user 已對這個
-明確範圍授權後，才可用官方 CLI 形式逐一新增不存在的 entry。當前 21 個 mapping 已部署，
-以下只表示同號 target 的形式，不應對已存在的 entry 重跑：
-
-```powershell
-tailscale serve --bg --https=<PORT> http://127.0.0.1:<PORT>
-```
-
-`<PORT>` 只可逐一替換為缺少的 `40443` 或 `40444-40463`；不得重新指向原有 entry，也不
-開啟 Funnel、公開網際網路或 Firewall rule。當前穩定 deployment 不應被拆除或重建。
-
-### 4. 從 Serve config 核對 `OMW_REMOTE_MAPPING_READY`
-
-新增完成後，重新讀取 Serve config：
-
-```powershell
-tailscale serve status -json
-tailscale serve get-config --all
-```
-
-只有在每個預定 public port、`http://127.0.0.1:<port>` target、HTTPS 與 `tailnet only` 狀態
-都已由 user／operator 核對後，才可在即將啟動 Manager 的同一 shell 設定：
-
-```powershell
-$env:OMW_REMOTE_MAPPING_READY = '1'
-```
-
-這個 flag 只表示 Serve mapping 已核對，不表示 Basic auth、CSRF、手機、TTY 或整體安全
-驗收已通過。它必須在 Manager startup 前設定，避免 Manager 先因缺少 flag fail closed 而
-形成循環；若 mapping 尚未核對，就不要啟動 remote mode Manager。
-
-### 5. 設定 remote mode 與 launcher integration
+### 3. 設定 remote mode 與 launcher integration
 
 在同一 Manager shell 明示完整 remote mode 設定，並保持與 credentials setup 相同的 data
 directory。QuickStart 的 `OMW_MANAGER_ORIGIN` 不在此 shell 設定，必須另開 launcher 視窗：
@@ -156,7 +123,6 @@ $env:OMW_TAILNET_DNS_HOST = '<device>.<tailnet>.ts.net'
 $env:OMW_MANAGER_PUBLIC_HTTPS_PORT = '40443'
 $env:OMW_INSTANCE_PUBLIC_PORT_MIN = '40444'
 $env:OMW_INSTANCE_PUBLIC_PORT_MAX = '40463'
-$env:OMW_REMOTE_MAPPING_READY = '1'
 # 若這次 remote flow 要使用 launcher，才必須加入：
 $env:OMW_LAUNCHER_INTEGRATION = '1'
 ```
@@ -169,7 +135,8 @@ $env:OMW_MANAGER_ORIGIN = 'http://127.0.0.1:40443'
 
 `OMW_PORT` 必須明示為 `40443`。若一般 remote flow 需要 launcher API，`OMW_LAUNCHER_INTEGRATION=1`
 也必須加入；不使用 launcher 時不要誤稱 launcher routes 已啟用。所有 required env、DPAPI
-file、real executable、authority 與 mapping gate 都要在啟動前完成。
+file、real executable 與 authority validation 都要在啟動前完成。不需設定舊版
+`OMW_REMOTE_MAPPING_READY`；若仍存在會被忽略。
 
 QuickStart wrapper 建議使用以下既有入口，不依賴不存在的 npm shim：
 
@@ -184,7 +151,7 @@ node "<repo>\packages\launcher\dist\src\cli.js"
 
 `omw` 不帶 port 時使用 OMW reserve／default cwd；`-s` 透傳。此入口不讀模型、不發訊息。
 
-### 6. 在設定完成後啟動 Manager
+### 4. 啟動 Manager 並由 OMW 自動註冊
 
 這是規劃 command，僅由 user／operator 在前述步驟完成且取得授權後執行；本輪不啟動 server：
 
@@ -192,9 +159,35 @@ node "<repo>\packages\launcher\dist\src\cli.js"
 npm run start:configured -w @omw/manager
 ```
 
-`start:configured` 是此 deployed acceptance 明確使用上方既有 `OMW_DATA_DIR`、remote mapping 與
+`start:configured` 是此 deployed acceptance 明確使用上方既有 `OMW_DATA_DIR`、remote mode 與
 credentials 的 opt-in 入口；一般 repository 開發應使用隔離的 `npm run dev`，不可用
 `start:configured` 連入日常環境。
+
+Manager listen 成功後會自動嘗試一次。它每次只新增一個 target，並在每筆 mutation 前重新讀取及
+preflight Manager 與完整 Instance port range；只對完全缺少的 target 執行 bounded
+`tailscale serve --bg --yes --https=<PORT> http://127.0.0.1:<PORT>`。任一目標 port 有不相容 target、
+額外 handler、未知模式或 Funnel 時，在下一筆 mutation 前 fail closed，且不 reset/off 或覆寫已觀測到
+的他人設定。整次嘗試最多 30 秒；shutdown 會阻止後續 mutation，並等待當下有界 command 結束。部分
+新增後若失敗，既有安全 mapping 保留，後續可由 UI「自動註冊」重試。Tailscale 失敗不會讓 loopback
+Manager 停止服務。
+
+驗收期間不可由其他程序同時修改同一 node 的 Serve config。CLI 的 preflight 與 write 不是 atomic；
+外部程序仍可能在最後一次核對後、OMW 寫入前改變設定。OMW 只承諾不覆寫已觀測到的衝突，不宣稱能
+消除這個殘餘窗口。
+
+### 5. 唯讀重新核對 Serve config
+
+啟動完成後可重新讀取 Serve config：
+
+```powershell
+tailscale serve status -json
+tailscale serve get-config --all
+```
+
+OMW 在設定命令結束後也會自行 fresh verification；只有 node connected、DNS host、所有 mappings 與
+Funnel 狀態均吻合時，UI 與 Instance 才提供遠端 URL。產生 Instance remote URL 時，驗證 snapshot
+最多沿用 5 秒，過期會先重新查驗；查驗失敗不阻止本機 Instance 操作。自動註冊不代表 Basic auth、
+CSRF、手機、TTY 或整體安全驗收已通過。
 
 ## 已核對證據（依平台與日期）
 
@@ -213,7 +206,7 @@ credentials 的 opt-in 入口；一般 repository 開發應使用隔離的 `npm 
 | 後續 user 在 Windows 執行真部署 `check-deployed-security.ps1` | `public-connectivity=200`、`mutation-missing-csrf=403`、`mutation-wrong-csrf=403`、`mutation-invalid-origin=403`、`mutation-valid-guard=400`、`loopback-connectivity=200`、`launcher-browser-audience=401`，7 項皆 PASS | 使用者自行於本機隱藏輸入真帳密；非 fixture。mutation 同時核對固定錯誤碼；未執行有效資料修改，不讀取有效 launcher token，不能推論反向 audience 或其他裝置隔離 |
 | fixture／隔離測試 | `28/28`：launcher 13、API 8、security config 2、runtime contract 3、Tailnet PoC 1、process cleanup 1；包含 fake cert、wrong CSRF／Origin `403`、audience `401`、recursion rejection | fixture，不等同 deployed live |
 
-### 7. 逐項進行 positive、negative、UI 與手機驗收
+### 6. 逐項進行 positive、negative、UI 與手機驗收
 
 手機相關項目仍要在真實手機、受控 Tailnet 與實際 device 上記錄 `PASS`、`FAIL` 或 `UNKNOWN`。
 Windows HTTPS 或 fixture 證據只能標註其平台與類型，不可推導成真實手機 PASS。
@@ -329,18 +322,7 @@ exit-code 傳遞證據；需要補測時應指出尚未覆蓋的具體行為。
 實際證據，不把失敗改寫成 PASS。只停止本次流程由 user／operator 啟動、且 identity 已核對的
 process；不可停止既有 Instance 或以 broad cleanup 代替 identity check。
 
-回復不是 node reset。只對本次新增、且回復前仍確認單一 entry target 完全相同、並確認該 entry
-由本次操作 owned 的 port 逐一移除；不可用 batch loop 當成一次刪除既有 21 個 entries，也不拆
-現有穩定 deployment。40443 僅為示例，目前不要執行：
-
-```powershell
-tailscale serve status -json
-# 只有確認本次新增、owned、且 target 仍是 http://127.0.0.1:40443 才可執行；目前不要執行
-tailscale serve --bg --https=40443 off
-```
-
-若某 public port 在第一步已存在原 entry，本流程沒有覆寫它，回復不得移除它。若 target 已被
-改變，或無法證明 entry 是本次新增，停止並由 user／operator 調查，不執行 `off`。其他 port
-也必須一次只處理一個，先完成同樣的 exact mapping／ownership 核對。回復後再次
-執行 `tailscale serve status -json` 與 `tailscale serve get-config --all`，確認只移除本次新增
-entries，且既有 mappings 仍存在。
+自動註冊不做 rollback。若部分新增後失敗，保留已完成且仍安全的 mappings，下一次重試會重新
+preflight 全部 targets、略過完全相符的 entries，只補仍缺少的 entries。OMW 不執行 `off`、reset、
+batch cleanup 或移除既有 mapping；若出現衝突、未知設定或需要移除 entry，停止自動流程並由
+user／operator 另行調查，不把 destructive remediation 納入重試。

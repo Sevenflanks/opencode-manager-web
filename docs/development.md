@@ -3,8 +3,8 @@
 ## Prerequisites
 
 OMW MVP 與 Manager-launched OpenCode 都只監聽 `127.0.0.1`。Remote mode 的 OMW 有 Basic auth、
-current-user DPAPI credential store 與固定 remote URL validation，但不會設定 Tailnet、TLS、
-Firewall、PATH、ACL 或 production secrets。完整 contract 見
+current-user DPAPI credential store 與固定 remote URL validation，並會保守新增缺少的 Tailscale Serve
+HTTPS mappings；不會 login/up、啟動 OS service、開啟 Funnel，或設定 Firewall、PATH、ACL 與 production secrets。完整 contract 見
 [Tailnet access contract](security/tailnet-access.md)。
 
 Directory Shortcut 只提供操作入口，不是 allowlist。Manager 可瀏覽及啟動其 OS identity
@@ -47,6 +47,8 @@ loopback development origin。Browser 的 `POST`、`PATCH`、`DELETE` 另須帶�
 |---|---|---|
 | `GET` | `/api/v1/overview?q=&filter=all&includeHidden=true` | Shortcut 與 Instance 清單；filter 為 `all`、`active`、`attention`、`unreachable`；`includeHidden=true` 時包含停止追蹤的紀錄 |
 | `GET` | `/api/v1/directories?path=` | 回傳 canonical current、parent 與可存取 direct child directories |
+| `GET` | `/api/v1/connectivity` | 唯讀查驗 Tailscale node 與 OMW Serve mappings；未完整驗證時不回傳 remote URL |
+| `POST` | `/api/v1/connectivity/register` | 重試保守 auto-registration；沿用 browser auth、trusted Origin 與 CSRF 保護 |
 | `POST` | `/api/v1/shortcuts` | 新增 `{ name, directory }` |
 | `PATCH` | `/api/v1/shortcuts/:id` | 修改 `{ name, directory }` |
 | `DELETE` | `/api/v1/shortcuts/:id` | 只刪捷徑，不影響 Instance |
@@ -81,7 +83,13 @@ port owner；不符時不查詢該 endpoint、不顯示其 metadata，也不產�
 Session root 僅限沒有 `parentID` 的 metadata。`parentID` 存在但 parent 尚未載入時放在
 `unknownParent`，不提升為 root，也不推論 agent provenance 或 Instance ownership。
 Open URL 由 1.18.31 adapter 集中產生 `/<base64url(directory)>/session/<session-id>`；UI 不組 route，
-沒有明確選擇 Session 時也不猜 latest。
+沒有明確選擇 Session 時也不猜 latest。Remote mode 在回傳 URL 前會要求最近 5 秒內的 Tailscale
+Serve 驗證；TTL 使用 monotonic clock，wall clock 只顯示 `checkedAt`。過期時同步 gate fail closed，只有
+remote URL 的 async 路徑重新查驗，不阻止本機 Instance 操作。Auto-registration 每筆寫入前重讀完整
+target 狀態，使用 30 秒 monotonic safety budget；每個 command 的 timeout 取 2.5 秒與 remaining 的較小
+正值，budget 到期或 shutdown 後不再啟動 command。OS kill/reap 可能有少量 overhead，這不是 hard
+real-time 保證。它不支援和外部 Serve 設定程序同時修改相同 node，CLI check/write 間仍有無法消除的
+非 atomic 窗口。
 
 ### Instance recovery and tracking contract
 
@@ -277,10 +285,10 @@ npm run acceptance:isolated -- node '<bounded-acceptance-harness.mjs>'
 - `<OMW_DATA_DIR>/credentials.dpapi`：第一次在互動式終端執行 `omw` 時建立的 current-user DPAPI ciphertext，只保存 OMW Basic credential 與 random launcher token
 
 未設定 `OMW_REMOTE_ACCESS=1` 時仍是未啟用 production auth 的 loopback development mode。Remote
-mode 需要 DPAPI credentials、明確的 expected loopback origin、tailnet DNS host、Manager HTTPS port、
-bounded same-port Instance range 與 `OMW_REMOTE_MAPPING_READY=1`。Fastify 不信任 forwarded headers；
+mode 需要 DPAPI credentials、明確的 expected loopback origin、tailnet DNS host、Manager HTTPS port 與
+bounded same-port Instance range。Fastify 不信任 forwarded headers；
 固定 `Host`/`Origin` 對照仍適用。Remote mode 的 `OMW_INSTANCE_PUBLIC_PORT_MIN/MAX` 同時就是
-internal fixed pool；OMW 只讀取 Tailscale 狀態與 Serve mapping，不變更 Serve 設定。Launcher token 與 browser Basic auth 是不同
+internal fixed pool；Manager listen 後會用既有已登入的 Tailscale preflight 完整 mapping，只新增完全缺少的 Serve entry，並以 fresh status 查驗結果控制 remote URL。舊版 `OMW_REMOTE_MAPPING_READY` 會被忽略。Launcher token 與 browser Basic auth 是不同
 audience。Manager-launched OpenCode 不設定獨立 Basic auth，Manager internal OpenCode API calls 也不送
 `Authorization`。因此 OMW Basic 不是 OpenCode endpoint 的 gate；remote deployment 必須以 #9 的
 Tailnet policy 將 OpenCode ports 限制為 user devices。

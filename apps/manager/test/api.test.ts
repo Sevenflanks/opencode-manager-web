@@ -316,6 +316,7 @@ async function fixture(t: test.TestContext, access?: {
   portPool?: { min: number; max: number }
   credentialController?: CredentialController
   shutdownManager?: () => void
+  verifyRemoteUrl?: (port: number) => Promise<void>
 }) {
   const root = await mkdtemp(path.join(tmpdir(), "omw-api-"))
   const project = path.join(root, "project")
@@ -324,7 +325,7 @@ async function fixture(t: test.TestContext, access?: {
   await writeFile(path.join(root, "index.html"), "<!doctype html><title>OMW</title>", "utf8")
   const repository = new ManagerRepository(path.join(root, "omw.sqlite"))
   const runtime = new FakeRuntime()
-  const service = new ManagerService(repository, runtime, access?.portPool ?? await dynamicPortPool())
+  const service = new ManagerService(repository, runtime, access?.portPool ?? await dynamicPortPool(), access?.verifyRemoteUrl)
   const app = buildApp({
     service,
     authority: { hostname: "127.0.0.1", port: 4174 },
@@ -1175,6 +1176,39 @@ test("explicit New Session and manual root switching update binding only after v
   assert.equal(createdWithoutUrl.json().error.details.sessionId, "created-3")
   overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
   assert.equal(overview.json().instances[0].primarySession.sessionId, "created-3")
+})
+
+test("remote URL delivery awaits fresh connectivity verification without blocking local instance start", async (t) => {
+  let remoteReady = false
+  const verifiedPorts: number[] = []
+  const { app, project, runtime } = await fixture(t, {
+    verifyRemoteUrl: async (port) => {
+      verifiedPorts.push(port)
+      if (!remoteReady) throw new Error("stale connectivity fixture")
+    },
+  })
+  const started = await app.inject({
+    method: "POST",
+    url: "/api/v1/instances",
+    headers: mutationHeaders,
+    payload: { directory: project },
+  })
+  assert.equal(started.statusCode, 201)
+  assert.deepEqual(verifiedPorts, [], "local Instance start does not depend on remote readiness")
+  const id = started.json().id as string
+  const port = started.json().port as number
+  runtime.openUrlCalls = 0
+
+  const unavailable = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/open-url`, headers: mutationHeaders, payload: {} })
+  assert.equal(unavailable.statusCode, 409)
+  assert.equal(unavailable.json().error.code, "REMOTE_URL_UNAVAILABLE")
+  assert.equal(runtime.openUrlCalls, 0)
+
+  remoteReady = true
+  const available = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/open-url`, headers: mutationHeaders, payload: {} })
+  assert.equal(available.statusCode, 200)
+  assert.deepEqual(verifiedPorts, [port, port])
+  assert.equal(runtime.openUrlCalls, 1)
 })
 
 test("stale activity observation cannot replace an explicit binding and the binding survives SQLite reopen", async (t) => {

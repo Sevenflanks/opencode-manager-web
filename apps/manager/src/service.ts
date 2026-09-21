@@ -52,6 +52,7 @@ export class ManagerService {
     private readonly repository: ManagerRepository,
     private readonly runtime: RuntimePort,
     private readonly portPool: InstancePortPoolConfig = { min: 42_000, max: 42_099 },
+    private readonly verifyRemoteUrl?: (port: number) => Promise<void>,
   ) {}
 
   async overview(query = "", filter: OverviewFilter = "all", includeHidden = false): Promise<OverviewResponse> {
@@ -362,7 +363,7 @@ export class ManagerService {
   async openUrl(id: string, sessionId?: string): Promise<OpenUrlResponse> {
     const record = this.requireInstance(id)
     await this.requireFreshEndpointIdentity(record)
-    this.requireRemoteUrl(record)
+    await this.requireRemoteUrl(record)
     const selectedSessionId = sessionId ?? this.repository.getPrimarySession(id)?.sessionId
     if (selectedSessionId) {
       const sessions = await this.runtime.sessions(record)
@@ -380,7 +381,7 @@ export class ManagerService {
   async createSession(id: string): Promise<OpenUrlResponse> {
     const record = this.requireInstance(id)
     await this.requireFreshEndpointIdentity(record)
-    this.requireRemoteUrl(record)
+    await this.requireRemoteUrl(record)
     this.runtime.openUrl(record)
     if (!this.runtime.createSession) {
       throw new ManagerError("SESSION_CREATE_UNAVAILABLE", "Runtime 不支援建立 Session。", 501)
@@ -417,7 +418,7 @@ export class ManagerService {
   async selectPrimarySession(id: string, sessionId: string): Promise<OpenUrlResponse> {
     const record = this.requireInstance(id)
     await this.requireFreshEndpointIdentity(record)
-    this.requireRemoteUrl(record)
+    await this.requireRemoteUrl(record)
     const sessions = dedupeSessions(await this.runtime.sessions(record))
     const session = sessions.find((candidate) => candidate.id === sessionId)
     if (!session) throw new ManagerError("SESSION_NOT_FOUND", "所選 Session 不存在於此 Project metadata。", 404)
@@ -788,7 +789,12 @@ export class ManagerService {
     state.observer?.close()
   }
 
-  private requireRemoteUrl(record: InstanceRecord): void {
+  private async requireRemoteUrl(record: InstanceRecord): Promise<void> {
+    try {
+      await this.verifyRemoteUrl?.(record.port)
+    } catch {
+      throw new ManagerError("REMOTE_URL_UNAVAILABLE", "Tailscale Serve 映射尚未通過最新驗證。", 409)
+    }
     const unavailableReason = this.runtime.remoteUrlUnavailableReason?.(record) ?? null
     if (unavailableReason) throw new ManagerError("REMOTE_URL_UNAVAILABLE", unavailableReason, 409)
   }

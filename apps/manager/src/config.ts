@@ -35,10 +35,6 @@ export function readRemoteAccessConfig(environment: NodeJS.ProcessEnv, managerPo
   if (managerPublicPort >= instancePortMin && managerPublicPort <= instancePortMax) {
     throw new Error("Manager public HTTPS port 不可與 OpenCode instance port range 重疊。")
   }
-  if (environment.OMW_REMOTE_MAPPING_READY !== "1") {
-    throw new Error("Remote URL 只可在固定 Tailscale Serve mapping 已核對後啟用；請設定 OMW_REMOTE_MAPPING_READY=1。")
-  }
-
   const publicManagerOrigin = httpsOrigin(hostname, managerPublicPort)
   return {
     publicManagerOrigin,

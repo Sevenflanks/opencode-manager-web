@@ -27,7 +27,7 @@ export function buildApp(options: {
   launcherAuthenticator?: RequestAuthenticator
   credentialController?: CredentialController
   shutdownManager?: () => void
-  connectivity?: { get(): Promise<ConnectivityInfo> }
+  connectivity?: { get(): Promise<ConnectivityInfo>; register(trigger: "manual"): Promise<ConnectivityInfo> }
   webRoot?: string
 }): FastifyInstance {
   const app = Fastify({
@@ -98,6 +98,11 @@ export function buildApp(options: {
     return options.connectivity
       ? await options.connectivity.get()
       : fallbackConnectivity(options.authority.port, options.publicOrigin)
+  })
+
+  app.post("/api/v1/connectivity/register", async () => {
+    if (!options.connectivity) throw new ManagerError("REMOTE_REGISTRATION_UNAVAILABLE", "目前無法自動註冊 Tailscale。", 503)
+    return await options.connectivity.register("manual")
   })
 
   app.patch<{ Body: { currentPassword: string; username: string; password: string } }>("/api/v1/settings/credentials", {
@@ -272,6 +277,11 @@ function fallbackConnectivity(managerPort: number, publicOrigin?: string): Conne
       mappedInstancePorts: null,
       expectedInstancePorts: 0,
       funnel: "unknown",
+    },
+    registration: {
+      state: publicOrigin ? "idle" : "not-configured",
+      trigger: null,
+      diagnostic: null,
     },
     nodeVersion: process.version,
   }
