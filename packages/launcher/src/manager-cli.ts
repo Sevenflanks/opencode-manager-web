@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
-import { existsSync } from "node:fs"
+import { existsSync, realpathSync } from "node:fs"
 import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import path from "node:path"
@@ -469,7 +469,8 @@ function sleep(milliseconds: number): Promise<void> {
 }
 
 function samePath(left: string, right: string): boolean {
-  return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase()
+  const comparable = (value: string): string => (existsSync(value) ? realpathSync.native(value) : path.resolve(value)).toLowerCase()
+  return comparable(left) === comparable(right)
 }
 
 const defaultCredentialDependencies: CredentialInitializationDependencies = {
