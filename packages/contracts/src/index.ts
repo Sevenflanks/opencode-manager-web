@@ -105,6 +105,7 @@ export interface LauncherRegistrationResponse {
 }
 
 export interface ConnectivityInfo {
+  remoteAccess?: "available" | "enabled" | "disabled"
   checkedAt: string
   mode: "loopback" | "tailnet"
   manager: { localUrl: string; publicUrl: string | null }

@@ -7,6 +7,7 @@ import type { RequestAuthenticator } from "./auth.js"
 import { CredentialUpdateError, type CredentialController } from "./credential-controller.js"
 import { ManagerError } from "./errors.js"
 import type { ManagerService } from "./service.js"
+import type { RemoteAccessController } from "./remote-access.js"
 
 const objectBody = {
   type: "object",
@@ -24,6 +25,8 @@ export function buildApp(options: {
   allowedOrigins: Set<string>
   publicOrigin?: string
   authenticator?: RequestAuthenticator
+  remoteAccess?: RemoteAccessController
+  remoteAuthenticator?: RequestAuthenticator
   launcherAuthenticator?: RequestAuthenticator
   credentialController?: CredentialController
   shutdownManager?: () => void
@@ -37,12 +40,20 @@ export function buildApp(options: {
     ajv: { customOptions: { removeAdditional: false } },
   })
   const expectedAuthority = trustedAuthority(options.authority)
-  const trustedAuthorities = new Set([expectedAuthority])
-  if (options.publicOrigin) trustedAuthorities.add(new URL(options.publicOrigin).host)
-  const trustedOrigins = trustedOriginSet(expectedAuthority, options.allowedOrigins, options.publicOrigin)
+  trustedOriginSet(expectedAuthority, options.allowedOrigins, options.remoteAccess?.config?.publicManagerOrigin ?? options.publicOrigin)
+
+  // onClose 會等待 HTTP 請求完成；必須先阻止仍在等待 discovery/save 的 enable 繼續寫 Serve。
+  app.addHook("preClose", async () => { await options.remoteAccess?.close() })
 
   app.addHook("onRequest", async (request, reply) => {
-    const launcherRoute = request.url.startsWith("/api/v1/launcher/")
+    const publicOrigin = options.remoteAccess?.config?.publicManagerOrigin ?? options.publicOrigin
+    const trustedAuthorities = new Set([expectedAuthority])
+    if (publicOrigin) trustedAuthorities.add(new URL(publicOrigin).host)
+    const trustedOrigins = trustedOriginSet(expectedAuthority, options.allowedOrigins, publicOrigin)
+    // 使用 router 已解析的路徑，避免 %65nable 這類編碼繞過啟用或 launcher 的專用授權。
+    const route = request.routeOptions.url ?? request.url.split("?")[0]!
+    const enableRoute = route === "/api/v1/connectivity/enable"
+    const launcherRoute = route.startsWith("/api/v1/launcher/")
     if (typeof request.headers.host !== "string" || !trustedAuthorities.has(request.headers.host)) {
       throw new ManagerError("UNTRUSTED_AUTHORITY", "Request authority 不在設定的 Manager endpoints。", 403)
     }
@@ -59,8 +70,15 @@ export function buildApp(options: {
       }
       return
     }
-    if (options.authenticator && !options.authenticator.authorize(request.headers, "browser")) {
-      const challenge = options.authenticator.challenge("browser")
+    if (enableRoute && request.headers.host !== expectedAuthority) {
+      throw new ManagerError("REMOTE_ENABLE_LOCAL_ONLY", "啟用遠端存取只接受 configured loopback authority。", 403)
+    }
+    // 首次啟用也必須驗證 browser Basic；launcher token 永遠不能授權這個安全切換。
+    const authenticator = enableRoute || options.remoteAccess?.config
+      ? options.remoteAuthenticator ?? options.authenticator
+      : options.authenticator
+    if ((enableRoute && !authenticator) || (authenticator && !authenticator.authorize(request.headers, "browser"))) {
+      const challenge = authenticator?.challenge("browser")
       if (challenge) reply.header("www-authenticate", challenge)
       return reply.code(401).send({ error: { code: "AUTH_REQUIRED", message: "需要有效的 OMW Basic auth。" } })
     }
@@ -103,6 +121,16 @@ export function buildApp(options: {
   app.post("/api/v1/connectivity/register", async () => {
     if (!options.connectivity) throw new ManagerError("REMOTE_REGISTRATION_UNAVAILABLE", "目前無法自動註冊 Tailscale。", 503)
     return await options.connectivity.register("manual")
+  })
+
+  app.post("/api/v1/connectivity/enable", {
+    schema: { body: {
+      type: "object", additionalProperties: false, required: ["confirmed"],
+      properties: { confirmed: { const: true } },
+    } },
+  }, async () => {
+    if (!options.remoteAccess) throw new ManagerError("REMOTE_ENABLE_UNAVAILABLE", "目前無法啟用遠端存取。", 503)
+    return options.remoteAccess.enable()
   })
 
   app.patch<{ Body: { currentPassword: string; username: string; password: string } }>("/api/v1/settings/credentials", {
@@ -296,6 +324,7 @@ function trustedAuthority(authority: { hostname: string; port: number }): string
 
 function trustedOriginSet(expectedAuthority: string, configured: Set<string>, publicOrigin?: string): Set<string> {
   const trusted = new Set([`http://${expectedAuthority}`])
+  if (publicOrigin) trusted.add(publicOrigin)
   for (const value of configured) {
     const url = new URL(value)
     const loopback = url.protocol === "http:" && url.hostname === "127.0.0.1"

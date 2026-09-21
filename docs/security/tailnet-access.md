@@ -40,6 +40,16 @@ OMW 保持 Fastify `trustProxy=false`。它將 raw `Host` header 與固定 loopb
 
 ## 設定形式
 
+### 本機 UI 啟用與保存設定
+
+未設定 `OMW_REMOTE_ACCESS` 且沒有 saved profile 時，plain `omw` 維持 loopback，絕不自動新增 Serve mapping。本機畫面的「啟用遠端存取」會先說明 Tailnet exposure，並要求目前 OMW 帳密確認。`POST /api/v1/connectivity/enable` 僅接受 configured loopback authority、trusted Origin、`x-omw-csrf: 1` 與有效 browser Basic auth；launcher token 永遠不能授權。
+
+確認後，Manager 以有界的 `tailscale status --json` 讀取並嚴格驗證 `Self.DNSName`，使用目前 Manager port 作 HTTPS port，沿用目前 Instance pool（預設 `42000-42099`），不更動已運行 Instance。CLI 不存在、尚未登入或 DNS 無效時顯示錯誤，可修正後重試；OMW 不執行 install/login/up/service/firewall/Funnel 操作。
+
+驗證後以同目錄 temporary file + rename 保存 `<OMW_DATA_DIR>/remote-access.json`，只含 hostname、Manager public port 與 Instance range，不含帳密。保存失敗不切換 policy、不寫 Serve；成功後同步切換 Basic auth、authority 與 runtime URL gate，再執行 best-effort registration。註冊失敗仍保持已啟用及錯誤診斷，可用「自動註冊」重試，無需補 env 或重新啟動。
+
+下次啟動會驗證 saved profile，並在 listen 後自動註冊；格式錯誤 fail closed。`OMW_REMOTE_ACCESS=1` 仍要求完整 explicit env，優先於 saved profile；`OMW_REMOTE_ACCESS=0` 明確停用並阻止 UI 啟用，介面會說明原因。啟用時的 Basic credential 僅保留於當前頁面記憶體，以便切換後 status/retry 正常使用，不寫 localStorage 或 URL；reload 後使用瀏覽器 Basic 登入。
+
 以下是 configuration shape，不是 production setup command。本文件不執行 Tailscale command；`<device>`、`<tailnet>` 與 credential values 都是 placeholders。埠號與 README 一致，僅是範例 mapping，不保證每台電腦都可 bind；仍須核對既有服務、實際 bind 與 Windows excluded range。
 
 ```powershell

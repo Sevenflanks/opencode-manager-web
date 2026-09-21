@@ -3,6 +3,7 @@ import path from "node:path"
 import process from "node:process"
 import type { ConnectivityInfo } from "@omw/contracts"
 import type { InstancePortPoolConfig, RemoteAccessConfig } from "./config.js"
+import { ManagerError } from "./errors.js"
 
 const COMMAND_OPTIONS = {
   encoding: "utf8",
@@ -92,6 +93,15 @@ export class ConnectivityService {
     })
     this.inflight = request
     return request
+  }
+
+  async discoverHostname(): Promise<string> {
+    const status = parseTailscaleStatus(await this.readJson(["status", "--json"]))
+    if (status.state === "unavailable") throw new ManagerError("TAILSCALE_UNAVAILABLE", "找不到已安裝的 Tailscale CLI；請確認安裝後重試。", 503)
+    if (status.state === "needs-login") throw new ManagerError("TAILSCALE_NEEDS_LOGIN", "Tailscale 尚未登入；請先在 Tailscale 登入後重試。", 503)
+    if (status.state !== "connected") throw new ManagerError("TAILSCALE_OFFLINE", "無法確認 Tailscale 已連線；請確認狀態後重試。", 503)
+    if (!status.dnsName) throw new ManagerError("TAILSCALE_DNS_INVALID", "Tailscale Self.DNSName 不是有效的 tailnet host。", 503)
+    return status.dnsName
   }
 
   register(trigger: "startup" | "manual"): Promise<ConnectivityInfo> {
