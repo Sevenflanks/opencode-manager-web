@@ -360,14 +360,25 @@ $env:OMW_DATA_DIR = 'D:\private\omw-data'
 
 ### Tailnet 與手機存取
 
-OMW server 仍只綁定 loopback。OMW 不會代替 operator 設定：
+未設定 remote env 時，plain `omw` 預設只提供本機存取。要啟用 Tailnet：
 
-- Tailscale Serve。
+1. 確認本機 Tailscale 已安裝、登入，並核對 Tailnet policy 允許哪些裝置。
+2. 從 OMW 本機 UI 按「啟用遠端存取」，閱讀 exposure 說明，以目前 OMW 帳密按「同意並啟用」。取消不會新增映射。
+3. OMW 自動取得此裝置的 Tailnet DNSName，沿用目前 Manager port 與 Instance pool；保存非機密設定後，立即要求 Basic 登入並嘗試註冊 Serve，無需設定 env 或重啟。
+4. 註冊失敗時修正畫面指出的問題，再按「自動註冊」。設定會保留，下次啟動也會自動註冊。
+
+Manager server 仍只綁定 loopback。啟用會為 Manager 與目前 Instance pool 建立固定 Serve 映射；OpenCode ports 沒有額外帳密保護，Tailnet 裝置存取政策必須先核對。帳密不會存入瀏覽器 localStorage 或 URL，reload 後依瀏覽器 Basic 登入提示驗證。
+
+`OMW_REMOTE_ACCESS=0` 是明確停用 override，UI 會說明停用原因；移除該設定並重新啟動後才可由 UI 啟用。既有 `OMW_REMOTE_ACCESS=1` 仍須提供完整 explicit env，優先於保存設定。
+
+OMW 不會代替 operator 設定：
+
+- Tailscale 安裝、登入或啟動服務。
 - Windows Firewall。
 - Tailnet ACL 或 device policy。
 - Funnel 或任何 public internet ingress。
 
-每一個 Manager / OpenCode port 都需要 operator 核對「Tailnet HTTPS URL → 同一個 `127.0.0.1:<port>`」的固定映射。請依序閱讀：
+OMW 會驗證「Tailnet HTTPS URL → 同一個 `127.0.0.1:<port>`」的固定映射，遇到衝突或 Funnel 不會覆蓋。請依序閱讀：
 
 - [Tailnet access runbook](security/tailnet-access.md)
 - [Mobile acceptance checklist](security/mobile-acceptance.md)

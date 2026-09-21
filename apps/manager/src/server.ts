@@ -3,8 +3,9 @@ import process from "node:process"
 import { fileURLToPath } from "node:url"
 import { buildApp } from "./app.js"
 import { SeparateRequestAuthenticator, type StoredCredentials } from "./auth.js"
-import { readDataDirectory, readInstancePortPoolConfig, readRemoteAccessConfig } from "./config.js"
-import { ConnectivityService, tailscaleExecutable } from "./connectivity.js"
+import { readDataDirectory, readInstancePortPoolConfig } from "./config.js"
+import { tailscaleExecutable } from "./connectivity.js"
+import { RemoteAccessController, RemoteProfileStore, startupRemoteAccess } from "./remote-access.js"
 import { CredentialController } from "./credential-controller.js"
 import { DpapiCredentialStore } from "./credential-store.js"
 import { ManagerRepository } from "./repository.js"
@@ -14,7 +15,8 @@ import { ManagerService } from "./service.js"
 const host = "127.0.0.1"
 const port = parsePort(process.env.OMW_PORT ?? "4174")
 const dataDirectory = readDataDirectory(process.env)
-const remoteAccess = readRemoteAccessConfig(process.env, port)
+const remoteProfileStore = new RemoteProfileStore(dataDirectory)
+const remoteAccess = await startupRemoteAccess(process.env, port, remoteProfileStore)
 const portPool = readInstancePortPoolConfig(process.env, remoteAccess)
 const launcherIntegration = process.env.OMW_LAUNCHER_INTEGRATION === "1"
 const credentialStore = new DpapiCredentialStore({
@@ -26,23 +28,25 @@ const credentials: StoredCredentials = await credentialStore.load()
 const authenticator = new SeparateRequestAuthenticator(credentials)
 const credentialController = new CredentialController(credentialStore, authenticator, credentials)
 const repository = new ManagerRepository(path.join(dataDirectory, "omw.sqlite"))
-const connectivity = new ConnectivityService({
+const connectivity = new RemoteAccessController({
   managerPort: port,
   remoteAccess,
   portPool,
   executable: tailscaleExecutable(process.env),
+  disabled: process.env.OMW_REMOTE_ACCESS === "0",
+  store: remoteProfileStore,
 })
 const runtime = new OpenCodeRuntime({
   executable: process.env.OMW_OPENCODE_EXECUTABLE ?? "",
   dataDirectory,
   ...(process.env.OMW_POWERSHELL_EXECUTABLE ? { powershell: process.env.OMW_POWERSHELL_EXECUTABLE } : {}),
-  ...(remoteAccess ? { publicOriginForPort: (instancePort: number) => connectivity.remoteOriginForPort(instancePort) } : {}),
+  publicOriginForPort: (instancePort: number) => connectivity.remoteOriginForPort(instancePort),
 })
 const service = new ManagerService(
   repository,
   runtime,
   portPool,
-  remoteAccess ? (instancePort) => connectivity.ensureRemoteOriginForPort(instancePort) : undefined,
+  (instancePort) => connectivity.ensureRemoteOriginForPort(instancePort),
 )
 const allowedOrigins = readAllowedOrigins(port, remoteAccess?.publicManagerOrigin)
 const webRoot = path.resolve(process.env.OMW_WEB_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist"))
@@ -55,13 +59,14 @@ const app = buildApp({
   ...(remoteAccess ? { publicOrigin: remoteAccess.publicManagerOrigin } : {}),
   credentialController,
   shutdownManager: () => { void app.close() },
-  ...(remoteAccess ? { authenticator } : {}),
+  remoteAccess: connectivity,
+  remoteAuthenticator: authenticator,
   ...(launcherIntegration ? { launcherAuthenticator: authenticator } : {}),
 })
 
 app.addHook("onClose", async () => {
-  // 先停止新 Serve mutation 與 Manager-owned observers；OpenCode Instances 刻意存活。
-  await Promise.all([connectivity.close(), service.shutdown()])
+  // Serve 已在 preClose 停止；這裡清理 Manager-owned observers，OpenCode Instances 刻意存活。
+  await service.shutdown()
   repository.close()
 })
 

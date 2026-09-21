@@ -16,12 +16,21 @@ export class ApiError extends Error {
   }
 }
 
+// 啟用後同一頁面的 polling 立即需要 Basic；只保留於記憶體，reload 後交回瀏覽器登入。
+let transientAuthorization: string | undefined
+function basicAuthorization(username: string, password: string): string {
+  const bytes = new TextEncoder().encode(`${username}:${password}`)
+  return `Basic ${btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""))}`
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const mutation = init?.method && init.method !== "GET"
   const response = await fetch(url, {
     ...init,
+    redirect: "error",
     headers: {
       accept: "application/json",
+      ...(transientAuthorization ? { authorization: transientAuthorization } : {}),
       ...(mutation ? { "x-omw-csrf": "1", ...(init?.body ? { "content-type": "application/json" } : {}) } : {}),
       ...init?.headers,
     },
@@ -35,8 +44,18 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const managerApi = {
-  updateCredentials(payload: { currentPassword: string; username: string; password: string }) {
-    return request<void>("/api/v1/settings/credentials", { method: "PATCH", body: JSON.stringify(payload) })
+  async updateCredentials(payload: { currentPassword: string; username: string; password: string }) {
+    await request<void>("/api/v1/settings/credentials", { method: "PATCH", body: JSON.stringify(payload) })
+    if (transientAuthorization) transientAuthorization = basicAuthorization(payload.username, payload.password)
+  },
+  async enableRemoteAccess(username: string, password: string) {
+    transientAuthorization = basicAuthorization(username, password)
+    try {
+      return await request<ConnectivityInfo>("/api/v1/connectivity/enable", { method: "POST", body: JSON.stringify({ confirmed: true }) })
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) transientAuthorization = undefined
+      throw error
+    }
   },
   shutdown() {
     return request<{ stopping: true }>("/api/v1/manager/shutdown", { method: "POST", body: "{}" })

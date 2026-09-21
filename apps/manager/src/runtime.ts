@@ -69,7 +69,7 @@ export class OpenCodeRuntime implements RuntimePort {
   private readonly executable: string
   private readonly powershell: string
   private readonly helperPath: string
-  private readonly publicOriginForPort: ((port: number) => string) | null
+  private readonly publicOriginForPort: ((port: number) => string | null) | null
   private readonly environment: NodeJS.ProcessEnv
   private readonly sameRunChildren = new Map<string, TrackedLaunch>()
 
@@ -77,7 +77,7 @@ export class OpenCodeRuntime implements RuntimePort {
     executable: string
     dataDirectory: string
     powershell?: string
-    publicOriginForPort?: (port: number) => string
+    publicOriginForPort?: (port: number) => string | null
     environment?: NodeJS.ProcessEnv
   }) {
     if (!options.executable) throw new ManagerError("OPENCODE_EXECUTABLE_REQUIRED", "必須設定 OMW_OPENCODE_EXECUTABLE。", 500)
@@ -321,8 +321,9 @@ export class OpenCodeRuntime implements RuntimePort {
   }
 
   openUrl(instance: Pick<InstanceRecord, "endpoint" | "projectDirectory" | "port">, sessionId?: string): string {
-    const endpoint = this.publicOriginForPort
-      ? checkedPublicOrigin(this.publicOriginForPort(instance.port), instance.port)
+    const publicOrigin = this.publicOriginForPort?.(instance.port)
+    const endpoint = publicOrigin
+      ? checkedPublicOrigin(publicOrigin, instance.port)
       : checkedEndpoint(instance.endpoint, instance.port)
     const directory = Buffer.from(instance.projectDirectory, "utf8").toString("base64url")
     const pathname = sessionId
@@ -334,7 +335,8 @@ export class OpenCodeRuntime implements RuntimePort {
   remoteUrlUnavailableReason(instance: Pick<InstanceRecord, "port">): string | null {
     if (!this.publicOriginForPort) return null
     try {
-      checkedPublicOrigin(this.publicOriginForPort(instance.port), instance.port)
+      const publicOrigin = this.publicOriginForPort(instance.port)
+      if (publicOrigin !== null) checkedPublicOrigin(publicOrigin, instance.port)
       return null
     } catch (error) {
       return this.sanitized(error)

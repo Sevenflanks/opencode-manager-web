@@ -76,6 +76,10 @@ const connectivityStale = ref(false)
 const connectivityFallbackOpen = ref(false)
 const connectivityFallback = ref<HTMLElement | null>(null)
 const connectivityCopyMessage = ref("")
+const remoteEnableOpen = ref(false)
+const remoteEnableUsername = ref("")
+const remoteEnablePassword = ref("")
+const remoteEnableError = ref("")
 const shareSupported = ref(false)
 const query = ref("")
 const filter = ref<OverviewFilter>("all")
@@ -347,6 +351,36 @@ async function registerConnectivity(): Promise<void> {
     connectivityStale.value = connectivity.value !== null
     connectivityError.value = `連線 Tailscale 失敗：${message(cause)}`
   } finally {
+    if (generation === connectivityMutationGeneration) connectivityRegistering.value = false
+  }
+}
+
+function cancelRemoteEnable(): void {
+  if (connectivityRegistering.value) return
+  remoteEnableOpen.value = false
+  remoteEnablePassword.value = ""
+  remoteEnableUsername.value = ""
+  remoteEnableError.value = ""
+}
+
+async function enableRemoteAccess(): Promise<void> {
+  if (connectivityRegistering.value) return
+  const generation = ++connectivityMutationGeneration
+  connectivityReadGeneration++
+  connectivityRegistering.value = true
+  connectivityLoading.value = false
+  remoteEnableError.value = ""
+  try {
+    const next = await managerApi.enableRemoteAccess(remoteEnableUsername.value, remoteEnablePassword.value)
+    if (generation !== connectivityMutationGeneration) return
+    connectivity.value = next
+    connectivityStale.value = false
+    connectivityError.value = ""
+    remoteEnableOpen.value = false
+  } catch (cause) {
+    if (generation === connectivityMutationGeneration) remoteEnableError.value = message(cause)
+  } finally {
+    remoteEnablePassword.value = ""
     if (generation === connectivityMutationGeneration) connectivityRegistering.value = false
   }
 }
@@ -1472,6 +1506,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
         <Button v-if="canRegisterConnectivity" variant="outline" size="sm" class="connectivity-register no-press-transform" :disabled="connectivityLoading" @click="registerConnectivity">
           <RefreshCwIcon />自動註冊
         </Button>
+        <Button v-if="connectivity?.remoteAccess === 'available'" variant="outline" size="sm" :disabled="connectivityRegistering" @click="remoteEnableOpen = true">啟用遠端存取</Button>
       </div>
       <div class="connectivity-access">
         <div class="connectivity-entry">
@@ -1487,6 +1522,19 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
         <p v-for="warning in connectivityWarnings" :key="warning"><AlertTriangleIcon />{{ warning }}</p>
         <p v-if="connectivityError"><AlertTriangleIcon />{{ connectivityError }}</p>
       </div>
+      <p v-if="connectivity?.remoteAccess === 'disabled'" class="connectivity-warnings">OMW_REMOTE_ACCESS=0 已明確停用遠端存取；請移除此停用設定並重新啟動 OMW 後再啟用。</p>
+      <form v-if="remoteEnableOpen" class="credential-form connectivity-warnings" aria-label="確認啟用遠端存取" @submit.prevent="enableRemoteAccess">
+        <h3>確認啟用遠端存取</h3>
+        <p>將透過 Tailscale Serve 開放 OMW 與目前 Instance port 範圍給 Tailnet policy 允許的裝置。OpenCode ports 沒有額外帳密保護，請確認 Tailnet 裝置存取政策。OMW 會要求 Basic 登入，並保存非機密設定，下次啟動自動註冊。</p>
+        <p>請使用目前 OMW 帳號與密碼確認。只使用已安裝且已登入的 Tailscale，不會啟用 Funnel。</p>
+        <label><span>目前 OMW 帳號</span><Input v-model="remoteEnableUsername" autocomplete="username" required :disabled="connectivityRegistering" /></label>
+        <label><span>目前 OMW 密碼</span><Input v-model="remoteEnablePassword" type="password" autocomplete="current-password" required :disabled="connectivityRegistering" /></label>
+        <p v-if="remoteEnableError" role="alert">{{ remoteEnableError }}</p>
+        <div class="connectivity-actions">
+          <Button type="button" variant="outline" :disabled="connectivityRegistering" @click="cancelRemoteEnable">取消</Button>
+          <Button type="submit" :disabled="connectivityRegistering">{{ connectivityRegistering ? '啟用中…' : '同意並啟用' }}</Button>
+        </div>
+      </form>
       <div v-if="connectivityFallbackOpen && remoteUrl" ref="connectivityFallback" class="connectivity-copy-fallback" role="status">
         <label for="connectivity-copy-url">{{ connectivityCopyMessage }}</label>
         <Input id="connectivity-copy-url" :model-value="remoteUrl" readonly aria-label="手動複製遠端入口" @focus="($event.target as HTMLInputElement).select()" />

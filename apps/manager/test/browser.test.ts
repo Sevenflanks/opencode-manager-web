@@ -1593,6 +1593,83 @@ test("grouped Instance UI and recovery actions honor the browser contract", { sk
   }
 })
 
+test("local remote enable UI confirms, cancels, reports errors and retries with memory-only auth", { skip: !enabled, timeout: 45_000 }, async () => {
+  const executablePath = process.env.OMW_BROWSER_EXECUTABLE
+  assert.ok(executablePath)
+  const sandbox = await mkdtemp(path.join(tmpdir(), "omw-browser-enable-"))
+  await Promise.all(["AppData/Roaming", "AppData/Local", "Temp"].map((name) => mkdir(path.join(sandbox, "browser-profile", name), { recursive: true })))
+  const repository = new ManagerRepository(":memory:")
+  const service = new ManagerService(repository, new BrowserRuntime())
+  const port = await freePort()
+  const origin = `http://127.0.0.1:${port}`
+  const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist")
+  const app = buildApp({ service, authority: { hostname: "127.0.0.1", port }, allowedOrigins: new Set([origin]), webRoot })
+  let response: ConnectivityInfo = {
+    checkedAt: new Date().toISOString(), mode: "loopback", remoteAccess: "available",
+    manager: { localUrl: origin, publicUrl: null }, tailscale: { state: "connected", dnsName: "fixture.example.ts.net", version: "fixture" },
+    serve: { state: "not-configured", managerMapped: false, mappedInstancePorts: 0, expectedInstancePorts: 0, funnel: "disabled" },
+    registration: { state: "idle", trigger: null, diagnostic: null }, nodeVersion: process.version,
+  }
+  const password = "fixture-browser-enable-password"
+  const authorization = `Basic ${Buffer.from(`fixture:${password}`).toString("base64")}`
+  let enableCalls = 0
+  let registerCalls = 0
+  let browser: Browser | undefined
+  try {
+    await app.listen({ host: "127.0.0.1", port })
+    browser = await chromium.launch({ executablePath, headless: true, env: createBrowserEnvironment(sandbox) })
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+    await page.route("**/api/v1/connectivity", (route) => route.fulfill({ json: response }))
+    await page.route("**/api/v1/connectivity/enable", async (route) => {
+      enableCalls++
+      assert.equal(route.request().headers().authorization, authorization)
+      assert.equal(route.request().headers()["x-omw-csrf"], "1")
+      assert.deepEqual(route.request().postDataJSON(), { confirmed: true })
+      if (enableCalls === 1) {
+        await route.fulfill({ status: 503, json: { error: { code: "TAILSCALE_UNAVAILABLE", message: "fixture CLI 尚未安裝" } } })
+        return
+      }
+      response = { ...response, mode: "tailnet", remoteAccess: "enabled", registration: { state: "failed", trigger: "manual", diagnostic: { code: "SERVE_WRITE_FAILED", message: "fixture Serve 失敗", nextStep: "請重試" } } }
+      await route.fulfill({ json: response })
+    })
+    await page.route("**/api/v1/connectivity/register", async (route) => {
+      registerCalls++
+      assert.equal(route.request().headers().authorization, authorization, "auth remains available after form cleared")
+      response = { ...response, manager: { ...response.manager, publicUrl: "https://fixture.example.ts.net:4174" }, serve: { ...response.serve, state: "verified", managerMapped: true }, registration: { state: "verified", trigger: "manual", diagnostic: null } }
+      await route.fulfill({ json: response })
+    })
+    await page.goto(origin, { waitUntil: "networkidle" })
+    await page.getByRole("button", { name: "啟用遠端存取", exact: true }).click()
+    const form = page.getByRole("form", { name: "確認啟用遠端存取" })
+    assert.match(await form.textContent() ?? "", /Tailnet.*OpenCode ports/s)
+    await form.getByLabel("目前 OMW 密碼").fill(password)
+    await form.getByRole("button", { name: "取消", exact: true }).click()
+    assert.equal(enableCalls, 0)
+    await page.getByRole("button", { name: "啟用遠端存取", exact: true }).click()
+    assert.equal(await form.getByLabel("目前 OMW 密碼").inputValue(), "")
+    await form.getByLabel("目前 OMW 帳號").fill("fixture")
+    await form.getByLabel("目前 OMW 密碼").fill(password)
+    await form.getByRole("button", { name: "同意並啟用" }).click()
+    await form.getByRole("alert").waitFor()
+    assert.match(await form.getByRole("alert").textContent() ?? "", /CLI 尚未安裝/)
+    assert.equal(await form.getByLabel("目前 OMW 密碼").inputValue(), "")
+    await form.getByLabel("目前 OMW 密碼").fill(password)
+    await form.getByRole("button", { name: "同意並啟用" }).click()
+    await form.waitFor({ state: "hidden" })
+    await page.getByRole("button", { name: "自動註冊", exact: true }).click()
+    await page.getByRole("heading", { name: "遠端入口已連線" }).waitFor()
+    assert.equal(enableCalls, 2)
+    assert.equal(registerCalls, 1)
+    assert.equal(await page.evaluate((secret) => JSON.stringify({ ...localStorage, ...sessionStorage }).includes(secret), password), false)
+    assert.equal(page.url(), `${origin}/`)
+  } finally {
+    await browser?.close()
+    await app.close().catch(() => undefined)
+    repository.close()
+    await rm(sandbox, { recursive: true, force: true })
+  }
+})
+
 test("connectivity UI reports, copies, shares, and degrades safely", { skip: !enabled, timeout: 65_000 }, async () => {
   const executablePath = process.env.OMW_BROWSER_EXECUTABLE
   assert.ok(executablePath, "OMW_BROWSER_EXECUTABLE is required")
