@@ -6,7 +6,7 @@ import {
   type SpawnOptionsWithoutStdio,
 } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { existsSync } from "node:fs"
+import { existsSync, realpathSync } from "node:fs"
 import { open, readFile, realpath, stat } from "node:fs/promises"
 import { constants as osConstants } from "node:os"
 import path from "node:path"
@@ -499,7 +499,11 @@ export function safeMessage(error: unknown): string {
 }
 
 function samePath(left: string, right: string): boolean {
-  return path.resolve(left).replace(/[\\/]+$/, "").toLowerCase() === path.resolve(right).replace(/[\\/]+$/, "").toLowerCase()
+  const comparable = (value: string): string => {
+    const resolved = existsSync(value) ? realpathSync.native(value) : path.resolve(value)
+    return resolved.replace(/[\\/]+$/, "").toLowerCase()
+  }
+  return comparable(left) === comparable(right)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
