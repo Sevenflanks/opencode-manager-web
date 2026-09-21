@@ -8,7 +8,7 @@
 - 單一 Windows Tailscale Serve deployment 將不同的 public HTTPS ports 對應到 OpenCode 相同編號的 plain HTTP loopback ports。OMW 使用另外設定的 HTTPS port。
 - Tailscale Serve 仍是終止 TLS 的 reverse proxy。OMW 不實作或承載 OpenCode 的 HTTP、asset、SSE 或 WebSocket streams。
 - OMW browser routes 使用 Basic auth；launcher token 是另一組 credential，供已實作的 local reserve/register endpoints 使用，且永遠不能授權 browser routes。Managed OpenCode endpoint 不另設 Basic auth。
-- 本 repository 只驗證契約與 URL mapping，不設定 Tailscale、Firewall、PATH、ACL 或 production secrets。
+- Remote mode 只會使用既有已安裝、已登入的 Tailscale，保守新增 OMW 缺少的 Serve mappings；不執行 login/up、不啟動 OS service，也不設定 Firewall、PATH、ACL、Funnel 或 production secrets。
 
 這是 #8 的 user-approved plan。真實 Windows Serve configuration 與 phone verification 仍屬 #9，且在 operator 明確授權外部變更前不執行。
 
@@ -30,7 +30,7 @@ Root-per-port 保留 OpenCode 的 native root URL 與 official route shape。它
 - `OMW_EXPECTED_LOOPBACK_ORIGIN` exactly matches `http://127.0.0.1:<OMW_PORT>`；
 - `OMW_TAILNET_DNS_HOST` 是不含 scheme、path、credentials 或 port 的 lowercase `*.ts.net` hostname；
 - Manager HTTPS port 與 bounded OpenCode same-port mapping range 有效且不重疊；
-- `OMW_REMOTE_MAPPING_READY=1` 表示 operator 已檢查 external mapping。
+- Manager listen 成功後會嘗試一次 Serve auto-registration；失敗不阻止 loopback Manager 使用。
 
 OMW 保持 Fastify `trustProxy=false`。它將 raw `Host` header 與固定 loopback/public authorities 比對，並將 `Origin` 與固定 origins 比對。它永遠不從 `X-Forwarded-Host`、`X-Forwarded-Proto` 或其他 forwarded header 推導 authority 或 authorization。完成 Basic auth 後，mutations 仍須有 trusted Origin 加上 `x-omw-csrf: 1`。
 
@@ -50,13 +50,15 @@ $env:OMW_TAILNET_DNS_HOST = '<device>.<tailnet>.ts.net'
 $env:OMW_MANAGER_PUBLIC_HTTPS_PORT = '40443'
 $env:OMW_INSTANCE_PUBLIC_PORT_MIN = '40444'
 $env:OMW_INSTANCE_PUBLIC_PORT_MAX = '40463'
-# 只有 operator 核對 external mappings 後才設定為 1
-$env:OMW_REMOTE_MAPPING_READY = '1'
 ```
 
-`OMW_PORT` 的 server default 是 `4174`；上例的 `40443` 是需明示設定的 example，不是 default。Instance 範例 range 是 `40444-40463`；這些範例不保證可 bind。`OMW_REMOTE_MAPPING_READY=1` 只能在 operator 實際核對 mappings 後設定。
+`OMW_PORT` 的 server default 是 `4174`；上例的 `40443` 是需明示設定的 example，不是 default。Instance 範例 range 是 `40444-40463`；這些範例不保證可 bind。舊版 `OMW_REMOTE_MAPPING_READY` 已不再是 startup gate，若仍存在會被忽略；remote URL 改由每次實際 Serve verification 決定是否可用。
 
-`OpenCodeRuntime.openUrl()` 只有在 instance port 位於已確認的 fixed range 內時，才產生 remote HTTPS URL。它不會將 remote browser redirect 到 `127.0.0.1`。Headless Start 與 opt-in Local TUI launcher 使用 [launcher contract](launcher-contract.md) 定義、由 registry 管理的 fixed pool。本 implementation 刻意不加入 Tailscale Serve management framework。
+`OpenCodeRuntime.openUrl()` 只有在 instance port 位於 fixed range，且 node、完整 Serve mappings 與 Funnel 狀態在最近 5 秒內通過查驗時，才產生 remote HTTPS URL。這個 TTL 使用 monotonic clock；wall clock 只用於顯示 `checkedAt`，系統時間倒撥不會延長 remote URL 的可用期限。查驗過期時，同步 gate 會 fail closed，只有產生 remote URL 的 async 操作會先重新查驗；失敗不影響本機 Instance 的啟動、停止或狀態操作。它不會將 remote browser redirect 到 `127.0.0.1`。Headless Start 與 opt-in Local TUI launcher 使用 [launcher contract](launcher-contract.md) 定義、由 registry 管理的 fixed pool。
+
+Auto-registration 每次只新增一個 target。每筆 mutation 前都重新讀取 `tailscale status --json` 與 `tailscale serve status --json`，並重新 preflight Manager 與完整 Instance range；完全相符的 entry 保留、不重寫，完全缺少的 entry 才以 bounded `tailscale serve --bg --yes --https=<port> http://127.0.0.1:<local-port>` 新增。目標 port 若有不相容 target、額外 handler、未知模式或 Funnel，下一筆 mutation 前 fail closed；不使用 reset/off，也不 rollback 已安全新增的 entry。註冊使用 30 秒 monotonic safety budget；每次 read 與 mutation 前都重新計算 remaining，CLI timeout 是 2.5 秒與 remaining 的較小正值，budget 用完後不再啟動 command。Manager shutdown 同樣阻止後續 mutation，並等待當下的有界 command 結束。OS 終止與回收 process 可能產生少量額外時間，因此這是停止新工作的 safety bound，不是 hard real-time wall-clock 保證。所有命令完成後仍須 fresh verification，command exit code 0 或 node online 都不能單獨視為成功。
+
+OMW 不支援與其他 Tailscale Serve 設定程序並行修改相同 node。每筆寫入前重新查驗只能保證不覆寫已觀測到的衝突；CLI 的 check 與 write 不是 atomic operation，外部程序仍可能在最後一次查驗後、OMW 寫入前改變設定。此殘餘窗口不以 reset、lock subsystem 或 native API 擴張處理；operator 應避免並行修改，若發生衝突則停止自動流程並人工核對。
 
 ## Rotation 與 revocation
 

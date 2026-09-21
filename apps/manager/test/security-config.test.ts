@@ -23,7 +23,6 @@ test("remote config accepts only explicit fixed same-port mappings", () => {
     OMW_MANAGER_PUBLIC_HTTPS_PORT: "8443",
     OMW_INSTANCE_PUBLIC_PORT_MIN: "42000",
     OMW_INSTANCE_PUBLIC_PORT_MAX: "42009",
-    OMW_REMOTE_MAPPING_READY: "1",
   }, 4174)
   assert.ok(config)
   assert.equal(config.publicManagerOrigin, "https://device.example.ts.net:8443")
@@ -31,7 +30,7 @@ test("remote config accepts only explicit fixed same-port mappings", () => {
   assert.throws(() => config.instanceOrigin(43000), /fixed mapping range/)
 })
 
-test("remote config fails closed for an unconfirmed mapping or wrong loopback entry", () => {
+test("remote config ignores the legacy ready flag but still rejects an invalid loopback entry", () => {
   const base = {
     OMW_REMOTE_ACCESS: "1",
     OMW_EXPECTED_LOOPBACK_ORIGIN: "http://127.0.0.1:4174",
@@ -40,9 +39,10 @@ test("remote config fails closed for an unconfirmed mapping or wrong loopback en
     OMW_INSTANCE_PUBLIC_PORT_MIN: "42000",
     OMW_INSTANCE_PUBLIC_PORT_MAX: "42009",
   }
-  assert.throws(() => readRemoteAccessConfig(base, 4174), /MAPPING_READY/)
-  assert.throws(() => readRemoteAccessConfig({ ...base, OMW_REMOTE_MAPPING_READY: "1", OMW_EXPECTED_LOOPBACK_ORIGIN: "http://localhost:4174" }, 4174), /127\.0\.0\.1/)
-  assert.throws(() => readRemoteAccessConfig({ ...base, OMW_REMOTE_MAPPING_READY: "1", OMW_TAILNET_DNS_HOST: "https://device.example.ts.net" }, 4174), /tailnet DNS host/)
+  assert.ok(readRemoteAccessConfig(base, 4174))
+  assert.ok(readRemoteAccessConfig({ ...base, OMW_REMOTE_MAPPING_READY: "legacy-value-is-ignored" }, 4174))
+  assert.throws(() => readRemoteAccessConfig({ ...base, OMW_EXPECTED_LOOPBACK_ORIGIN: "http://localhost:4174" }, 4174), /127\.0\.0\.1/)
+  assert.throws(() => readRemoteAccessConfig({ ...base, OMW_TAILNET_DNS_HOST: "https://device.example.ts.net" }, 4174), /tailnet DNS host/)
 })
 
 test("instance pool is fixed, paired, bounded, and identical to remote public ports", () => {

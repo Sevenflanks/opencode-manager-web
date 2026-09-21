@@ -1616,6 +1616,7 @@ test("connectivity UI reports, copies, shares, and degrades safely", { skip: !en
     manager: { localUrl: `http://127.0.0.1:${port}`, publicUrl },
     tailscale: { state: "connected", dnsName: "omw-node.example.ts.net", version: "1.88.2" },
     serve: { state: "verified", managerMapped: true, mappedInstancePorts: 2, expectedInstancePorts: 2, funnel: "disabled" },
+    registration: { state: "verified", trigger: "startup", diagnostic: null },
     nodeVersion: "v24.8.0",
   }
   let response = online
@@ -1624,6 +1625,10 @@ test("connectivity UI reports, copies, shares, and degrades safely", { skip: !en
   let releaseConnectivity: (() => void) | undefined
   let notifyConnectivityBlocked: (() => void) | undefined
   let connectivityCalls = 0
+  let registrationCalls = 0
+  let delayRegistration = false
+  let releaseRegistration: (() => void) | undefined
+  let notifyRegistrationBlocked: (() => void) | undefined
   let browser: Browser | undefined
 
   try {
@@ -1677,14 +1682,24 @@ test("connectivity UI reports, copies, shares, and degrades safely", { skip: !en
       }
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(response) }).catch(() => undefined)
     })
+    await page.route("**/api/v1/connectivity/register", async (route) => {
+      registrationCalls++
+      if (delayRegistration) {
+        await new Promise<void>((resolve) => {
+          releaseRegistration = resolve
+          notifyRegistrationBlocked?.()
+        })
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(response) }).catch(() => undefined)
+    })
 
     await page.goto(origin, { waitUntil: "networkidle" })
-    await page.getByRole("heading", { level: 2, name: "本機 Tailscale 在線" }).waitFor()
+    await page.getByRole("heading", { level: 2, name: "遠端入口已連線" }).waitFor()
     assert.equal(await page.getByText("Serve 映射吻合", { exact: false }).count() > 0, true)
     assert.equal(await page.getByText(publicUrl, { exact: true }).count(), 1)
-    assert.match(await page.locator(".connectivity-qualifier").textContent() ?? "", /手機連線需另行確認/)
-    const refreshButton = page.getByRole("button", { name: "檢查連線" })
-    assert.equal(await refreshButton.getAttribute("title"), "檢查連線")
+    assert.match(await page.locator(".connectivity-qualifier").textContent() ?? "", /遠端裝置仍須連上 Tailnet/)
+    const registrationButton = page.getByRole("button", { name: "自動註冊" })
+    assert.equal(await registrationButton.count(), 0, "registration retry is hidden after verified startup")
 
     const callsBeforeHiddenPoll = connectivityCalls
     await page.evaluate(() => {
@@ -1707,7 +1722,7 @@ test("connectivity UI reports, copies, shares, and degrades safely", { skip: !en
     assert.deepEqual(await page.evaluate(() => Reflect.get(window, "__omwCopiedUrls")), [publicUrl], "copy writes the exact configured HTTPS URL")
     await page.getByRole("button", { name: "分享" }).click()
     await page.waitForFunction(() => Reflect.get(window, "__omwShareCalls") === 1)
-    assert.equal(await page.getByRole("textbox", { name: "手動複製手機入口" }).count(), 0, "AbortError is a cancellation, not a share failure")
+    assert.equal(await page.getByRole("textbox", { name: "手動複製遠端入口" }).count(), 0, "AbortError is a cancellation, not a share failure")
 
     await page.locator(".connectivity-details summary").click()
     assert.match(await page.locator(".connectivity-details").textContent() ?? "", /1\.88\.2.*v24\.8\.0.*吻合.*2 \/ 2/s)
@@ -1738,23 +1753,67 @@ test("connectivity UI reports, copies, shares, and degrades safely", { skip: !en
 
     await page.evaluate(() => Reflect.set(window, "__omwClipboardMode", "deny"))
     await page.getByRole("button", { name: "複製網址" }).click()
-    const manualCopy = page.getByRole("textbox", { name: "手動複製手機入口" })
+    const manualCopy = page.getByRole("textbox", { name: "手動複製遠端入口" })
     await manualCopy.waitFor()
     assert.equal(await manualCopy.inputValue(), publicUrl)
     assert.deepEqual(await manualCopy.evaluate((input) => ({ start: (input as HTMLInputElement).selectionStart, end: (input as HTMLInputElement).selectionEnd })), { start: 0, end: publicUrl.length })
     assert.match(await page.locator(".connectivity-copy-fallback").textContent() ?? "", /請選取網址手動複製/)
+
+    const idleOffline: ConnectivityInfo = {
+      ...online,
+      checkedAt: "2026-09-18T08:30:30.000Z",
+      manager: { ...online.manager, publicUrl: null },
+      tailscale: { ...online.tailscale, state: "offline" },
+      serve: { ...online.serve, state: "mismatch", managerMapped: false, mappedInstancePorts: 0 },
+      registration: { state: "idle", trigger: null, diagnostic: null },
+    }
+    response = idleOffline
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+    await page.getByRole("heading", { level: 2, name: "本機 Tailscale 離線" }).waitFor()
+    assert.equal(await registrationButton.count(), 1, "remote-mode idle state offers auto-registration after verified connectivity is lost")
+    response = {
+      ...idleOffline,
+      registration: {
+        state: "failed",
+        trigger: "manual",
+        diagnostic: { code: "TAILSCALE_OFFLINE", message: "Tailscale 目前離線。", nextStep: "請恢復連線後重試。" },
+      },
+    }
+    await registrationButton.click()
+    await page.getByRole("heading", { level: 2, name: "連線 Tailscale 失敗" }).waitFor()
+    assert.equal(registrationCalls, 1, "idle retry uses the registration POST mutation")
 
     response = {
       ...online,
       checkedAt: "2026-09-18T08:31:00.000Z",
       tailscale: { ...online.tailscale, state: "future-state" as ConnectivityInfo["tailscale"]["state"] },
       serve: { ...online.serve, state: "mismatch", managerMapped: false, funnel: "enabled" },
+      registration: {
+        state: "failed",
+        trigger: "startup",
+        diagnostic: { code: "FUNNEL_ENABLED", message: "目標 port 已啟用 Funnel。", nextStep: "請由管理者核對並關閉。" },
+      },
     }
-    await page.getByRole("button", { name: "檢查連線" }).click()
-    await page.getByRole("heading", { level: 2, name: "Tailscale 狀態未知" }).waitFor()
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+    await page.getByRole("heading", { level: 2, name: "尚未連線 Tailscale" }).waitFor()
+    await registrationButton.waitFor()
+    response = { ...response, registration: { ...response.registration, trigger: "manual" } }
+    delayRegistration = true
+    const registrationBlocked = new Promise<void>((resolve) => { notifyRegistrationBlocked = resolve })
+    await registrationButton.click()
+    await registrationBlocked
+    await page.evaluate(() => {
+      const poll = Reflect.get(window, "__omwConnectivityPoll")
+      if (typeof poll === "function") poll()
+      document.dispatchEvent(new Event("visibilitychange"))
+    })
+    releaseRegistration?.()
+    delayRegistration = false
+    await page.getByRole("heading", { level: 2, name: "連線 Tailscale 失敗" }).waitFor()
+    assert.equal(registrationCalls, 2, "registration retry uses the POST mutation")
     assert.equal(await page.locator(".connectivity").getAttribute("data-tone"), "warning")
-    assert.match(await page.locator(".connectivity-warnings").textContent() ?? "", /Serve 映射與目前 OMW 設定不符.*偵測到 Funnel，請核對公開範圍/s)
-    assert.equal(await page.getByRole("button", { name: "複製網址" }).isEnabled(), true, "mismatch keeps the configured URL copyable for diagnosis")
+    assert.match(await page.locator(".connectivity-warnings").textContent() ?? "", /Serve 映射與目前 OMW 設定不符.*偵測到 Funnel.*目標 port 已啟用 Funnel.*FUNNEL_ENABLED/s)
+    assert.equal(await page.getByRole("button", { name: "複製網址" }).isDisabled(), true, "unverified URLs are never offered as available")
 
     response = {
       ...online,
@@ -1763,8 +1822,8 @@ test("connectivity UI reports, copies, shares, and degrades safely", { skip: !en
         publicUrl: "https://admin:public-password@omw-node.example.ts.net:40443?token=public-secret",
       },
     }
-    await page.getByRole("button", { name: "檢查連線" }).click()
-    await page.getByText("尚未設定手機入口", { exact: true }).waitFor()
+    await registrationButton.click()
+    await page.getByText("尚未驗證遠端入口", { exact: true }).waitFor()
     assert.equal(await page.getByRole("button", { name: "複製網址" }).isDisabled(), true)
     assert.doesNotMatch(await page.locator(".connectivity").textContent() ?? "", /local-password|public-password|local-secret|public-secret/, "credentials and token-like query strings never enter the UI")
 
@@ -1776,29 +1835,33 @@ test("connectivity UI reports, copies, shares, and degrades safely", { skip: !en
       tailscale: { ...online.tailscale, state: "offline" },
       serve: { ...online.serve, state: "not-configured", managerMapped: null, mappedInstancePorts: null },
     }
-    await page.getByRole("button", { name: "檢查連線" }).click()
-    await page.getByText("尚未設定手機入口", { exact: true }).waitFor()
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+    await page.getByText("尚未驗證遠端入口", { exact: true }).waitFor()
     assert.equal(await page.getByRole("button", { name: "複製網址" }).isDisabled(), true, "loopback URL is never offered as a phone URL")
     assert.equal(await page.getByRole("button", { name: "分享" }).isDisabled(), true)
 
     response = online
-    await page.getByRole("button", { name: "檢查連線" }).click()
-    await page.getByRole("heading", { level: 2, name: "本機 Tailscale 在線" }).waitFor()
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+    await page.getByRole("heading", { level: 2, name: "遠端入口已連線" }).waitFor()
     failConnectivity = true
-    await page.getByRole("button", { name: "檢查連線" }).click()
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
     await page.getByRole("heading", { level: 2, name: "連線資料已過期" }).waitFor()
     assert.equal(await page.locator(".connectivity").getAttribute("data-tone"), "unknown", "stale success must not remain green")
-    assert.equal(await page.getByText(publicUrl, { exact: true }).count(), 1, "stale snapshot remains available for diagnosis")
+    assert.equal(await page.getByText(publicUrl, { exact: true }).count(), 0, "stale remote URL is not presented as an available entry")
+    assert.equal(await page.getByText("遠端入口（已驗證）", { exact: true }).count(), 0, "stale snapshot is not labelled verified")
+    assert.equal(await page.getByRole("button", { name: "複製網址" }).isDisabled(), true, "stale remote URL cannot be copied")
+    assert.equal(await page.getByRole("button", { name: "分享" }).isDisabled(), true, "stale remote URL cannot be shared")
+    assert.equal(await page.getByRole("textbox", { name: "手動複製遠端入口" }).count(), 0, "stale manual-copy fallback is hidden")
 
     failConnectivity = false
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
-    await page.getByRole("heading", { level: 2, name: "本機 Tailscale 在線" }).waitFor()
+    await page.getByRole("heading", { level: 2, name: "遠端入口已連線" }).waitFor()
     assert.equal(await page.locator(".connectivity").getAttribute("data-tone"), "ready", "returning to the foreground refreshes a stale connectivity snapshot")
 
     delayConnectivity = true
     const connectivityBlocked = new Promise<void>((resolve) => { notifyConnectivityBlocked = resolve })
     const pendingRequest = page.waitForRequest((request) => request.url().endsWith("/api/v1/connectivity"))
-    await page.getByRole("button", { name: "檢查連線" }).click({ noWaitAfter: true })
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
     await pendingRequest
     await connectivityBlocked
     const release = releaseConnectivity

@@ -44,6 +44,9 @@ export const managerApi = {
   connectivity() {
     return request<ConnectivityInfo>("/api/v1/connectivity")
   },
+  registerConnectivity() {
+    return request<ConnectivityInfo>("/api/v1/connectivity/register", { method: "POST", body: "{}" })
+  },
   overview(query: string, filter: OverviewFilter, includeHidden = false) {
     const params = new URLSearchParams({ q: query, filter })
     if (includeHidden) params.set("includeHidden", "true")

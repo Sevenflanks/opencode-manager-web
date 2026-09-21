@@ -6,7 +6,7 @@
 > 下列裸 `omw` 命令；請改用 `npm run dev:credentials`、`npm run dev` 或
 > `npm run dev:omw -- ...`，避免連入日常 data、credentials 與 OpenCode DB。
 
-OMW（OpenCode Manager Web）是在 Windows 本機啟動的管理介面，用來檢視 Project、OpenCode Instance 與 Session，並啟動 OMW 管理的背景 Instance。OMW 維持 loopback-only；需要從手機連線時，由 operator 另外設定 Tailscale Serve。
+OMW（OpenCode Manager Web）是在 Windows 本機啟動的管理介面，用來檢視 Project、OpenCode Instance 與 Session，並啟動 OMW 管理的背景 Instance。OMW 維持 loopback-only；明示開啟 remote mode 時，會沿用已安裝、已登入的 Tailscale，保守新增並驗證缺少的 Serve mappings。它不會自動 login/up、啟動 OS service、開啟 Funnel 或覆寫既有不相容設定。
 
 本手冊對應目前的 local package 介面：
 

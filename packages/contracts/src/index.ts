@@ -120,5 +120,14 @@ export interface ConnectivityInfo {
     expectedInstancePorts: number
     funnel: "disabled" | "enabled" | "unknown"
   }
+  registration: {
+    state: "not-configured" | "idle" | "registering" | "verified" | "failed"
+    trigger: "startup" | "manual" | null
+    diagnostic: {
+      code: string
+      message: string
+      nextStep: string
+    } | null
+  }
   nodeVersion: string
 }

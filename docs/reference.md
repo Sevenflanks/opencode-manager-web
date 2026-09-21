@@ -34,7 +34,7 @@ Browser mutation、launcher request、Origin、authority 與 token 的規則屬�
 - [Tailnet access contract and runbook](security/tailnet-access.md)
 - [Mobile acceptance checklist](security/mobile-acceptance.md)
 
-OMW 維持 loopback-only；Tailnet Serve、Firewall、ACL、TLS 與 public ingress 都不是 OMW 自動設定的能力。Browser Basic auth 與 launcher token 是不同 audience，文件、Issue、log 與截圖都不得包含 password、token 或 `credentials.dpapi` 內容。
+OMW 維持 loopback-only；明示開啟 remote mode 時，OMW 只會保守新增並驗證缺少的 Tailscale Serve mappings，不會設定 Firewall、ACL、Funnel、login/up、OS service 或其他 public ingress。Browser Basic auth 與 launcher token 是不同 audience，文件、Issue、log 與截圖都不得包含 password、token 或 `credentials.dpapi` 內容。
 
 ## Diagrams
 

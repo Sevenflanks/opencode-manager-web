@@ -26,19 +26,24 @@ const credentials: StoredCredentials = await credentialStore.load()
 const authenticator = new SeparateRequestAuthenticator(credentials)
 const credentialController = new CredentialController(credentialStore, authenticator, credentials)
 const repository = new ManagerRepository(path.join(dataDirectory, "omw.sqlite"))
-const runtime = new OpenCodeRuntime({
-  executable: process.env.OMW_OPENCODE_EXECUTABLE ?? "",
-  dataDirectory,
-  ...(process.env.OMW_POWERSHELL_EXECUTABLE ? { powershell: process.env.OMW_POWERSHELL_EXECUTABLE } : {}),
-  ...(remoteAccess ? { publicOriginForPort: (instancePort: number) => remoteAccess.instanceOrigin(instancePort) } : {}),
-})
-const service = new ManagerService(repository, runtime, portPool)
 const connectivity = new ConnectivityService({
   managerPort: port,
   remoteAccess,
   portPool,
   executable: tailscaleExecutable(process.env),
 })
+const runtime = new OpenCodeRuntime({
+  executable: process.env.OMW_OPENCODE_EXECUTABLE ?? "",
+  dataDirectory,
+  ...(process.env.OMW_POWERSHELL_EXECUTABLE ? { powershell: process.env.OMW_POWERSHELL_EXECUTABLE } : {}),
+  ...(remoteAccess ? { publicOriginForPort: (instancePort: number) => connectivity.remoteOriginForPort(instancePort) } : {}),
+})
+const service = new ManagerService(
+  repository,
+  runtime,
+  portPool,
+  remoteAccess ? (instancePort) => connectivity.ensureRemoteOriginForPort(instancePort) : undefined,
+)
 const allowedOrigins = readAllowedOrigins(port, remoteAccess?.publicManagerOrigin)
 const webRoot = path.resolve(process.env.OMW_WEB_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist"))
 const app = buildApp({
@@ -55,13 +60,17 @@ const app = buildApp({
 })
 
 app.addHook("onClose", async () => {
-  // Stop Manager-owned observers before SQLite; OpenCode Instances deliberately survive shutdown.
-  await service.shutdown()
+  // 先停止新 Serve mutation 與 Manager-owned observers；OpenCode Instances 刻意存活。
+  await Promise.all([connectivity.close(), service.shutdown()])
   repository.close()
 })
 
 await service.reconcile()
 await app.listen({ host, port })
+if (remoteAccess) {
+  // Serve provisioning is best-effort after listen so a Tailscale failure never takes down local management.
+  void connectivity.register("startup").catch(() => undefined)
+}
 
 function parsePort(value: string): number {
   const parsed = Number(value)

@@ -70,6 +70,7 @@ const recoveryDiagnosticMessage = "操作資訊尚未取得。可能是前後端
 const overview = ref<{ shortcuts: DirectoryShortcut[]; instances: ManagedInstance[] }>({ shortcuts: [], instances: [] })
 const connectivity = ref<ConnectivityInfo | null>(null)
 const connectivityLoading = ref(false)
+const connectivityRegistering = ref(false)
 const connectivityError = ref("")
 const connectivityStale = ref(false)
 const connectivityFallbackOpen = ref(false)
@@ -134,7 +135,8 @@ let inputModality: "pointer" | "keyboard" = "keyboard"
 let restoreFocusAfterStartPanelClose = true
 let revealDetailAfterStartPanelClose = false
 let overviewGeneration = 0
-let connectivityGeneration = 0
+let connectivityReadGeneration = 0
+let connectivityMutationGeneration = 0
 let mobileHistoryGeneration = 0
 let mobileBreakpoint: MediaQueryList | undefined
 let listScrollPosition = 0
@@ -160,10 +162,21 @@ const serveState = computed<ConnectivityInfo["serve"]["state"]>(() => {
     ? value as ConnectivityInfo["serve"]["state"]
     : "unknown"
 })
-const phoneUrl = computed(() => {
+const remoteUrl = computed(() => {
   const value = connectivity.value?.manager.publicUrl
-  if (connectivityMode.value !== "tailnet" || !value) return null
+  if (connectivityStale.value
+    || connectivityMode.value !== "tailnet"
+    || tailscaleState.value !== "connected"
+    || serveState.value !== "verified"
+    || connectivity.value?.serve.funnel !== "disabled"
+    || !value) return null
   return safeManagerUrl(value)
+})
+const canRegisterConnectivity = computed(() => {
+  const state = connectivity.value?.registration.state
+  return connectivityMode.value === "tailnet"
+    && !connectivityRegistering.value
+    && (state === "failed" || (state === "idle" && !remoteUrl.value))
 })
 const localUrl = computed(() => safeManagerUrl(connectivity.value?.manager.localUrl) ?? "未知")
 const connectivityTone = computed(() => {
@@ -174,6 +187,11 @@ const connectivityTone = computed(() => {
 const connectivityHeadline = computed(() => {
   if (connectivityStale.value) return "連線資料已過期"
   if (!connectivity.value) return connectivityLoading.value ? "正在檢查連線" : "連線狀態未知"
+  if (connectivityRegistering.value || connectivity.value.registration.state === "registering") return "正在連線 Tailscale"
+  if (connectivity.value.registration.state === "failed") {
+    return connectivity.value.registration.trigger === "manual" ? "連線 Tailscale 失敗" : "尚未連線 Tailscale"
+  }
+  if (connectivity.value.registration.state === "verified") return "遠端入口已連線"
   return {
     connected: "本機 Tailscale 在線",
     offline: "本機 Tailscale 離線",
@@ -191,11 +209,15 @@ const serveLabel = computed(() => ({
 const connectivityWarnings = computed(() => {
   const warnings: string[] = []
   if (connectivityStale.value) warnings.push("無法取得最新連線狀態；以下為上次成功檢查結果。")
-  if (tailscaleState.value === "offline") warnings.push("本機 Tailscale 目前離線，手機入口可能無法連線。")
+  if (tailscaleState.value === "offline") warnings.push("本機 Tailscale 目前離線，遠端入口可能無法連線。")
   if (tailscaleState.value === "needs-login") warnings.push("本機 Tailscale 需要登入後才能使用 Tailnet 入口。")
   if (tailscaleState.value === "unavailable") warnings.push("找不到可用的本機 Tailscale 狀態。")
-  if (serveState.value === "mismatch") warnings.push("Serve 映射與目前 OMW 設定不符，手機入口可能無法連線。")
+  if (serveState.value === "mismatch") warnings.push("Serve 映射與目前 OMW 設定不符，遠端入口目前不可用。")
   if (connectivity.value?.serve.funnel === "enabled") warnings.push("偵測到 Funnel，請核對公開範圍")
+  const registration = connectivity.value?.registration
+  if (registration?.state === "failed" && registration.trigger === "manual" && registration.diagnostic) {
+    warnings.push(`${registration.diagnostic.message} ${registration.diagnostic.nextStep}（${registration.diagnostic.code}）`)
+  }
   return warnings
 })
 const recoveryMetadataValid = computed(() => {
@@ -276,13 +298,15 @@ onBeforeUnmount(() => {
   mobileBreakpoint?.removeEventListener("change", handleMobileBreakpointChange)
   if (startPanelBlocking.value) document.body.style.overflow = previousBodyOverflow
   overviewGeneration++
-  connectivityGeneration++
+  connectivityReadGeneration++
+  connectivityMutationGeneration++
   sessionsGeneration++
 })
 
 async function loadConnectivity(source: "user" | "background" = "user"): Promise<void> {
   if (source === "background" && document.visibilityState === "hidden") return
-  const generation = ++connectivityGeneration
+  if (connectivityRegistering.value) return
+  const generation = ++connectivityReadGeneration
   if (source === "user") {
     connectivityError.value = ""
     connectivityFallbackOpen.value = false
@@ -290,24 +314,45 @@ async function loadConnectivity(source: "user" | "background" = "user"): Promise
   connectivityLoading.value = true
   try {
     const next = await managerApi.connectivity()
-    if (generation !== connectivityGeneration) return
+    if (generation !== connectivityReadGeneration) return
     connectivity.value = next
     connectivityStale.value = false
     connectivityError.value = ""
   } catch (cause) {
-    if (generation !== connectivityGeneration) return
+    if (generation !== connectivityReadGeneration) return
     // 保留最後一次成功結果供診斷，但一定降級為 stale，避免舊的綠色狀態被當成目前可用。
     connectivityStale.value = connectivity.value !== null
     connectivityError.value = connectivity.value
       ? `更新失敗：${message(cause)}`
       : "暫時無法取得連線狀態。"
   } finally {
-    if (generation === connectivityGeneration) connectivityLoading.value = false
+    if (generation === connectivityReadGeneration) connectivityLoading.value = false
   }
 }
 
-async function copyPhoneUrl(successMessage = "手機入口已複製。"): Promise<boolean> {
-  const url = phoneUrl.value
+async function registerConnectivity(): Promise<void> {
+  const generation = ++connectivityMutationGeneration
+  connectivityReadGeneration++
+  connectivityRegistering.value = true
+  connectivityLoading.value = false
+  connectivityError.value = ""
+  connectivityFallbackOpen.value = false
+  try {
+    const next = await managerApi.registerConnectivity()
+    if (generation !== connectivityMutationGeneration) return
+    connectivity.value = next
+    connectivityStale.value = false
+  } catch (cause) {
+    if (generation !== connectivityMutationGeneration) return
+    connectivityStale.value = connectivity.value !== null
+    connectivityError.value = `連線 Tailscale 失敗：${message(cause)}`
+  } finally {
+    if (generation === connectivityMutationGeneration) connectivityRegistering.value = false
+  }
+}
+
+async function copyPhoneUrl(successMessage = "遠端入口已複製。"): Promise<boolean> {
+  const url = remoteUrl.value
   if (!url) return false
   connectivityFallbackOpen.value = false
   connectivityCopyMessage.value = ""
@@ -328,7 +373,7 @@ async function copyPhoneUrl(successMessage = "手機入口已複製。"): Promis
 }
 
 function sharePhoneUrl(): void {
-  const url = phoneUrl.value
+  const url = remoteUrl.value
   if (!url || typeof navigator.share !== "function") return
   let result: Promise<void>
   try {
@@ -1422,27 +1467,29 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
         <div class="connectivity-status-copy">
           <p class="eyebrow">TAILNET / SERVE</p>
           <h2 id="connectivity-title">{{ connectivityHeadline }}</h2>
-          <p class="connectivity-qualifier">{{ serveLabel }} · 手機連線需另行確認</p>
+          <p class="connectivity-qualifier">{{ serveLabel }} · 遠端裝置仍須連上 Tailnet</p>
         </div>
-        <Button variant="ghost" size="icon" class="connectivity-refresh no-press-transform" aria-label="檢查連線" title="檢查連線" :disabled="connectivityLoading" @click="loadConnectivity('user')"><RefreshCwIcon :class="{ spin: connectivityLoading }" /></Button>
+        <Button v-if="canRegisterConnectivity" variant="outline" size="sm" class="connectivity-register no-press-transform" :disabled="connectivityLoading" @click="registerConnectivity">
+          <RefreshCwIcon />自動註冊
+        </Button>
       </div>
       <div class="connectivity-access">
         <div class="connectivity-entry">
-          <span>手機入口<span v-if="phoneUrl">（已設定）</span></span>
-          <code :title="phoneUrl ?? undefined">{{ phoneUrl ?? '尚未設定手機入口' }}</code>
+          <span>遠端入口<span v-if="remoteUrl">（已驗證）</span></span>
+          <code :title="remoteUrl ?? undefined">{{ remoteUrl ?? '尚未驗證遠端入口' }}</code>
         </div>
         <div class="connectivity-actions">
-          <Button variant="outline" size="sm" class="no-press-transform" :disabled="!phoneUrl" @click="copyPhoneUrl()"><CopyIcon />複製網址</Button>
-          <Button v-if="shareSupported" variant="outline" size="sm" class="no-press-transform" :disabled="!phoneUrl" @click="sharePhoneUrl"><Share2Icon />分享</Button>
+          <Button variant="outline" size="sm" class="no-press-transform" :disabled="!remoteUrl" @click="copyPhoneUrl()"><CopyIcon />複製網址</Button>
+          <Button v-if="shareSupported" variant="outline" size="sm" class="no-press-transform" :disabled="!remoteUrl" @click="sharePhoneUrl"><Share2Icon />分享</Button>
         </div>
       </div>
       <div v-if="connectivityWarnings.length || connectivityError" class="connectivity-warnings" aria-live="polite">
         <p v-for="warning in connectivityWarnings" :key="warning"><AlertTriangleIcon />{{ warning }}</p>
         <p v-if="connectivityError"><AlertTriangleIcon />{{ connectivityError }}</p>
       </div>
-      <div v-if="connectivityFallbackOpen && phoneUrl" ref="connectivityFallback" class="connectivity-copy-fallback" role="status">
+      <div v-if="connectivityFallbackOpen && remoteUrl" ref="connectivityFallback" class="connectivity-copy-fallback" role="status">
         <label for="connectivity-copy-url">{{ connectivityCopyMessage }}</label>
-        <Input id="connectivity-copy-url" :model-value="phoneUrl" readonly aria-label="手動複製手機入口" @focus="($event.target as HTMLInputElement).select()" />
+        <Input id="connectivity-copy-url" :model-value="remoteUrl" readonly aria-label="手動複製遠端入口" @focus="($event.target as HTMLInputElement).select()" />
       </div>
       <details class="connectivity-details">
         <summary>連線詳細資料</summary>
