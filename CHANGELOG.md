@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.1.1...v0.2.0) (2026-09-21)
+
+
+### Features
+
+* **launcher:** 在啟動訊息顯示 OMW CLI 版本 ([2df3641](https://github.com/Sevenflanks/opencode-manager-web/commit/2df36416ca2ca6641044eba92e6e7763572bc76f))
+* **remote:** 支援從本機介面啟用並保存遠端存取設定 ([114c58c](https://github.com/Sevenflanks/opencode-manager-web/commit/114c58c61f99dc6b1917dbe148b92af6b2b4c0b5))
+* **remote:** 支援從本機介面啟用遠端存取並顯示啟動版本 ([68a2434](https://github.com/Sevenflanks/opencode-manager-web/commit/68a2434ce1fafb9628ded37b1b8e0f079aad44c5))
+
 ## [0.1.1](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.1.0...v0.1.1) (2026-09-21)
 
 
