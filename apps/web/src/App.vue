@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { primarySessionDisposition } from "@omw/contracts"
-import type { ConnectivityInfo, DirectoryListing, DirectoryShortcut, ManagedInstance, OpenUrlResponse, OverviewFilter, SessionRootsResponse } from "@omw/contracts"
+import type { ConnectivityInfo, DirectoryListing, DirectoryShortcut, ManagedInstance, OpenUrlResponse, OverviewFilter, SessionMetadata, SessionRootsResponse } from "@omw/contracts"
 import {
   ActivityIcon,
   AlertTriangleIcon,
@@ -40,6 +40,7 @@ const filters: Array<{ value: OverviewFilter; label: string }> = [
   { value: "attention", label: "需處理" },
   { value: "unreachable", label: "已失聯" },
 ]
+const SESSION_PAGE_SIZE = 10
 type LifecycleAction = "start" | "stop" | "recheck" | "resume" | "tracking" | "remove"
 type RecoveryAction = "recheck" | "resume" | "tracking" | "remove"
 type ConfirmationTone = "positive" | "caution" | "danger"
@@ -112,7 +113,8 @@ const sessions = ref<SessionRootsResponse>({ roots: [], unknownParent: [] })
 const sessionsLoading = ref(false)
 const sessionsLoaded = ref(false)
 const sessionsError = ref("")
-const advancedSessionId = ref("")
+const sessionPage = ref(1)
+const switchingSessionId = ref("")
 const opening = ref(false)
 const lifecycleOpen = ref(false)
 const lifecyclePending = ref<LifecycleAction | null>(null)
@@ -151,6 +153,12 @@ let sessionsGeneration = 0
 let sessionsInstanceId = ""
 
 const selected = computed(() => overview.value.instances.find((instance) => instance.id === selectedId.value) ?? null)
+const sessionPageCount = computed(() => Math.max(1, Math.ceil(sessions.value.roots.length / SESSION_PAGE_SIZE)))
+const sortedSessionRoots = computed(() => [...sessions.value.roots].sort(compareSessionMetadata))
+const visibleSessionRoots = computed(() => sortedSessionRoots.value.slice(
+  (sessionPage.value - 1) * SESSION_PAGE_SIZE,
+  sessionPage.value * SESSION_PAGE_SIZE,
+))
 const connectivityMode = computed<"loopback" | "tailnet" | "unknown">(() => {
   const value = connectivity.value?.mode as string | undefined
   return value === "loopback" || value === "tailnet" ? value : "unknown"
@@ -508,7 +516,7 @@ async function choose(instance: ManagedInstance): Promise<void> {
     pushMobileHistory(instance.id)
   }
   selectedId.value = instance.id
-  advancedSessionId.value = ""
+  sessionPage.value = 1
   lifecycleError.value = ""
   if (isMobileViewport()) void revealSelectedDetail()
   await loadSessions()
@@ -707,7 +715,7 @@ async function loadSessions(): Promise<void> {
     sessions.value = { roots: [], unknownParent: [] }
     sessionsLoaded.value = false
     sessionsError.value = ""
-    advancedSessionId.value = ""
+    sessionPage.value = 1
     sessionsLoading.value = false
     return
   }
@@ -716,7 +724,7 @@ async function loadSessions(): Promise<void> {
     sessions.value = { roots: [], unknownParent: [] }
     sessionsLoaded.value = false
     sessionsError.value = ""
-    advancedSessionId.value = ""
+    sessionPage.value = 1
   }
   sessionsLoading.value = true
   sessionsError.value = ""
@@ -724,13 +732,14 @@ async function loadSessions(): Promise<void> {
     const next = await managerApi.sessions(instanceId)
     if (generation !== sessionsGeneration || selectedId.value !== instanceId) return
     sessions.value = next
+    sessionPage.value = Math.min(sessionPage.value, Math.max(1, Math.ceil(next.roots.length / SESSION_PAGE_SIZE)))
     sessionsLoaded.value = true
   } catch (cause) {
     if (generation !== sessionsGeneration || selectedId.value !== instanceId) return
     sessions.value = { roots: [], unknownParent: [] }
     sessionsLoaded.value = true
     sessionsError.value = message(cause)
-    advancedSessionId.value = ""
+    sessionPage.value = 1
   } finally {
     if (generation === sessionsGeneration && selectedId.value === instanceId) sessionsLoading.value = false
   }
@@ -975,7 +984,7 @@ function resetSelectedScope(): void {
   sessions.value = { roots: [], unknownParent: [] }
   sessionsLoaded.value = false
   sessionsError.value = ""
-  advancedSessionId.value = ""
+  sessionPage.value = 1
 }
 
 async function openWithPopup(
@@ -1071,31 +1080,45 @@ async function createNewSession(instance: ManagedInstance): Promise<void> {
   }
 }
 
-function selectPrimarySession(instance: ManagedInstance): void {
-  const sessionId = advancedSessionId.value
-  if (!sessionId) return
+function selectPrimarySession(instance: ManagedInstance, session: SessionMetadata): void {
   requestConfirmation({
     title: "切換主要 Session？",
-    description: `將 ${sessionId} 綁定為此執行個體的主要 Session，並在 OpenCode Web 開啟。`,
-    confirmLabel: "切換並開啟",
+    description: `只會將 ${session.title}（${session.id}）綁定為此執行個體的主要 Session，不會開啟或跳轉 OpenCode Web。`,
+    confirmLabel: "切換",
     tone: "caution",
     requiresFreshOverview: true,
     freshnessErrorTarget: "action",
-    accept: () => performSelectPrimarySession(instance, sessionId),
+    accept: () => performSelectPrimarySession(instance, session.id),
   })
 }
 
 async function performSelectPrimarySession(instance: ManagedInstance, sessionId: string): Promise<void> {
   if (!ensureFreshOverviewMutation("action")) return
   beginUserAction()
+  switchingSessionId.value = sessionId
   try {
-    await openWithPopup(instance, () => managerApi.selectPrimarySession(instance.id, sessionId), sessionId)
-    advancedSessionId.value = ""
+    const response = await managerApi.selectPrimarySession(instance.id, sessionId)
+    if (response.instanceId !== instance.id || response.sessionId !== sessionId) throw new Error("Manager 回傳的主要 Session 綁定與本次請求不符。")
     await refreshSelectedInstance(instance.id)
     showNotice(`主要 Session 已切換為 ${shortId(sessionId)}。`)
   } catch (cause) {
     actionError.value = message(cause)
+  } finally {
+    switchingSessionId.value = ""
   }
+}
+
+function compareSessionMetadata(left: SessionMetadata, right: SessionMetadata): number {
+  const leftUpdatedAt = typeof left.updatedAt === "number" && Number.isFinite(left.updatedAt) ? left.updatedAt : null
+  const rightUpdatedAt = typeof right.updatedAt === "number" && Number.isFinite(right.updatedAt) ? right.updatedAt : null
+  if (leftUpdatedAt !== null && rightUpdatedAt !== null) {
+    if (leftUpdatedAt !== rightUpdatedAt) return rightUpdatedAt - leftUpdatedAt
+    return left.id < right.id ? -1 : left.id > right.id ? 1 : 0
+  }
+  if (leftUpdatedAt !== null) return -1
+  if (rightUpdatedAt !== null) return 1
+  // 同時間與缺漏時間都用 id 收斂，避免 reload 因 API 回傳順序不同而讓 Session 在頁面間跳動。
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0
 }
 
 function requestConfirmation(request: ConfirmationRequest): void {
@@ -1769,24 +1792,28 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
           <p v-if="selected.error" class="inline-error">{{ selected.error }}</p>
 
           <details :key="selected.id" class="advanced-sessions">
-            <summary>切換其他 Session</summary>
-            <p class="advanced-warning"><AlertTriangleIcon />進階操作會變更此 Instance 的固定主要 Session。單純從歷史樹開啟不會改綁。</p>
-            <div class="manual-session-controls">
-              <label class="main-session-picker">
-                <span>其他 root Session</span>
-                <select v-model="advancedSessionId" aria-label="選擇其他 root Session">
-                  <option value="">請選擇 root Session</option>
-                  <option v-for="root in sessions.roots" :key="root.id" :value="root.id">{{ root.title }} ({{ root.id }})</option>
-                </select>
-              </label>
-              <Button variant="outline" class="manual-session-button" :disabled="overviewMutationsBlocked || opening || selected.state !== 'ready' || !advancedSessionId" @click="selectPrimarySession(selected)">切換並開啟</Button>
-            </div>
+            <summary>Main / Child Session 歷史</summary>
             <section class="sessions-panel">
-              <div class="section-heading"><div><p class="eyebrow">PROJECT METADATA</p><h3>Main / Child Session 歷史</h3></div><Button variant="ghost" size="sm" class="no-press-transform" @click="loadSessions"><RefreshCwIcon :class="{ spin: sessionsLoading }" />重新載入</Button></div>
+              <div class="section-heading"><div><p class="eyebrow">PROJECT METADATA</p><h3>Main Session</h3></div><Button variant="ghost" size="sm" class="no-press-transform" @click="loadSessions"><RefreshCwIcon :class="{ spin: sessionsLoading }" />重新載入</Button></div>
               <p class="scope-note">Session metadata 可由同 Project 多個 Instance 共用，不代表主要 Session 綁定或執行 ownership。</p>
-              <ul class="session-list">
-                <SessionTreeNode v-for="session in sessions.roots" :key="`${selected.id}:${session.id}`" :instance-id="selected.id" :session="session" :open-disabled="selected.state !== 'ready' || opening" @open="openWeb(selected, $event)" />
+              <ul class="session-list main-session-list">
+                <SessionTreeNode
+                  v-for="session in visibleSessionRoots"
+                  :key="`${selected.id}:${session.id}`"
+                  :instance-id="selected.id"
+                  :session="session"
+                  :open-disabled="selected.state !== 'ready' || opening"
+                  :switch-disabled="overviewMutationsBlocked || opening || Boolean(switchingSessionId) || selected.state !== 'ready'"
+                  allow-switch
+                  @open="openWeb(selected, $event)"
+                  @switch="selectPrimarySession(selected, session)"
+                />
               </ul>
+              <nav v-if="sessions.roots.length" class="session-pagination" aria-label="Main Session 分頁">
+                <Button variant="outline" size="sm" :disabled="sessionPage === 1" @click="sessionPage--">上一頁</Button>
+                <span>第 {{ sessionPage }} / {{ sessionPageCount }} 頁</span>
+                <Button variant="outline" size="sm" :disabled="sessionPage === sessionPageCount" @click="sessionPage++">下一頁</Button>
+              </nav>
               <p v-if="sessionsError" class="inline-error">Main Session 載入失敗：{{ sessionsError }}</p>
               <p v-else-if="sessionsLoaded && !sessionsLoading && sessions.roots.length === 0" class="empty-copy">此 Project 尚無 Main Session。</p>
               <div v-if="sessions.unknownParent.length" class="unknown-parent">

@@ -859,7 +859,7 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
       })
     })
     await page.getByRole("button", { name: /啟動全新 Instance/ }).click()
-    await page.getByText("摘要未知：INSTANCE_SUMMARY_PARTIAL", { exact: true }).waitFor()
+    await page.getByText("主 Session 摘要未知：INSTANCE_SUMMARY_PARTIAL", { exact: true }).waitFor()
     await startDialog.waitFor({ state: "hidden" })
     await page.waitForFunction(() => !document.querySelector(".shell")?.hasAttribute("inert"))
     await page.getByText(/執行個體已啟動，目前無法連線，請查看狀態（[a-f0-9-]{8}）。/).waitFor()
@@ -883,8 +883,8 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 2)
 
     await page.getByRole("button", { name: "有執行中", exact: true }).click()
-    await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 1)
-    assert.equal(await page.locator(".instance-row").count(), 1)
+    await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 0)
+    assert.equal(await page.locator(".instance-row").count(), 0, "unbound instance-wide activity does not satisfy the primary Session active filter")
     await page.getByRole("button", { name: "需處理", exact: true }).click()
     await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 1)
     assert.equal(await page.locator(".instance-row").count(), 1)
@@ -902,7 +902,7 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     const advancedSessions = page.locator("details.advanced-sessions")
     assert.equal(await advancedSessions.evaluate((details) => (details as HTMLDetailsElement).open), false)
     await advancedSessions.locator("summary").click()
-    await page.getByRole("option", { name: "Root A (ses_shared)" }).waitFor({ state: "attached" })
+    await page.getByText("Root A", { exact: true }).waitFor()
     await page.getByRole("button", { name: "載入 Child Session" }).click()
     await page.getByText("Child A", { exact: true }).waitFor()
     const childA = page.locator(".session-node").filter({ hasText: "Child A" }).first()
@@ -916,6 +916,50 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     assert.equal(await page.getByText("Child A", { exact: true }).count(), 0)
     assert.equal(await page.locator(".primary-session-card").getByText("Shared history", { exact: true }).count(), 0, "shared history must not be presented as the primary binding")
     assert.equal(await page.getByText("Shared history", { exact: true }).isVisible(), false, "advanced history stays collapsed by default")
+
+    await advancedSessions.locator("summary").click()
+    const mainSessionRows = page.locator(".main-session-list > .session-node")
+    await page.getByText("Missing timestamp 01", { exact: true }).waitFor()
+    assert.equal(await mainSessionRows.count(), 10, "a history page contains at most ten Main Sessions")
+    assert.deepEqual(await mainSessionRows.locator(":scope > .session-row strong").allTextContents(), [
+      "Shared history",
+      "Second instance work",
+      "Later unrelated work",
+      "Recent history 07",
+      "Recent history 06",
+      "Recent history 05",
+      "Same timestamp A",
+      "Same timestamp B",
+      "Missing timestamp 01",
+      "Missing timestamp 02",
+    ], "Main Sessions use descending updatedAt with id ordering for ties and missing timestamps")
+    assert.equal(await page.getByText("第 1 / 2 頁", { exact: true }).isVisible(), true)
+    await page.getByRole("button", { name: "下一頁" }).click()
+    assert.deepEqual(await mainSessionRows.locator(":scope > .session-row strong").allTextContents(), ["Missing timestamp 03"])
+    assert.equal(await page.getByText("第 2 / 2 頁", { exact: true }).isVisible(), true)
+
+    await returnToInstanceList(page)
+    await instanceA.click()
+    await advancedSessions.locator("summary").click()
+    assert.equal(await page.getByText("第 1 / 1 頁", { exact: true }).isVisible(), true, "switching Instance resets history pagination")
+    await returnToInstanceList(page)
+    await instanceB.click()
+    await advancedSessions.locator("summary").click()
+    await page.getByRole("button", { name: "下一頁" }).click()
+    runtime.queueSessions("project-b", { delayMs: 0, roots: [{ id: "only-root", title: "Only remaining root", updatedAt: 10 }] })
+    await page.getByRole("button", { name: "重新載入" }).click()
+    await page.getByText("Only remaining root", { exact: true }).waitFor()
+    assert.equal(await page.getByText("第 1 / 1 頁", { exact: true }).isVisible(), true, "reload clamps a page that no longer exists")
+    await page.getByRole("button", { name: "重新載入" }).click()
+    await page.getByText("Shared history", { exact: true }).waitFor()
+
+    const sharedMain = page.locator(".main-session-list > .session-node").filter({ hasText: "Shared history" }).first()
+    await sharedMain.getByRole("button", { name: "載入 Child Session" }).click()
+    const childB = page.getByText("Child B", { exact: true })
+    await childB.waitFor()
+    assert.equal(await childB.locator("xpath=ancestor::li[1]").getByRole("button", { name: /切換為主要 Session/ }).count(), 0)
+    assert.equal(await page.locator(".unknown-parent").getByRole("button", { name: /切換為主要 Session/ }).count(), 0)
+    await advancedSessions.locator("summary").click()
 
     const instanceBRecord = repository.listInstances().find((item) => item.projectName === "project-b")
     assert.ok(instanceBRecord)
@@ -1075,11 +1119,11 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
 
     assert.equal(await advancedSessions.evaluate((details) => (details as HTMLDetailsElement).open), false)
     await advancedSessions.locator("summary").click()
-    const rootSelector = page.getByLabel("選擇其他 root Session")
-    await rootSelector.selectOption("ses_shared")
-    assert.equal(await page.locator(".primary-session-id").textContent(), "created-", "choosing a candidate must not change the binding before confirmation")
+    const switchShared = page.getByRole("button", { name: "切換為主要 Session：Shared history" })
+    assert.equal(await page.locator("select").count(), 0, "history no longer duplicates Main Sessions in a root dropdown")
+    assert.equal(await page.locator(".primary-session-id").textContent(), "created-", "opening the history must not change the binding")
     const popupsBeforeManualCancel = popupCount
-    const manualSwitchButton = page.getByRole("button", { name: "切換並開啟" })
+    const manualSwitchButton = switchShared
     const manualSwitchState = await page.evaluate(() => ({
       freshness: document.querySelector(".overview-freshness")?.getAttribute("data-state"),
       sessionLoading: Boolean(document.querySelector(".sessions-panel .spin")),
@@ -1095,18 +1139,29 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     const manualSwitchStateAfterCancel = await page.evaluate(() => ({
       freshness: document.querySelector(".overview-freshness")?.getAttribute("data-state"),
       sessionLoading: Boolean(document.querySelector(".sessions-panel .spin")),
-      selectedCandidate: (document.querySelector('select[aria-label="選擇其他 root Session"]') as HTMLSelectElement | null)?.value,
       lifecycle: document.querySelector(".detail-state")?.textContent,
     }))
     assert.equal(await manualSwitchButton.isEnabled(), true, `manual switch should remain ready after cancel: ${JSON.stringify(manualSwitchStateAfterCancel)}`)
+
+    await page.route("**/api/v1/instances/*/primary-session", async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "PRIMARY_SWITCH_FAILED", message: "primary switch failure fixture" } }),
+      })
+    })
     await manualSwitchButton.click()
-    const manualPopupPromise = page.waitForEvent("popup")
-    await page.getByRole("alertdialog", { name: "切換主要 Session？" }).getByRole("button", { name: "切換並開啟" }).click()
-    const manualPopup = await manualPopupPromise
-    await manualPopup.waitForURL(`${instanceBRecord.endpoint}/opened/ses_shared?session=ses_shared`)
+    await page.getByRole("alertdialog", { name: "切換主要 Session？" }).getByRole("button", { name: "切換" }).click()
+    await page.getByText("primary switch failure fixture", { exact: true }).waitFor()
+    assert.equal(await page.locator(".primary-session-id").textContent(), "created-", "a failed switch keeps the previous binding")
+    assert.equal(popupCount, popupsBeforeManualCancel, "a failed switch must not open a popup")
+    await page.unroute("**/api/v1/instances/*/primary-session")
+
+    await manualSwitchButton.click()
+    await page.getByRole("alertdialog", { name: "切換主要 Session？" }).getByRole("button", { name: "切換" }).click()
     await page.locator(".primary-session-card").getByText("Shared history", { exact: true }).waitFor()
     assert.equal(await page.locator(".primary-session-id").textContent(), "ses_shar")
-    await manualPopup.close()
+    assert.equal(popupCount, popupsBeforeManualCancel, "switching the Primary Session Binding must not open or navigate")
 
     const laterNode = page.locator(".session-node").filter({ hasText: "Later unrelated work" }).first()
     const treePopupPromise = page.waitForEvent("popup")
@@ -1125,8 +1180,8 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     await returnToInstanceList(page)
     assert.equal(await page.getByText("Root B", { exact: true }).count(), 0, "switching Instance clears the old root tree immediately")
     await instanceB.click()
-    await page.getByRole("option", { name: "Current Root B (ses_shared)" }).waitFor({ state: "attached" })
     await advancedSessions.locator("summary").click()
+    await page.getByText("Current Root B", { exact: true }).waitFor()
     await page.waitForTimeout(240)
     assert.equal(await page.getByText("Stale Root A", { exact: true }).count(), 0)
 
@@ -1138,7 +1193,7 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     await reloadSessions.click()
     await page.waitForTimeout(10)
     await reloadSessions.click()
-    await page.getByRole("option", { name: "Current B Refresh (ses_shared)" }).waitFor({ state: "attached" })
+    await page.getByText("Current B Refresh", { exact: true }).waitFor()
     await page.waitForTimeout(190)
     assert.equal(await page.getByText("Stale B Refresh", { exact: true }).count(), 0)
 
@@ -1149,10 +1204,11 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     await page.waitForTimeout(10)
     await returnToInstanceList(page)
     await instanceB.click()
+    await advancedSessions.locator("summary").click()
     await page.waitForTimeout(100)
     assert.equal(await page.getByText("stale root failure fixture", { exact: true }).count(), 0)
     assert.equal(await page.locator(".sessions-panel .spin").count(), 1, "stale error must not clear the current loading state")
-    await page.getByRole("option", { name: "Current B After Error (ses_shared)" }).waitFor({ state: "attached" })
+    await page.getByText("Current B After Error", { exact: true }).waitFor()
     assert.equal(await page.locator(".sessions-panel .spin").count(), 0)
 
     await assertPrimaryActionLayout(page, 1440)
@@ -1180,7 +1236,7 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     await page.locator(".primary-session-card").getByText("Shared history", { exact: true }).waitFor()
     assert.equal(await page.getByRole("button", { name: "進入主 Session" }).isDisabled(), true)
     assert.equal(await page.getByRole("button", { name: "New Session" }).isDisabled(), true)
-    assert.equal(await page.getByRole("button", { name: "切換並開啟" }).isDisabled(), true)
+    assert.equal(await page.locator(".main-session-list").getByRole("button", { name: /切換為主要 Session/ }).first().isDisabled(), true)
     assert.equal(await page.getByRole("button", { name: "在 OpenCode Web 開啟 Session" }).first().isDisabled(), true)
     assert.equal(pageErrors.length, 0, pageErrors.join("\n"))
   } finally {
@@ -2222,12 +2278,21 @@ class BrowserRuntime implements RuntimePort {
       if (queued.error) throw new ManagerError("SESSION_FIXTURE_ERROR", queued.error, 503)
       return queued.roots ?? [{ id: "ses_shared", title: queued.title ?? "Fixture Root" }]
     }
-    const roots = instance.projectName === "project-a"
+    const roots: SessionMetadata[] = instance.projectName === "project-a"
       ? [{ id: "ses_shared", title: "Root A" }]
       : [
-          { id: "ses_shared", title: "Shared history" },
-          { id: "ses_second", title: "Second instance work" },
-          { id: "ses_later", title: "Later unrelated work" },
+          { id: "ses_shared", title: "Shared history", updatedAt: 1_000 },
+          { id: "ses_second", title: "Second instance work", updatedAt: 900 },
+          { id: "ses_later", title: "Later unrelated work", updatedAt: 800 },
+          { id: "history-07", title: "Recent history 07", updatedAt: 700 },
+          { id: "history-06", title: "Recent history 06", updatedAt: 600 },
+          { id: "history-05", title: "Recent history 05", updatedAt: 500 },
+          { id: "tie-a", title: "Same timestamp A", updatedAt: 400 },
+          { id: "tie-b", title: "Same timestamp B", updatedAt: 400 },
+          { id: "missing-01", title: "Missing timestamp 01" },
+          { id: "missing-02", title: "Missing timestamp 02" },
+          { id: "missing-03", title: "Missing timestamp 03" },
+          { id: "orphan", title: "Unknown parent", parentID: "not-loaded" },
         ]
     return [...roots, ...(this.createdSessions.get(instance.projectName) ?? [])]
   }
@@ -2315,7 +2380,7 @@ interface SessionFixture {
   delayMs: number
   title?: string
   error?: string
-  roots?: Array<{ id: string; title: string }>
+  roots?: SessionMetadata[]
 }
 
 function fakeManagedInstance(overrides: Pick<ManagedInstance, "id" | "projectDirectory"> & Partial<ManagedInstance>): ManagedInstance {
@@ -2468,26 +2533,37 @@ async function assertPrimaryActionLayout(page: Page, width: number): Promise<voi
   const advanced = page.locator("details.advanced-sessions")
   if (!await advanced.evaluate((details) => (details as HTMLDetailsElement).open)) await advanced.locator("summary").click()
   const layout = await page.evaluate(() => {
-    const row = document.querySelector<HTMLElement>(".manual-session-controls")
-    const field = document.querySelector<HTMLElement>(".manual-session-controls .main-session-picker")
-    const select = document.querySelector<HTMLSelectElement>(".manual-session-controls select")
-    const button = document.querySelector<HTMLButtonElement>(".manual-session-controls button")
-    if (!row || !field || !select || !button) throw new Error("manual Session controls are missing")
+    const row = document.querySelector<HTMLElement>(".main-session-list > .session-node > .session-row")
+    const openButton = row?.querySelector<HTMLButtonElement>('button[aria-label^="在 OpenCode Web 開啟 Session"]')
+    const switchButton = row?.querySelector<HTMLButtonElement>('button[aria-label^="切換為主要 Session"]')
+    const pagination = document.querySelector<HTMLElement>(".session-pagination")
+    if (!row || !openButton || !switchButton || !pagination) throw new Error("Main Session row controls are missing")
     const rowBounds = row.getBoundingClientRect()
-    const selectBounds = select.getBoundingClientRect()
-    const buttonBounds = button.getBoundingClientRect()
+    const openBounds = openButton.getBoundingClientRect()
+    const switchBounds = switchButton.getBoundingClientRect()
+    const paginationBounds = pagination.getBoundingClientRect()
     return {
       documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
       rowBounds: { left: rowBounds.left, right: rowBounds.right },
-      selectBounds: { left: selectBounds.left, right: selectBounds.right, bottom: selectBounds.bottom },
-      buttonBounds: { left: buttonBounds.left, right: buttonBounds.right, bottom: buttonBounds.bottom },
+      rowClientWidth: row.clientWidth,
+      rowScrollWidth: row.scrollWidth,
+      openBounds: { left: openBounds.left, right: openBounds.right, top: openBounds.top, bottom: openBounds.bottom },
+      switchBounds: { left: switchBounds.left, right: switchBounds.right, top: switchBounds.top, bottom: switchBounds.bottom },
+      paginationBounds: { left: paginationBounds.left, right: paginationBounds.right },
+      paginationClientWidth: pagination.clientWidth,
+      paginationScrollWidth: pagination.scrollWidth,
     }
   })
   assert.equal(layout.documentWidth <= width, true, `${width}px primary controls cause horizontal overflow`)
-  assert.equal(Math.abs(layout.selectBounds.bottom - layout.buttonBounds.bottom) <= 1, true, `${width}px selector and action are not baseline-aligned`)
-  for (const bounds of [layout.selectBounds, layout.buttonBounds]) {
+  assert.equal(layout.rowScrollWidth <= layout.rowClientWidth, true, `${width}px Main Session row overflows`)
+  assert.equal(layout.paginationScrollWidth <= layout.paginationClientWidth, true, `${width}px pagination overflows`)
+  for (const bounds of [layout.openBounds, layout.switchBounds]) {
     assert.equal(bounds.left >= layout.rowBounds.left - 1, true, `${width}px primary control escapes left bound`)
     assert.equal(bounds.right <= layout.rowBounds.right + 1, true, `${width}px primary control escapes right bound`)
+  }
+  if (width <= 390) {
+    assert.equal(layout.openBounds.bottom - layout.openBounds.top >= 44, true, "mobile open action is smaller than 44px")
+    assert.equal(layout.switchBounds.bottom - layout.switchBounds.top >= 44, true, "mobile switch action is smaller than 44px")
   }
 }
 
