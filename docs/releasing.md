@@ -38,13 +38,17 @@ npm run test:release
 npm run release:verify -- v0.1.0
 ```
 
-`packages/launcher/package.json` 的既有 `prepack` 仍是 package 建置與組裝入口；workflow 不複製這段邏輯。
+`packages/launcher/package.json` 的 `prepack` 是 package 建置與組裝入口；它會將 private contracts runtime
+納入 tarball，並讓 staged Manager 使用 package 內的相對路徑，不依賴 workspace 或 consumer devDependencies。
+workflow 不複製這段邏輯。
 
 ## 驗證證據邊界
 
-目前已在 Windows 本機完成 `npm ci`、`npm run test:release`、`npm run typecheck`、
-`npm pack --dry-run --workspace @sevenflanks/omw` 與 release-please JSON updater/schema 驗證；後續 verifier 亦已完成
-完整 `npm test`。這些證據確認 scripts、版本同步與現有 package 組裝可運作。
+`npm run test:release` 包含 repo 外的 production consumer smoke：建立真正 `npm pack` 產物、以 `--omit=dev`
+安裝、使用隔離資料與每次執行隨機產生的 fixture credentials 執行 local `omw`，再核對 identity 的 product 與
+protocolVersion。npm、CLI 與 Manager process tree 在 resume 前綁入本次測試持有的 Windows Job Object；正常路徑仍只
+透過已確認 identity 的 Manager shutdown API 停止服務，timeout 與 finally 則以 Job close 保證不留下 late descendant。
+無法確認官方停止或 Job cleanup 時會保留隔離 root 並失敗，不以 PID 或 port 猜測 ownership。
 
 尚未在真實 GitHub Actions run 驗證 Release PR 建立或更新、`Release PR validation` Check Run、GitHub Release/tag
 建立，也尚未以 npm OIDC 執行 `npm publish`。因此本文件與本機測試不構成上述外部流程已成功的驗收證據；首次
