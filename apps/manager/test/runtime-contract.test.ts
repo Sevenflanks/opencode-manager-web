@@ -268,11 +268,11 @@ test("an unrecognized or malformed Session status keeps activity unknown", async
   const runtime = new OpenCodeRuntime({ executable: process.execPath, dataDirectory })
   const instance = record(directory, address.port)
 
-  for (const _expected of ["future-status", "retry"]) {
+  for (const expectedSessionId of ["ses_future", "ses_retry"]) {
     const summary = await runtime.summary(instance)
     assert.equal(summary.activity, "unknown")
     assert.equal(summary.busySessions, null)
-    assert.deepEqual(summary.invalidStatusSessionIds, ["ses_a"])
+    assert.deepEqual(summary.invalidStatusSessionIds, [expectedSessionId])
     assert.match(summary.error ?? "", /status: RESPONSE_INVALID/)
   }
 })
