@@ -10,6 +10,14 @@ import { OpenCodeRuntime } from "../src/runtime.js"
 
 const windows = process.platform === "win32"
 const helperPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../scripts/process-control.ps1")
+const processQueryTimeoutMs = 3_000
+const helperTimeoutMs = 12_000
+const liveTreeStepTimeoutMs = 5_000
+const delayedSetupMs = 12_500
+const liveTreeCleanupBudgetMs = 15_000
+const liveTreeOperationBudgetMs = liveTreeStepTimeoutMs * 5 + delayedSetupMs + helperTimeoutMs * 2 + processQueryTimeoutMs * 2
+const liveTreeFixtureBackstopMs = liveTreeOperationBudgetMs + liveTreeStepTimeoutMs
+const liveTreeTestTimeoutMs = liveTreeFixtureBackstopMs + liveTreeCleanupBudgetMs
 
 test("a root exit before Describe leaves descendant cleanup unresolved instead of reconstructing PID authority", { skip: !windows, timeout: 20_000 }, async () => {
   const sandbox = await mkdtemp(path.join(tmpdir(), "omw-cleanup-unresolved-"))
@@ -51,26 +59,15 @@ test("a post-root-exit replacement candidate with mismatched executable is not t
   }
 })
 
-test("an exact live-root identity can stop its bounded process tree", { skip: !windows, timeout: 20_000 }, async () => {
-  const sandbox = await mkdtemp(path.join(tmpdir(), "omw-identity-stop-"))
-  const childPidFile = path.join(sandbox, "child.pid")
+test("an exact live-root identity can stop its bounded process tree after delayed setup", { skip: !windows, timeout: liveTreeTestTimeoutMs }, async () => {
   const rootPort = 61992
   const childPort = 61993
-  const root = spawn(process.execPath, ["-e", fixtureLiveTree(), String(rootPort), String(childPort), childPidFile], {
-    stdio: "ignore",
-    windowsHide: true,
-  })
-  assert.ok(root.pid)
-  let childPid = 0
-
-  try {
-    await waitForPort(rootPort, true, 5_000)
-    await waitForPort(childPort, true, 5_000)
-    childPid = Number(await readFile(childPidFile, "utf8"))
+  await withLiveTreeFixture("omw-identity-stop-", rootPort, childPort, async ({ rootPid, childPid }) => {
+    await delay(delayedSetupMs)
 
     const described = runHelper([
       "-Action", "Describe",
-      "-ProcessId", String(root.pid),
+      "-ProcessId", String(rootPid),
       "-ExpectedExecutable", process.execPath,
     ])
     assert.equal(described.status, 0, described.stderr)
@@ -89,16 +86,31 @@ test("an exact live-root identity can stop its bounded process tree", { skip: !w
     ])
     assert.equal(stopped.status, 0, stopped.stderr)
     assert.deepEqual(JSON.parse(stopped.stdout.trim()), { stopped: true, reason: null })
-    await waitForPort(rootPort, false, 5_000)
-    await waitForPort(childPort, false, 5_000)
-    assert.equal(processExists(root.pid), false)
+    await waitForPort(rootPort, false, liveTreeStepTimeoutMs)
+    await waitForPort(childPort, false, liveTreeStepTimeoutMs)
+    assert.equal(processExists(rootPid), false)
     assert.equal(processExists(childPid), false)
-  } finally {
-    if (root.exitCode === null) root.kill()
-    await waitForExit(root).catch(() => undefined)
-    if (childPid > 0) await waitFor(() => !processExists(childPid), 13_000).catch(() => undefined)
-    await rm(sandbox, { recursive: true, force: true })
-  }
+  })
+})
+
+test("a live-tree fixture cleans up its child when the operation loses its root", { skip: !windows, timeout: liveTreeTestTimeoutMs }, async () => {
+  let rootPid = 0
+  let childPid = 0
+
+  await assert.rejects(
+    withLiveTreeFixture("omw-identity-failure-", 61994, 61995, async ({ root, rootPid: fixtureRootPid, childPid: fixtureChildPid }) => {
+      rootPid = fixtureRootPid
+      childPid = fixtureChildPid
+      assert.ok(root.stdin)
+      root.stdin.write("exit-root\n")
+      await waitForExit(root)
+      assert.equal(processExists(childPid), true, "the child must outlive a root-only termination")
+      throw new Error("simulated fixture operation failure")
+    }),
+    /simulated fixture operation failure/,
+  )
+  assert.equal(processExists(rootPid), false)
+  assert.equal(processExists(childPid), false)
 })
 
 test("Inspect ignores a same-port listener on a non-overlapping loopback address", { skip: !windows, timeout: 20_000 }, async () => {
@@ -214,10 +226,39 @@ const net = require("node:net")
 const rootPort = Number(process.argv[1])
 const childPort = Number(process.argv[2])
 const pidFile = process.argv[3]
-const child = spawn(process.execPath, ["-e", "require('node:net').createServer().listen(" + childPort + ", '127.0.0.1'); setTimeout(() => process.exit(0), 12000)"], { stdio: "ignore" })
+const cleanupMarkerFile = process.argv[4]
+const childScript = [
+  "const net = require('node:net')",
+  "const { existsSync } = require('node:fs')",
+  "const server = net.createServer()",
+  "let stopping = false",
+  "const stop = () => { if (stopping) return; stopping = true; clearInterval(cleanupPoll); clearTimeout(timer); if (server.listening) server.close(() => process.exit(0)); else process.exit(0) }",
+  "server.listen(Number(process.argv[1]), '127.0.0.1')",
+  "const cleanupPoll = setInterval(() => { if (existsSync(process.argv[2])) stop() }, 100)",
+  "const timer = setTimeout(stop, Number(process.argv[3]))",
+].join(";")
+const child = spawn(process.execPath, ["-e", childScript, String(childPort), cleanupMarkerFile, String(${liveTreeFixtureBackstopMs})], { detached: true, stdio: "ignore" })
 writeFileSync(pidFile, String(child.pid))
-net.createServer().listen(rootPort, "127.0.0.1")
-setTimeout(() => process.exit(0), 12000)
+const server = net.createServer()
+let stopping = false
+const stop = () => {
+  if (stopping) return
+  stopping = true
+  clearTimeout(backstop)
+  if (server.listening) server.close()
+  if (child.exitCode !== null || child.signalCode !== null) process.exit(0)
+  child.once("exit", () => process.exit(0))
+  setTimeout(() => process.exit(1), ${liveTreeCleanupBudgetMs})
+}
+const handleCommand = (chunk) => {
+  if (chunk.toString("utf8").trim() === "exit-root") process.exit(0)
+  stop()
+}
+server.listen(rootPort, "127.0.0.1")
+process.stdin.resume()
+process.stdin.once("data", handleCommand)
+process.stdin.once("end", stop)
+const backstop = setTimeout(stop, ${liveTreeFixtureBackstopMs})
 `
 }
 
@@ -225,7 +266,7 @@ function runHelper(arguments_: string[]) {
   return spawnSync("pwsh.exe", [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-File", helperPath,
     ...arguments_,
-  ], { encoding: "utf8", timeout: 12_000, windowsHide: true })
+  ], { encoding: "utf8", timeout: helperTimeoutMs, windowsHide: true })
 }
 
 interface OwnedListener {
@@ -237,6 +278,65 @@ interface DescribedIdentity {
   pid: number
   creationTimeTicks: string
   executable: string
+}
+
+interface LiveTreeFixture {
+  root: ChildProcess
+  rootPid: number
+  childPid: number
+}
+
+async function withLiveTreeFixture<T>(
+  sandboxPrefix: string,
+  rootPort: number,
+  childPort: number,
+  operation: (fixture: LiveTreeFixture) => Promise<T>,
+): Promise<T> {
+  const sandbox = await mkdtemp(path.join(tmpdir(), sandboxPrefix))
+  const childPidFile = path.join(sandbox, "child.pid")
+  const cleanupMarkerFile = path.join(sandbox, "cleanup")
+  const root = spawn(process.execPath, ["-e", fixtureLiveTree(), String(rootPort), String(childPort), childPidFile, cleanupMarkerFile], {
+    stdio: ["pipe", "ignore", "ignore"],
+    windowsHide: true,
+  })
+  assert.ok(root.pid)
+  const rootPid = root.pid
+  let childPid = 0
+
+  try {
+    childPid = await waitForPidFile(childPidFile, liveTreeStepTimeoutMs)
+    await waitForPort(rootPort, true, liveTreeStepTimeoutMs)
+    await waitForPort(childPort, true, liveTreeStepTimeoutMs)
+    return await operation({ root, rootPid, childPid })
+  } finally {
+    try {
+      await stopLiveTreeFixture(root, childPidFile, cleanupMarkerFile, childPid)
+    } finally {
+      await rm(sandbox, { recursive: true, force: true })
+    }
+  }
+}
+
+async function stopLiveTreeFixture(root: ChildProcess, childPidFile: string, cleanupMarkerFile: string, childPid: number): Promise<void> {
+  const deadline = Date.now() + liveTreeCleanupBudgetMs
+  await writeFile(cleanupMarkerFile, "", "utf8")
+  if (root.exitCode === null && root.signalCode === null) {
+    root.stdin?.once("error", () => undefined)
+    root.stdin?.end("stop\n")
+    await waitForExitWithin(root, liveTreeStepTimeoutMs)
+  }
+  if (root.exitCode === null && root.signalCode === null) {
+    root.kill()
+    await waitForExitWithin(root, Math.min(liveTreeStepTimeoutMs, remainingTime(deadline)))
+  }
+  assert.notEqual(root.exitCode ?? root.signalCode, null, "fixture root did not exit within its cleanup budget")
+
+  // cleanup 只透過本次 spawn 的 ChildProcess 與 sandbox marker 操作；PID 只用於確認 child 無殘留，不作終止權限。
+  const artifactChildPid = await readPidFileIfPresent(childPidFile)
+  const cleanupChildPid = artifactChildPid > 0 ? artifactChildPid : childPid
+  if (cleanupChildPid > 0) {
+    await waitForProcessExit(cleanupChildPid, deadline)
+  }
 }
 
 async function spawnOwnedListener(address: string, port = 0): Promise<OwnedListener> {
@@ -308,7 +408,9 @@ function processExists(pid: number): boolean {
   const result = spawnSync("pwsh.exe", [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
     `try { $process = [Diagnostics.Process]::GetProcessById(${pid}); try { if ($process.HasExited) { exit 1 }; exit 0 } finally { $process.Dispose() } } catch { exit 1 }`,
-  ], { windowsHide: true, timeout: 3_000 })
+  ], { windowsHide: true, timeout: processQueryTimeoutMs })
+  if (result.error) throw result.error
+  assert.ok(result.status === 0 || result.status === 1, `process query exited with unexpected status ${result.status}: ${result.stderr}`)
   return result.status === 0
 }
 
@@ -327,6 +429,51 @@ async function waitFor(predicate: () => boolean, timeout: number): Promise<void>
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   throw new Error(`Condition was not met within ${timeout} ms`)
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+function remainingTime(deadline: number): number {
+  return Math.max(0, deadline - Date.now())
+}
+
+async function waitForExitWithin(child: ChildProcess, timeout: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  await Promise.race([waitForExit(child).catch(() => undefined), delay(timeout)])
+}
+
+async function readPidFileIfPresent(file: string): Promise<number> {
+  try {
+    const pid = Number(await readFile(file, "utf8"))
+    return Number.isInteger(pid) && pid > 0 ? pid : 0
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0
+    throw error
+  }
+}
+
+async function waitForProcessExit(pid: number, deadline: number): Promise<void> {
+  while (remainingTime(deadline) > processQueryTimeoutMs) {
+    if (!processExists(pid)) return
+    await delay(Math.min(100, remainingTime(deadline) - processQueryTimeoutMs))
+  }
+  throw new Error(`Process ${pid} did not exit within the fixture cleanup budget`)
+}
+
+async function waitForPidFile(file: string, timeout: number): Promise<number> {
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline) {
+    try {
+      const pid = Number(await readFile(file, "utf8"))
+      if (Number.isInteger(pid) && pid > 0) return pid
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+    await delay(100)
+  }
+  throw new Error(`PID file ${file} was not ready within ${timeout} ms`)
 }
 
 async function waitForPort(port: number, expectedOpen: boolean, timeout: number): Promise<void> {
