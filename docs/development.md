@@ -96,12 +96,26 @@ loopback development origin。Browser 的 `POST`、`PATCH`、`DELETE` 另須帶�
 | `POST` | `/api/v1/launcher/reservations/:id/register` | child spawn 後送 PID；202 後背景核對 readiness/path/port owner |
 | `POST` | `/api/v1/launcher/reservations/:id/finalize` | child exit callback；不 kill，port 關閉後才釋放 allocation |
 
-Instance summary 分開回傳 `busySessions`、`pendingQuestions` 與
-`pendingPermissions`。三者可同時存在；每個 pending entry 必須包含非空 `id` 與 `sessionID`，再依
-request ID 去重。同 Session 的不同 request 仍分別計數；任一 malformed entry 使該 endpoint 結果為
-unknown，不部分計數。成功取得空 status map
-時 `activity="none-reported"`；合法的 idle／retry entry 為 `reported-non-busy`；未知 type、無效
-shape 或查詢失敗為 `activity="unknown"`，不得猜 idle 或 latest Session。
+Instance 全體 `summary` 分開回傳 `busySessions`、`pendingQuestions` 與
+`pendingPermissions`，保留既有 project-wide aggregate 契約。Primary Session 工作範圍另由
+`primarySummary` 回傳，只包含該 Instance binding 的 root 與全部 descendants；busy、retry、question、
+permission 共用同一範圍，其他 root 不得混入。`scope="unbound"` 表示尚未綁定，`scope="unknown"` 表示
+binding root 不存在、不是 root、Session parent chain 不完整／循環，或訊號指向未載入的 Session；兩者皆
+不得當成零 busy。合法 `scope="known"` 才會回傳 scoped counts，並以 `retrySessions` 保留精確 retry 訊號。
+
+每個 pending entry 必須包含非空 `id` 與 `sessionID`，先投影到 Primary Session scope，再依 request ID
+去重。同 Session 的不同 request 仍分別計數；任一 malformed entry 仍使 Instance 全體 aggregate 的該
+endpoint 為 unknown，不部分計數。若 malformed status／pending entry 帶有合法 `sessionID`，runtime 只保留
+該 ID 作 scoped error attribution：已確認屬於其他 root 時不污染目前 binding scope；屬於 binding scope、
+指向未載入 Session，或根本沒有合法 `sessionID` 時維持 unknown。成功取得空 status map 時
+`activity="none-reported"`；合法的 idle／retry entry 為 `reported-non-busy`；目前 scope 內的未知 type、
+無效 shape 或查詢失敗為 `activity="unknown"`，不得猜 idle 或 latest Session。ready Instance 若無
+binding，或 known scope 內沒有 busy、retry、question、permission，會進入
+「需處理」篩選；後者顯示「無執行中 Session」。known scope 內有 retry 時顯示「重試中」，不把 retry
+虛增為 busy；question／permission 始終優先列為需處理。`active` 與 `attention` filter 都使用
+`primarySummary`，不以 Instance 全體 `summary` 代替；scope 內同時有 busy 與 question／permission 時可同時
+符合兩個 filter。Binding root 缺失或階層不完整只讓 scoped summary 顯示「無法確認」；若原始 status
+snapshot 仍健康，Instance lifecycle 維持 `ready`，不虛構成 `unreachable`。
 四個 OpenCode 查詢獨立保留成功結果；例如 question 失敗不會抹除已成功取得的 status 或 permission。
 Overview 的 process helper 與 summary probe 全程使用非阻塞 I/O，每輪最多同時處理四個 Instance；重疊的
 poll 共用同一輪結果，避免慢 probe 持續堆積。Start／Stop 等 mutation 不排在 overview probe 佇列後方。

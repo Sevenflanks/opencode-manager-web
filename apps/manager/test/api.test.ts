@@ -770,6 +770,327 @@ test("each Start creates a new Instance and overview exposes independent summary
   })
 })
 
+test("primary summary scopes all signals to the bound root hierarchy and drives attention filtering", async (t) => {
+  const { app, project, runtime } = await fixture(t)
+  const sessions = [
+    { id: "root-a", title: "Root A" },
+    { id: "child-a", title: "Child A", parentID: "root-a" },
+    { id: "grandchild-a", title: "Grandchild A", parentID: "child-a" },
+    { id: "root-b", title: "Root B" },
+    { id: "child-b", title: "Child B", parentID: "root-b" },
+  ]
+  runtime.sessionMetadata.set(project, sessions)
+  runtime.summaries.set(project, {
+    activity: "busy",
+    busySessions: 2,
+    retrySessions: 1,
+    pendingQuestions: 2,
+    pendingPermissions: 2,
+    error: null,
+    sessions,
+    sessionsKnown: true,
+    sessionStatuses: [
+      { sessionId: "grandchild-a", type: "busy" },
+      { sessionId: "root-b", type: "busy" },
+      { sessionId: "child-b", type: "retry" },
+    ],
+    questionRequests: [
+      { id: "question-a", sessionId: "grandchild-a" },
+      { id: "question-b", sessionId: "root-b" },
+    ],
+    permissionRequests: [
+      { id: "permission-a", sessionId: "child-a" },
+      { id: "permission-b", sessionId: "child-b" },
+    ],
+  })
+
+  const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+  const id = started.json().id as string
+  assert.equal(started.json().primarySummary.scope, "unbound")
+
+  const bindA = await app.inject({
+    method: "POST",
+    url: `/api/v1/instances/${id}/primary-session`,
+    headers: mutationHeaders,
+    payload: { sessionId: "root-a" },
+  })
+  assert.equal(bindA.statusCode, 200)
+
+  let overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.deepEqual(overview.json().instances[0].primarySummary, {
+    scope: "known",
+    activity: "busy",
+    busySessions: 1,
+    retrySessions: 0,
+    pendingQuestions: 1,
+    pendingPermissions: 1,
+    error: null,
+  })
+  assert.deepEqual(overview.json().instances[0].summary, {
+    activity: "busy",
+    busySessions: 2,
+    pendingQuestions: 2,
+    pendingPermissions: 2,
+    error: null,
+  }, "the existing summary remains explicitly Instance-wide")
+  let attention = await app.inject({ method: "GET", url: "/api/v1/overview?filter=attention", headers: readHeaders })
+  assert.deepEqual(attention.json().instances.map((instance: { id: string }) => instance.id), [id], "in-scope question and permission take priority over busy")
+  let active = await app.inject({ method: "GET", url: "/api/v1/overview?filter=active", headers: readHeaders })
+  assert.deepEqual(active.json().instances.map((instance: { id: string }) => instance.id), [id], "busy and Q/P satisfy active and attention independently")
+
+  runtime.summaries.set(project, {
+    activity: "busy",
+    busySessions: 1,
+    retrySessions: 1,
+    pendingQuestions: 0,
+    pendingPermissions: 0,
+    error: null,
+    sessions,
+    sessionsKnown: true,
+    sessionStatuses: [
+      { sessionId: "grandchild-a", type: "retry" },
+      { sessionId: "root-b", type: "busy" },
+    ],
+    questionRequests: [],
+    permissionRequests: [],
+  })
+  overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.deepEqual(overview.json().instances[0].primarySummary, {
+    scope: "known",
+    activity: "reported-non-busy",
+    busySessions: 0,
+    retrySessions: 1,
+    pendingQuestions: 0,
+    pendingPermissions: 0,
+    error: null,
+  })
+  attention = await app.inject({ method: "GET", url: "/api/v1/overview?filter=attention", headers: readHeaders })
+  assert.equal(attention.json().instances.length, 0, "an exact in-scope retry is not treated as zero-busy attention")
+  active = await app.inject({ method: "GET", url: "/api/v1/overview?filter=active", headers: readHeaders })
+  assert.equal(active.json().instances.length, 0, "busy from another root cannot make the bound scope active")
+
+  const bindB = await app.inject({
+    method: "POST",
+    url: `/api/v1/instances/${id}/primary-session`,
+    headers: mutationHeaders,
+    payload: { sessionId: "root-b" },
+  })
+  assert.equal(bindB.statusCode, 200)
+  overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.equal(overview.json().instances[0].primarySummary.busySessions, 1, "switching binding switches the projected scope")
+  assert.equal(overview.json().instances[0].primarySummary.retrySessions, 0)
+  active = await app.inject({ method: "GET", url: "/api/v1/overview?filter=active", headers: readHeaders })
+  assert.deepEqual(active.json().instances.map((instance: { id: string }) => instance.id), [id])
+})
+
+test("primary attention distinguishes unbound, known zero-busy, and incomplete hierarchy", async (t) => {
+  const { app, project, runtime } = await fixture(t)
+  const root = { id: "root", title: "Bound root" }
+  runtime.sessionMetadata.set(project, [root])
+  runtime.summaries.set(project, {
+    activity: "none-reported",
+    busySessions: 0,
+    retrySessions: 0,
+    pendingQuestions: 0,
+    pendingPermissions: 0,
+    error: null,
+    sessions: [root],
+    sessionsKnown: true,
+    sessionStatuses: [],
+    questionRequests: [],
+    permissionRequests: [],
+  })
+
+  const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+  const id = started.json().id as string
+  let attention = await app.inject({ method: "GET", url: "/api/v1/overview?filter=attention", headers: readHeaders })
+  assert.equal(attention.json().instances[0].primarySummary.scope, "unbound")
+
+  await app.inject({
+    method: "POST",
+    url: `/api/v1/instances/${id}/primary-session`,
+    headers: mutationHeaders,
+    payload: { sessionId: "root" },
+  })
+  attention = await app.inject({ method: "GET", url: "/api/v1/overview?filter=attention", headers: readHeaders })
+  assert.deepEqual(attention.json().instances[0].primarySummary, {
+    scope: "known",
+    activity: "none-reported",
+    busySessions: 0,
+    retrySessions: 0,
+    pendingQuestions: 0,
+    pendingPermissions: 0,
+    error: null,
+  })
+
+  runtime.summaries.set(project, {
+    activity: "none-reported",
+    busySessions: 0,
+    retrySessions: 0,
+    pendingQuestions: 0,
+    pendingPermissions: 0,
+    error: null,
+    sessions: [{ id: "orphan", title: "Orphan", parentID: "missing" }],
+    sessionsKnown: true,
+    sessionStatuses: [],
+    questionRequests: [],
+    permissionRequests: [],
+  })
+  let overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.equal(overview.json().instances[0].state, "ready", "a healthy status snapshot is not a lifecycle failure when the binding root is missing")
+  assert.equal(overview.json().instances[0].primarySummary.scope, "unknown", "a missing binding root is not zero busy")
+  attention = await app.inject({ method: "GET", url: "/api/v1/overview?filter=attention", headers: readHeaders })
+  assert.equal(attention.json().instances.length, 0)
+
+  runtime.summaries.set(project, {
+    activity: "none-reported",
+    busySessions: 0,
+    retrySessions: 0,
+    pendingQuestions: 0,
+    pendingPermissions: 0,
+    error: null,
+    sessions: [root, { id: "orphan", title: "Orphan", parentID: "missing" }],
+    sessionsKnown: true,
+    sessionStatuses: [],
+    questionRequests: [],
+    permissionRequests: [],
+  })
+  overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.equal(overview.json().instances[0].state, "ready", "an incomplete hierarchy keeps the healthy lifecycle state")
+  assert.equal(overview.json().instances[0].primarySummary.scope, "unknown", "an incomplete hierarchy cannot prove the bound root scope")
+})
+
+test("primary summary excludes attributable malformed signals from another root", async (t) => {
+  const { app, project, runtime } = await fixture(t)
+  const sessions = [
+    { id: "root-a", title: "Root A" },
+    { id: "child-a", title: "Child A", parentID: "root-a" },
+    { id: "root-b", title: "Root B" },
+  ]
+  runtime.sessionMetadata.set(project, sessions)
+  runtime.summaries.set(project, {
+    activity: "unknown",
+    busySessions: null,
+    retrySessions: null,
+    pendingQuestions: null,
+    pendingPermissions: null,
+    error: "status: RESPONSE_INVALID；question: RESPONSE_INVALID；permission: RESPONSE_INVALID",
+    sessions,
+    sessionsKnown: true,
+    sessionStatuses: [{ sessionId: "child-a", type: "idle" }],
+    invalidStatusSessionIds: ["root-b"],
+    questionRequests: [{ id: "question-a", sessionId: "child-a" }],
+    invalidQuestionSessionIds: ["root-b"],
+    permissionRequests: [{ id: "permission-a", sessionId: "child-a" }],
+    invalidPermissionSessionIds: ["root-b"],
+  })
+
+  const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+  const id = started.json().id as string
+  await app.inject({
+    method: "POST",
+    url: `/api/v1/instances/${id}/primary-session`,
+    headers: mutationHeaders,
+    payload: { sessionId: "root-a" },
+  })
+
+  let overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.equal(overview.json().instances[0].state, "ready", "foreign malformed status cannot make the bound scope unreachable")
+  assert.deepEqual(overview.json().instances[0].primarySummary, {
+    scope: "known",
+    activity: "reported-non-busy",
+    busySessions: 0,
+    retrySessions: 0,
+    pendingQuestions: 1,
+    pendingPermissions: 1,
+    error: null,
+  })
+
+  await app.inject({
+    method: "POST",
+    url: `/api/v1/instances/${id}/primary-session`,
+    headers: mutationHeaders,
+    payload: { sessionId: "root-b" },
+  })
+  overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.equal(overview.json().instances[0].state, "unreachable", "a malformed status in the bound scope remains unknown")
+  assert.equal(overview.json().instances[0].primarySummary.activity, "unknown")
+  assert.equal(overview.json().instances[0].primarySummary.pendingQuestions, null)
+  assert.equal(overview.json().instances[0].primarySummary.pendingPermissions, null)
+
+  runtime.summaries.set(project, {
+    activity: "reported-non-busy",
+    busySessions: 0,
+    retrySessions: 0,
+    pendingQuestions: null,
+    pendingPermissions: null,
+    error: "question: RESPONSE_INVALID；permission: RESPONSE_INVALID",
+    sessions,
+    sessionsKnown: true,
+    sessionStatuses: [{ sessionId: "root-b", type: "idle" }],
+    invalidStatusSessionIds: [],
+    questionRequests: [{ id: "question-a", sessionId: "child-a" }],
+    invalidQuestionSessionIds: ["root-b"],
+    permissionRequests: [{ id: "permission-a", sessionId: "child-a" }],
+    invalidPermissionSessionIds: ["root-b"],
+  })
+  overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.equal(overview.json().instances[0].state, "ready", "malformed Q/P do not hide a healthy status response")
+  assert.equal(overview.json().instances[0].primarySummary.activity, "reported-non-busy")
+  assert.equal(overview.json().instances[0].primarySummary.pendingQuestions, null)
+  assert.equal(overview.json().instances[0].primarySummary.pendingPermissions, null)
+
+  runtime.summaries.set(project, {
+    activity: "reported-non-busy",
+    busySessions: 0,
+    retrySessions: 0,
+    pendingQuestions: null,
+    pendingPermissions: null,
+    error: "question: RESPONSE_INVALID；permission: RESPONSE_INVALID",
+    sessions,
+    sessionsKnown: true,
+    sessionStatuses: [{ sessionId: "child-a", type: "idle" }],
+    invalidStatusSessionIds: [],
+    questionRequests: [{ id: "question-a", sessionId: "child-a" }],
+    invalidQuestionSessionIds: null,
+    permissionRequests: [{ id: "permission-a", sessionId: "child-a" }],
+    invalidPermissionSessionIds: null,
+  })
+  await app.inject({
+    method: "POST",
+    url: `/api/v1/instances/${id}/primary-session`,
+    headers: mutationHeaders,
+    payload: { sessionId: "root-a" },
+  })
+  overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.equal(overview.json().instances[0].state, "ready")
+  assert.equal(overview.json().instances[0].primarySummary.activity, "reported-non-busy")
+  assert.equal(overview.json().instances[0].primarySummary.pendingQuestions, null, "unattributed malformed Q/P remain unknown")
+  assert.equal(overview.json().instances[0].primarySummary.pendingPermissions, null)
+
+  runtime.summaries.set(project, {
+    activity: "unknown",
+    busySessions: null,
+    retrySessions: null,
+    pendingQuestions: null,
+    pendingPermissions: null,
+    error: "status: RESPONSE_INVALID；question: RESPONSE_INVALID；permission: RESPONSE_INVALID",
+    sessions,
+    sessionsKnown: true,
+    sessionStatuses: [{ sessionId: "child-a", type: "idle" }],
+    invalidStatusSessionIds: null,
+    questionRequests: [{ id: "question-a", sessionId: "child-a" }],
+    invalidQuestionSessionIds: null,
+    permissionRequests: [{ id: "permission-a", sessionId: "child-a" }],
+    invalidPermissionSessionIds: null,
+  })
+  overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.equal(overview.json().instances[0].state, "unreachable")
+  assert.equal(overview.json().instances[0].primarySummary.activity, "unknown", "an unattributed status failure remains unknown")
+  assert.equal(overview.json().instances[0].primarySummary.pendingQuestions, null)
+  assert.equal(overview.json().instances[0].primarySummary.pendingPermissions, null)
+})
+
 test("overlapping overview requests share a bounded probe round while another API request remains responsive", async (t) => {
   const { app, project, runtime } = await fixture(t)
   let firstInstanceId = ""

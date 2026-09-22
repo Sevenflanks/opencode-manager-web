@@ -38,6 +38,23 @@ export interface InstanceSummary {
   error: string | null
 }
 
+export interface PrimarySessionSummary extends InstanceSummary {
+  scope: "known" | "unbound" | "unknown"
+  retrySessions: number | null
+}
+
+export type PrimarySessionDisposition = "attention" | "unknown" | "busy" | "retry"
+
+export function primarySessionDisposition(summary: PrimarySessionSummary): PrimarySessionDisposition {
+  if (summary.scope === "unbound") return "attention"
+  if (summary.scope === "unknown"
+    || summary.activity === "unknown"
+    || [summary.busySessions, summary.retrySessions, summary.pendingQuestions, summary.pendingPermissions].some((value) => value === null)) return "unknown"
+  if (summary.pendingQuestions! > 0 || summary.pendingPermissions! > 0) return "attention"
+  if (summary.busySessions === 0 && summary.retrySessions === 0) return "attention"
+  return summary.busySessions! > 0 ? "busy" : "retry"
+}
+
 export interface PrimarySession {
   sessionId: string
   title: string
@@ -60,6 +77,7 @@ export interface ManagedInstance {
   remoteUrlUnavailableReason: string | null
   error: string | null
   summary: InstanceSummary
+  primarySummary: PrimarySessionSummary
   sessions: SessionMetadata[]
   primarySession: PrimarySession | null
   trackingHidden: boolean

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { readdir, realpath, stat } from "node:fs/promises"
 import net from "node:net"
 import path from "node:path"
+import { primarySessionDisposition } from "@omw/contracts"
 import type {
   DirectoryListing,
   DirectoryShortcut,
@@ -15,6 +16,7 @@ import type {
   OverviewFilter,
   OverviewResponse,
   PrimarySession,
+  PrimarySessionSummary,
   SessionChildrenResponse,
   SessionMetadata,
   SessionRootsResponse,
@@ -832,7 +834,6 @@ export class ManagerService {
           }
         }
       }
-      if (record.state === "ready" && summary.activity === "unknown") state = "unreachable"
     }
     if (metadataVerified && primaryBeforeProbe) {
       const currentMetadata = summary.sessions.find((session) => session.id === primaryBeforeProbe.sessionId)
@@ -841,6 +842,11 @@ export class ManagerService {
       }
     }
     const primarySession = this.repository.getPrimarySession(record.id)
+    const primarySummary = summarizePrimarySession(summary, primarySession)
+    // Scope metadata 不完整只降級 scoped summary；只有原始 status 也 unknown 才影響健康的 lifecycle。
+    if (record.state === "ready"
+      && primarySummary.activity === "unknown"
+      && (primarySummary.scope !== "unknown" || summary.activity === "unknown")) state = "unreachable"
     const trackingHidden = record.trackingHidden ?? false
     const removeAllowed = state === "stopped" && this.repository.getAllocationForInstance(record.id) === null
     return {
@@ -857,6 +863,7 @@ export class ManagerService {
       stopAllowed,
       remoteUrlUnavailableReason: this.runtime.remoteUrlUnavailableReason?.(record) ?? null,
       primarySession,
+      primarySummary,
       trackingHidden,
       recovery: {
         recheckAllowed: state === "unreachable" || state === "failed",
@@ -924,6 +931,116 @@ function resolveActivityRoot(sessionIds: string[], sessions: SessionMetadata[]):
   }
   if (roots.size !== 1) return null
   return byId.get([...roots][0]!) ?? null
+}
+
+function summarizePrimarySession(summary: RuntimeSummary, primary: PrimarySession | null): PrimarySessionSummary {
+  if (!primary) {
+    return {
+      scope: "unbound",
+      activity: summary.activity,
+      busySessions: null,
+      retrySessions: null,
+      pendingQuestions: null,
+      pendingPermissions: null,
+      error: summary.error,
+    }
+  }
+  if (summary.sessionsKnown !== true) return unknownPrimarySummary()
+
+  const byId = new Map(summary.sessions.map((session) => [session.id, session]))
+  const root = byId.get(primary.sessionId)
+  if (!root || root.parentID || !hasCompleteSessionHierarchy(byId)) return unknownPrimarySummary()
+
+  const scopedIds = new Set<string>([root.id])
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const session of summary.sessions) {
+      if (session.parentID && scopedIds.has(session.parentID) && !scopedIds.has(session.id)) {
+        scopedIds.add(session.id)
+        changed = true
+      }
+    }
+  }
+
+  const signalSessionIds = [
+    ...(summary.sessionStatuses ?? []).map((status) => status.sessionId),
+    ...(summary.invalidStatusSessionIds ?? []),
+    ...(summary.questionRequests ?? []).map((request) => request.sessionId),
+    ...(summary.invalidQuestionSessionIds ?? []),
+    ...(summary.permissionRequests ?? []).map((request) => request.sessionId),
+    ...(summary.invalidPermissionSessionIds ?? []),
+  ]
+  if (signalSessionIds.some((sessionId) => !byId.has(sessionId))) return unknownPrimarySummary()
+
+  const statuses = signalKnownInScope(summary.sessionStatuses, summary.invalidStatusSessionIds, scopedIds)
+    ? summary.sessionStatuses!.filter((status) => scopedIds.has(status.sessionId))
+    : null
+  const busySessions = statuses?.filter((status) => status.type === "busy").length ?? null
+  const retrySessions = statuses?.filter((status) => status.type === "retry").length ?? null
+  const pendingQuestions = scopedRequestCount(summary.questionRequests, summary.invalidQuestionSessionIds, scopedIds)
+  const pendingPermissions = scopedRequestCount(summary.permissionRequests, summary.invalidPermissionSessionIds, scopedIds)
+  const signalUnknown = statuses === null || pendingQuestions === null || pendingPermissions === null
+  return {
+    scope: "known",
+    activity: statuses === null
+      ? "unknown"
+      : busySessions! > 0
+        ? "busy"
+        : statuses.length > 0 ? "reported-non-busy" : "none-reported",
+    busySessions,
+    retrySessions,
+    pendingQuestions,
+    pendingPermissions,
+    error: signalUnknown ? "PRIMARY_SESSION_SCOPE_UNKNOWN" : null,
+  }
+}
+
+function signalKnownInScope<T>(
+  values: T[] | null | undefined,
+  invalidSessionIds: string[] | null | undefined,
+  scopedIds: Set<string>,
+): values is T[] {
+  return values != null
+    && invalidSessionIds !== null
+    && !invalidSessionIds?.some((sessionId) => scopedIds.has(sessionId))
+}
+
+function hasCompleteSessionHierarchy(byId: Map<string, SessionMetadata>): boolean {
+  // 缺父層的 Session 可能仍屬於 binding root；忽略它會把不完整 scope 誤報成可靠的零 busy。
+  for (const session of byId.values()) {
+    const visited = new Set<string>()
+    let current: SessionMetadata | undefined = session
+    while (current.parentID) {
+      if (visited.has(current.id)) return false
+      visited.add(current.id)
+      current = byId.get(current.parentID)
+      if (!current) return false
+    }
+    if (visited.has(current.id)) return false
+  }
+  return true
+}
+
+function scopedRequestCount(
+  requests: RuntimeSummary["questionRequests"],
+  invalidSessionIds: string[] | null | undefined,
+  scopedIds: Set<string>,
+): number | null {
+  if (!signalKnownInScope(requests, invalidSessionIds, scopedIds)) return null
+  return new Set(requests.filter((request) => scopedIds.has(request.sessionId)).map((request) => request.id)).size
+}
+
+function unknownPrimarySummary(): PrimarySessionSummary {
+  return {
+    scope: "unknown",
+    activity: "unknown",
+    busySessions: null,
+    retrySessions: null,
+    pendingQuestions: null,
+    pendingPermissions: null,
+    error: "PRIMARY_SESSION_SCOPE_UNKNOWN",
+  }
 }
 
 async function delay(milliseconds: number): Promise<void> {
@@ -1003,9 +1120,12 @@ function dedupeSessions<T extends { id: string }>(sessions: T[]): T[] {
 }
 
 function matchesFilter(instance: ManagedInstance, filter: OverviewFilter): boolean {
-  if (filter === "active") return instance.state === "starting" || (instance.summary.busySessions ?? 0) > 0
-  if (filter === "attention") return (instance.summary.pendingQuestions ?? 0) > 0 || (instance.summary.pendingPermissions ?? 0) > 0
-  if (filter === "unreachable") return instance.state === "unreachable" || instance.state === "failed" || instance.summary.activity === "unknown"
+  if (filter === "active") {
+    return instance.state === "starting"
+      || (instance.primarySummary.scope === "known" && (instance.primarySummary.busySessions ?? 0) > 0)
+  }
+  if (filter === "attention") return instance.state === "ready" && primarySessionDisposition(instance.primarySummary) === "attention"
+  if (filter === "unreachable") return instance.state === "unreachable" || instance.state === "failed" || instance.primarySummary.activity === "unknown"
   return true
 }
 

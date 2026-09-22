@@ -272,8 +272,60 @@ test("an unrecognized or malformed Session status keeps activity unknown", async
     const summary = await runtime.summary(instance)
     assert.equal(summary.activity, "unknown")
     assert.equal(summary.busySessions, null)
+    assert.deepEqual(summary.invalidStatusSessionIds, ["ses_a"])
     assert.match(summary.error ?? "", /status: RESPONSE_INVALID/)
   }
+})
+
+test("malformed summary entries retain attributable Session IDs without accepting partial aggregates", async (t) => {
+  const directory = "C:\\workspace\\專案"
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    response.setHeader("content-type", "application/json")
+    if (url.pathname === "/session") {
+      return response.end(JSON.stringify([
+        { id: "root-a", title: "Root A", directory },
+        { id: "root-b", title: "Root B", directory },
+      ]))
+    }
+    if (url.pathname === "/session/status") {
+      return response.end(JSON.stringify({
+        "root-a": { type: "idle" },
+        "root-b": { type: "future-status" },
+      }))
+    }
+    if (url.pathname === "/question") {
+      return response.end(JSON.stringify([
+        { id: "question-a", sessionID: "root-a" },
+        { id: 42, sessionID: "root-b" },
+      ]))
+    }
+    if (url.pathname === "/permission") return response.end(JSON.stringify([{ id: "permission-without-session" }]))
+    response.statusCode = 404
+    return response.end("{}")
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  t.after(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())))
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  const dataDirectory = await mkdtemp(path.join(tmpdir(), "omw-runtime-attributed-invalid-"))
+  t.after(() => rm(dataDirectory, { recursive: true, force: true }))
+  const runtime = new OpenCodeRuntime({ executable: process.execPath, dataDirectory })
+
+  const summary = await runtime.summary(record(directory, address.port))
+  assert.equal(summary.activity, "unknown")
+  assert.equal(summary.busySessions, null)
+  assert.deepEqual(summary.sessionStatuses, [{ sessionId: "root-a", type: "idle" }])
+  assert.deepEqual(summary.invalidStatusSessionIds, ["root-b"])
+  assert.equal(summary.pendingQuestions, null)
+  assert.deepEqual(summary.questionRequests, [{ id: "question-a", sessionId: "root-a" }])
+  assert.deepEqual(summary.invalidQuestionSessionIds, ["root-b"])
+  assert.equal(summary.pendingPermissions, null)
+  assert.equal(summary.permissionRequests, null)
+  assert.equal(summary.invalidPermissionSessionIds, null)
 })
 
 test("validated idle and retry statuses are explicit non-busy reports", async (t) => {
@@ -305,6 +357,13 @@ test("validated idle and retry statuses are explicit non-busy reports", async (t
   const summary = await runtime.summary(record(directory, address.port))
   assert.equal(summary.activity, "reported-non-busy")
   assert.equal(summary.busySessions, 0)
+  assert.equal(summary.retrySessions, 1)
+  assert.deepEqual(summary.sessionStatuses, [
+    { sessionId: "ses_idle", type: "idle" },
+    { sessionId: "ses_retry", type: "retry" },
+  ])
+  assert.deepEqual(summary.questionRequests, [])
+  assert.deepEqual(summary.permissionRequests, [])
   assert.equal(summary.error, null)
 })
 
@@ -349,13 +408,30 @@ test("pending request responses reject malformed entries and count distinct requ
     const summary = await runtime.summary(instance)
     assert.equal(summary.pendingQuestions, null)
     assert.equal(summary.pendingPermissions, 1)
+    if (index === 0) {
+      assert.equal(summary.questionRequests, null)
+      assert.equal(summary.invalidQuestionSessionIds, null)
+    } else {
+      assert.deepEqual(summary.questionRequests, [])
+      assert.deepEqual(summary.invalidQuestionSessionIds, ["ses_a"])
+    }
+    assert.deepEqual(summary.permissionRequests, [{ id: "perm_1", sessionId: "ses_a" }])
     assert.match(summary.error ?? "", /question: RESPONSE_INVALID/)
   }
   const duplicate = await runtime.summary(instance)
   assert.equal(duplicate.pendingQuestions, 1)
+  assert.deepEqual(duplicate.questionRequests, [
+    { id: "req_same", sessionId: "ses_a" },
+    { id: "req_same", sessionId: "ses_a" },
+  ])
   assert.equal(duplicate.error, null)
   const distinct = await runtime.summary(instance)
   assert.equal(distinct.pendingQuestions, 3)
+  assert.deepEqual(distinct.questionRequests, [
+    { id: "req_a", sessionId: "ses_same" },
+    { id: "req_b", sessionId: "ses_same" },
+    { id: "req_c", sessionId: "ses_other" },
+  ])
   assert.equal(distinct.error, null)
 })
 
