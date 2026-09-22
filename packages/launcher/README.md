@@ -33,6 +33,15 @@ npx @sevenflanks/omw@latest
 
 終端先顯示 `OMW CLI version: <package version>`，再顯示 `OMW Manager ready: http://127.0.0.1:4174`（port 可能不同），且瀏覽器可開啟登入頁，即代表 Manager 已就緒。這個 plain Manager 命令只會初始化、啟動或重用 Manager，不會啟動 OpenCode TUI。
 
+只查詢已安裝的 OMW CLI 版本、不啟動 Manager，可使用單一版本旗標：
+
+```powershell
+omw --version
+omw -v
+```
+
+兩者都會只輸出 `<package version>` 並以成功狀態結束。
+
 OMW 將 credentials、SQLite 與其他持久資料放在 `%LOCALAPPDATA%\OMW`。Credentials 使用 Windows current-user DPAPI 保護。
 
 ## Remote Access

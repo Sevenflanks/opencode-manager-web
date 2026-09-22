@@ -215,6 +215,24 @@ test("Manager CLI rejects unknown commands", async () => {
   await assert.rejects(runManagerCli(["unknown"], { OMW_DATA_DIR: "C:\\fixture\\data" }, dependencies), /未知命令/)
 })
 
+test("CLI version flags print the package version without bootstrapping", async () => {
+  for (const flag of ["--version", "-v"]) {
+    const { dependencies, output, events } = fixture(["absent"])
+    assert.equal(await runManagerCli([flag], { OMW_DATA_DIR: "C:\\fixture\\data" }, dependencies), 0)
+    assert.deepEqual(output, ["fixture-cli-version"])
+    assert.deepEqual(events, [])
+  }
+})
+
+test("version flags with extra arguments remain unknown commands", async () => {
+  for (const flag of ["--version", "-v"]) {
+    const { dependencies, output, events } = fixture(["omw"])
+    await assert.rejects(runManagerCli([flag, "extra"], { OMW_DATA_DIR: "C:\\fixture\\data" }, dependencies), /未知命令/)
+    assert.deepEqual(output, [])
+    assert.deepEqual(events, [])
+  }
+})
+
 test("opencode subcommand starts Manager before dispatching the native wrapper", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "omw-wrapper-bootstrap-"))
   t.after(() => rm(root, { recursive: true, force: true }))
