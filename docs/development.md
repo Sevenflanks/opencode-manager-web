@@ -328,7 +328,7 @@ Tailnet policy 將 OpenCode ports 限制為 user devices。
 
 Repository development 不可直接執行 local package 的裸 `omw`，因為它會使用日常 `%LOCALAPPDATA%\OMW`。請使用 [Quick Start](#quick-start) 的 development wrapper；它與 `dev:credentials` 共用 `.omw/development`、相同 ports 與相同 child environment policy，`--` 後的 `omw` arguments 原樣傳遞。
 
-日常／configured product flow 優先使用[使用手冊 Quick Start](user-guide.md#quick-start) 的 public exact-version global install；原始碼／本機 `.tgz` 只作替代路徑，避免把日常與 development 命令混在同一份操作步驟。`@sevenflanks/omw@0.1.0` 已發布至 public npm registry；fresh consumer 與 packaged CLI/Manager/Web smoke 的邊界見[release verification 紀錄](acceptance/release-verification-0.1.0-2026-09-21.md)。Development 仍不可直接使用日常 `omw` 或正式 credentials，必須維持隔離入口。
+日常／configured product flow 優先使用[使用手冊 Quick Start](user-guide.md#quick-start) 的 `npx @sevenflanks/omw@latest`；原始碼／本機 `.tgz` 只作替代路徑，避免把日常與 development 命令混在同一份操作步驟。`@sevenflanks/omw@0.1.0` 已發布至 public npm registry；fresh consumer 與 packaged CLI/Manager/Web smoke 的邊界見[release verification 紀錄](acceptance/release-verification-0.1.0-2026-09-21.md)。Development 仍不可直接使用日常 `omw` 或正式 credentials，必須維持隔離入口。
 
 沒有提供 Project 時，`omw opencode` 使用目前工作目錄；需要既有 Session 時可在實際命令後加上
 `-s` 與真實 Session ID。若 `opencode.exe` 不在已知

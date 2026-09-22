@@ -1,59 +1,75 @@
 # OpenCode Manager Web (OMW)
 
-OMW 是 Windows 本機的 OpenCode 管理介面，提供 `omw` CLI 與 Web UI，用來檢視 Project、Instance 與 Session，並啟動 OMW 管理的背景 OpenCode Instance。
+OMW 補足 OpenCode 缺少的整機管理與 Remote 控制一環：它在 Windows 主機集中管理 Project、Instance 與 Session，並可透過自動註冊 Tailscale Serve，讓使用者從瀏覽器開啟 OMW Web 與 OpenCode Web。
+
+- 從 Web UI 查看 Instance 與 Session，或啟動 OMW 管理的背景 Instance。
+- 本機預設維持 loopback-only；遠端模式沿用你自行安裝並登入的 Tailscale。
+- 不攔截原生 `opencode`；只有明確使用 OMW wrapper 的命令會納入管理。
 
 OMW 是 source-available software，不是 OSI 定義的 open source software。使用前請閱讀 [Sustainable Use License 1.0](LICENSE.md)。
 
 ## Requirements
 
-- Windows 11
-- PowerShell 7，且 `pwsh.exe` 可由 `PATH` 找到
-- Node.js 24 以上與 npm
-- 已安裝的 OpenCode CLI
+- Windows 11。
+- PowerShell 7，且 `pwsh.exe` 可由 `PATH` 找到。
+- Node.js 24 以上與 npm。
+- 已安裝的 OpenCode CLI。
+- 遠端使用另需在 OMW 主機與訪問裝置自行安裝 Tailscale、登入同一個 Tailnet，並確認裝置有存取權。
 
-OMW 不會安裝 OpenCode，也不會修改 `PATH`。
+OMW 不會安裝 OpenCode 或 Tailscale，也不會修改 `PATH`。
 
 ## Quick Start
 
-1. 從 public npm registry 安裝固定版本：
+1. 在 PowerShell 啟動 OMW：
 
 ```powershell
-npm install --global @sevenflanks/omw@0.1.0
+npx @sevenflanks/omw@latest
 ```
 
-2. 啟動 CLI 與 Web 管理介面：
+第一次執行時，npm 可能詢問是否下載 `@sevenflanks/omw`；確認後繼續。
 
-```powershell
-omw
-```
+2. 依提示建立 OMW 使用者名稱與至少 16 個字元的密碼。
+3. 開啟終端顯示的 URL。
 
-3. 第一次執行時建立 OMW 帳號與至少 16 個字元的密碼，然後開啟終端顯示的 URL。
-
-**完成指標：**終端先顯示 `OMW CLI version: <package version>`，再顯示 `OMW Manager ready: http://127.0.0.1:4174`（port 可能不同），瀏覽器可開啟登入頁。版本來自實際安裝的 `@sevenflanks/omw` package metadata。Plain `omw` 只會初始化、啟動或重用 Manager，不會啟動 OpenCode TUI。
-
-不做 global install 時，也可直接執行固定版本：
-
-```powershell
-npm exec --yes --package=@sevenflanks/omw@0.1.0 -- omw
-```
+終端先顯示 `OMW CLI version: <package version>`，再顯示 `OMW Manager ready: http://127.0.0.1:4174`（port 可能不同），且瀏覽器可開啟登入頁，即代表 Manager 已就緒。這個 plain Manager 命令只會初始化、啟動或重用 Manager，不會啟動 OpenCode TUI。
 
 OMW 將 credentials、SQLite 與其他持久資料放在 `%LOCALAPPDATA%\OMW`。Credentials 使用 Windows current-user DPAPI 保護。
+
+## Remote Access
+
+1. 在 OMW 主機與訪問裝置自行安裝 Tailscale，登入同一個 Tailnet，並確認 Tailnet policy 允許存取。
+2. 從本機 OMW UI 頁面上方的 `TAILNET / SERVE` 區塊按下 `啟用遠端存取`，閱讀存取範圍說明後以目前 OMW 帳密確認。
+3. OMW 會使用已登入主機的 Tailnet DNSName，自動註冊 OMW Web 與 Instance port 的 Tailscale Serve mappings。
+4. 確認畫面顯示可用的遠端 URL，再從有存取權的 Tailnet 裝置開啟。若註冊失敗，依畫面診斷修正後按 `自動註冊` 重試。
+
+OMW 不會安裝或登入 Tailscale、不會啟動 OS service，也不會開啟 public Funnel。OpenCode ports 沒有額外 OMW 帳密保護，請維持 Tailnet-only 並限制裝置存取。
 
 ## Start OpenCode Through OMW
 
 在目前目錄啟動 Local TUI Instance：
 
 ```powershell
-omw opencode
+npx @sevenflanks/omw@latest opencode
 ```
 
 指定 Project 與既有 Session：
 
 ```powershell
-omw opencode 'C:\develop\projects\example' -s '<session-id>'
+npx @sevenflanks/omw@latest opencode 'C:\develop\projects\example' -s '<session-id>'
 ```
 
-OMW 不會攔截原生 `opencode`。只有 `omw opencode ...` 會進入 OMW wrapper。
+OMW 不會攔截原生 `opencode`。只有 `npx @sevenflanks/omw@latest opencode ...` 會進入 OMW wrapper。
+
+## Optional Global Install
+
+若希望提供全域 `omw` 命令，可安裝目前最新版：
+
+```powershell
+npm install --global @sevenflanks/omw@latest
+omw
+```
+
+後續可使用 `omw opencode ...`。Global install 與 `npx` 使用同一份 `%LOCALAPPDATA%\OMW` 日常資料。
 
 ## Troubleshooting
 
@@ -61,16 +77,14 @@ OMW 不會攔截原生 `opencode`。只有 `omw opencode ...` 會進入 OMW wrap
 
 ```powershell
 $env:OMW_POWERSHELL_EXECUTABLE = 'C:\Program Files\PowerShell\7\pwsh.exe'
-omw
+npx @sevenflanks/omw@latest
 ```
-
-此設定只覆蓋 OMW runtime 內採用它的 PowerShell 呼叫，不會覆蓋其他 scripts 或手動指令。
 
 若 OMW 無法找到真正的 `opencode.exe`，請指定可信任 executable 的絕對路徑：
 
 ```powershell
 $env:OMW_OPENCODE_EXECUTABLE = 'C:\path\to\opencode.exe'
-omw
+npx @sevenflanks/omw@latest
 ```
 
 ## License
