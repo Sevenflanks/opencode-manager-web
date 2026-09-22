@@ -47,6 +47,26 @@ test("Windows Job timeout prevents an armed detached descendant from starting la
   assert.equal(await portOccupied(port), false)
 })
 
+test("missing supervisor executable rejects result and close without hanging", {
+  skip: process.platform !== "win32" && "Windows process spawn behavior is Windows-only",
+}, async (t) => {
+  const root = await mkdtemp(path.join(await realpath(os.tmpdir()), "omw-job-spawn-failure-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const job = await startWindowsJob(process.execPath, ["--version"], {
+    cwd: root,
+    env: process.env,
+    root: path.join(root, "supervisor"),
+    timeoutMs: 1000,
+    powershellPath: path.join(root, "missing-pwsh.exe"),
+  })
+
+  const resultError = await rejection(job.result)
+  assert.equal(resultError.code, "ENOENT")
+  const closeError = await rejectionWithin(job.close(), 1000)
+  assert.equal(closeError, resultError)
+})
+
 function availablePort() {
   const server = net.createServer()
   return new Promise((resolve, reject) => {
@@ -70,4 +90,21 @@ function portOccupied(port) {
     socket.once("error", () => finish(false))
     socket.setTimeout(500, () => finish(false))
   })
+}
+
+async function rejection(promise) {
+  try {
+    await promise
+  } catch (error) {
+    return error
+  }
+  assert.fail("Expected promise to reject")
+}
+
+function rejectionWithin(promise, timeoutMs) {
+  let deadline
+  return Promise.race([
+    rejection(promise).finally(() => clearTimeout(deadline)),
+    new Promise((resolve) => { deadline = setTimeout(() => resolve(new Error("close remained pending")), timeoutMs) }),
+  ])
 }

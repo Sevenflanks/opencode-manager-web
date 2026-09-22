@@ -5,7 +5,7 @@ import readline from "node:readline"
 
 const supervisorScript = path.join(import.meta.dirname, "windows-job-supervisor.ps1")
 
-export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs }) {
+export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs, powershellPath = "pwsh.exe" }) {
   const executable = await resolveExecutable(command, cwd, env)
   await mkdir(root, { recursive: true })
   const argumentsFile = path.join(root, "arguments.json")
@@ -13,7 +13,7 @@ export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs
   const stderrPath = path.join(root, "stderr.log")
   await writeFile(argumentsFile, JSON.stringify(args), "utf8")
 
-  const supervisor = spawn("pwsh.exe", [
+  const supervisor = spawn(powershellPath, [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-File", supervisorScript,
     "-Executable", executable,
     "-ArgumentsFile", argumentsFile,
@@ -31,15 +31,20 @@ export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs
   let stderr = ""
   let resultReceived = false
   let closedEvent = null
-  let exit = null
+  let terminal = null
   supervisor.stderr.setEncoding("utf8")
   supervisor.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-64 * 1024) })
 
-  const exitPromise = new Promise((resolve) => {
+  const terminalPromise = new Promise((resolve) => {
+    const finish = (outcome) => {
+      if (terminal) return
+      terminal = outcome
+      resolve(outcome)
+    }
     supervisor.once("exit", (code, signal) => {
-      exit = { code, signal }
-      resolve(exit)
+      finish({ kind: "exit", code, signal })
     })
+    supervisor.once("error", (error) => finish({ kind: "error", error }))
   })
   const lines = readline.createInterface({ input: supervisor.stdout })
   const result = new Promise((resolve, reject) => {
@@ -66,14 +71,14 @@ export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs
         closedEvent = event
       }
     })
-    supervisor.once("error", (error) => {
-      clearTimeout(deadline)
-      reject(error)
-    })
-    exitPromise.then(({ code, signal }) => {
+    terminalPromise.then((outcome) => {
       if (resultReceived) return
       clearTimeout(deadline)
-      reject(new Error(`Windows Job supervisor exited before result (${code ?? signal}): ${stderr.trim()}`))
+      if (outcome.kind === "error") {
+        reject(outcome.error)
+        return
+      }
+      reject(new Error(`Windows Job supervisor exited before result (${outcome.code ?? outcome.signal}): ${stderr.trim()}`))
     })
   })
 
@@ -86,26 +91,31 @@ export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs
       }
     },
     async close() {
-      if (!exit) {
+      if (!terminal) {
         if (resultReceived) supervisor.stdin.end("close\n")
         else supervisor.kill()
       }
-      let closeDeadline
-      const completed = await Promise.race([
-        exitPromise.finally(() => clearTimeout(closeDeadline)),
-        new Promise((resolve) => { closeDeadline = setTimeout(() => resolve(null), 10_000) }),
-      ])
+      let completed = await boundedOutcome(terminalPromise, 10_000)
       if (!completed) {
         supervisor.kill()
-        await exitPromise
-        throw new Error("Windows Job supervisor did not close within 10000ms.")
+        completed = await boundedOutcome(terminalPromise, 2_000)
+        if (!completed) throw new Error("Windows Job supervisor emitted neither exit nor error after termination.")
       }
+      if (completed.kind === "error") throw completed.error
       if (completed.code !== 0) {
         throw new Error(`Windows Job supervisor close failed (${completed.code ?? completed.signal}): ${stderr.trim()}`)
       }
       return closedEvent
     },
   }
+}
+
+function boundedOutcome(promise, timeoutMs) {
+  let deadline
+  return Promise.race([
+    promise.finally(() => clearTimeout(deadline)),
+    new Promise((resolve) => { deadline = setTimeout(() => resolve(null), timeoutMs) }),
+  ])
 }
 
 async function resolveExecutable(command, cwd, env) {
