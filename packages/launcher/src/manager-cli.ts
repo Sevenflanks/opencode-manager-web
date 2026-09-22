@@ -69,6 +69,10 @@ export async function runManagerCli(
   environment: NodeJS.ProcessEnv,
   dependencies: ManagerCliDependencies = defaultDependencies,
 ): Promise<number> {
+  if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")) {
+    dependencies.output(await dependencies.cliVersion())
+    return 0
+  }
   const wrapperArguments = argv[0] === "opencode" ? argv.slice(1) : null
   if (argv.length && !wrapperArguments) throw new Error("未知命令；OpenCode TUI 請使用 omw opencode [project] [-s session]。")
   let ready: { dataDirectory: string; origin: string } | undefined

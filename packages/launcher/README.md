@@ -31,6 +31,15 @@ omw
 
 **完成指標：**終端先顯示 `OMW CLI version: <package version>`，再顯示 `OMW Manager ready: http://127.0.0.1:4174`（port 可能不同），瀏覽器可開啟登入頁。版本來自實際安裝的 `@sevenflanks/omw` package metadata。Plain `omw` 只會初始化、啟動或重用 Manager，不會啟動 OpenCode TUI。
 
+只查詢已安裝的 OMW CLI 版本、不啟動 Manager，可使用單一版本旗標：
+
+```powershell
+omw --version
+omw -v
+```
+
+兩者都會只輸出 `<package version>` 並以成功狀態結束。
+
 不做 global install 時，也可直接執行固定版本：
 
 ```powershell
