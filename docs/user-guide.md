@@ -1,19 +1,20 @@
-# OMW 本機使用手冊
+# OMW 使用手冊
+
+OMW 補足 OpenCode 缺少的整機管理與 Remote 控制一環：它在 Windows 主機集中管理 Project、Instance 與 Session，並可透過自動註冊 Tailscale Serve，讓使用者從瀏覽器開啟 OMW Web 與 OpenCode Web。
+
+- 從 Web UI 掌握多個 Project 與 Instance，切換或建立 Session，並啟動 OMW 管理的背景 Instance。
+- 本機預設維持 loopback-only；遠端模式沿用使用者自行安裝並登入的 Tailscale。
+- 原生 `opencode` 不被攔截；只有明確透過 OMW wrapper 啟動的 Local TUI Instance 納入管理。
 
 > [!IMPORTANT]
-> `@sevenflanks/omw@0.1.0` 已確認發布至 public npm registry；本手冊 Quick Start 優先使用 exact-version global install。原始碼／本機 package artifact 是替代路徑；已發布 package 的 fresh consumer 安裝與 CLI/Manager/Web smoke 見[release verification 紀錄](acceptance/release-verification-0.1.0-2026-09-21.md)。請勿把 `npx @sevenflanks/omw` 當成已完成完整 E2E 的安裝方式。
-> 本手冊描述日常／configured product flow，會使用 `%LOCALAPPDATA%\OMW`。Repository development 不可照抄
-> 下列裸 `omw` 命令；請改用 `npm run dev:credentials`、`npm run dev` 或
-> `npm run dev:omw -- ...`，避免連入日常 data、credentials 與 OpenCode DB。
-
-OMW（OpenCode Manager Web）是在 Windows 本機啟動的管理介面，用瀏覽器檢視 Project、OpenCode Instance 與 Session，也能啟動 OMW 管理的背景 Instance。
+> 日常命令會使用 `%LOCALAPPDATA%\OMW`。Repository development 請改用 `npm run dev:credentials`、`npm run dev` 或 `npm run dev:omw -- ...`，避免讀寫日常 credentials、token、SQLite 與 OpenCode data。歷史 `@sevenflanks/omw@0.1.0` 發布與 smoke 證據維持在 [release verification 紀錄](acceptance/release-verification-0.1.0-2026-09-21.md)，但不代表目前建議的 `npx @sevenflanks/omw@latest` 已完成完整 E2E。
 
 ## 閱讀導覽
 
 1. 第一次使用：只讀 [Prerequisites](#prerequisites) 與 [Quick Start](#quick-start)。
 2. 啟動 OpenCode 或使用 Web：[Usage](#usage)。
 3. 關閉前確認影響範圍：[三種停止操作](#三種停止操作)。
-4. 手機或 Tailnet 存取：[Tailnet 與手機存取](#tailnet-與手機存取)。
+4. 遠端或手機存取：[Tailnet 與手機存取](#tailnet-與手機存取)。
 5. 啟動失敗：[Troubleshooting](#troubleshooting)；查已驗證範圍：[Validation Status](#validation-status)。
 
 ## Prerequisites
@@ -24,32 +25,27 @@ OMW（OpenCode Manager Web）是在 Windows 本機啟動的管理介面，用瀏
 - PowerShell 7，且 `pwsh.exe` 可由 `PATH` 找到。
 - Node.js 24 以上與 npm。
 - 已安裝 OpenCode CLI。
+- 遠端使用另需在 OMW 主機與訪問裝置自行安裝 Tailscale、登入同一個 Tailnet，並確認裝置有存取權。
 
 原始碼／本機 artifact 替代路徑才需要本 repository checkout，且相關命令必須從 repository root 執行。
 
-OMW 不會安裝 OpenCode，也不會修改 `PATH`。若 OMW 找不到 PowerShell 或 OpenCode executable，直接跳到 [Troubleshooting](#troubleshooting)。
+OMW 不會安裝 OpenCode 或 Tailscale，也不會修改 `PATH`。若 OMW 找不到 PowerShell 或 OpenCode executable，直接跳到 [Troubleshooting](#troubleshooting)。
 
 ## Quick Start
 
 ### Published package（建議）
 
-1. 在日常使用的 PowerShell 安裝固定版本：
+1. 在日常使用的 PowerShell 啟動 OMW：
 
 ```powershell
-npm install --global @sevenflanks/omw@0.1.0
+npx @sevenflanks/omw@latest
 ```
 
-2. 完成安裝後啟動 OMW：
-
-```powershell
-omw
-```
-
-Global install 是建議的正式使用路徑；本次 release verification 已驗證 public registry 的 exact-version fresh consumer 安裝與 CLI/Manager/Web smoke，但未將 global install 本身宣稱為已單獨測試。
+第一次執行時，npm 可能詢問是否下載 `@sevenflanks/omw`；確認後繼續。若偏好全域 `omw` 命令，可改用[可選的 global install](#可選的-global-install)。
 
 ### 第一次啟動
 
-執行 plain `omw` 後：
+執行上述 plain Manager 命令後：
 
 1. OMW 使用者名稱，預設是 `omw`。
 2. 至少 16 個字元的密碼。
@@ -64,7 +60,7 @@ OMW 會自動產生 launcher token，並將帳密與 token 透過 Windows curren
 OMW Manager ready: http://127.0.0.1:4174
 ```
 
-plain `omw` 只會初始化、重用或在背景啟動 Manager，不會啟動 OpenCode TUI。請用瀏覽器開啟終端實際輸出的 URL。
+這個 plain Manager 命令只會初始化、重用或在背景啟動 Manager，不會啟動 OpenCode TUI。請用瀏覽器開啟終端實際輸出的 URL。
 
 **完成指標：**終端顯示 `OMW Manager ready: http://127.0.0.1:4174`（port 可能不同），瀏覽器可開啟登入頁。
 
@@ -76,7 +72,7 @@ plain `omw` 只會初始化、重用或在背景啟動 Manager，不會啟動 Op
 OMW 初始化已取消，可直接重試。
 ```
 
-取消會直接結束，不會偷偷改成啟動未受管理的 OpenCode。重新執行同一個 plain `omw` 命令即可重試。
+取消會直接結束，不會偷偷改成啟動未受管理的 OpenCode。重新執行 `npx @sevenflanks/omw@latest` 即可重試。
 
 若在沒有既有設定的非互動環境執行，OMW 會要求先回到本機互動式終端：
 
@@ -86,12 +82,23 @@ OMW 初始化已取消，可直接重試。
 
 #### 日常重跑與冪等性
 
-之後每天可執行同一個 plain `omw` 命令。OMW 會以 launcher token 驗證 `127.0.0.1:<port>` 上的 Manager identity：
+之後每天可執行同一個 `npx @sevenflanks/omw@latest` 命令。OMW 會以 launcher token 驗證 `127.0.0.1:<port>` 上的 Manager identity：
 
 - 身分是 `omw-manager` 且 protocol version 相符時，重用現有 Manager。
 - Manager 不存在時，以背景 process 啟動，並等待 readiness。
 - 同時執行多次時，由初始化與啟動 lock 加上第二次 identity 檢查避免重複初始化或重複 Manager。
 - 重用不會重設帳密、不會輪替 launcher token，也不會清空 SQLite。
+
+### 可選的 global install
+
+若希望提供全域 `omw` 命令，可安裝目前最新版：
+
+```powershell
+npm install --global @sevenflanks/omw@latest
+omw
+```
+
+後續可使用 `omw opencode ...`。Global install 與 `npx` 使用同一份 `%LOCALAPPDATA%\OMW` 日常資料，不再是 Quick Start 的主要入口。
 
 ### 原始碼／本機 artifact 替代路徑
 
@@ -122,8 +129,8 @@ npm exec --yes --package="$omwPackage" -- omw
 
 日常使用只需：
 
-1. 執行 `omw`，確認 Manager ready。
-2. 在 Project 目錄執行 `omw opencode`。
+1. 執行 `npx @sevenflanks/omw@latest`，確認 Manager ready。
+2. 在 Project 目錄執行 `npx @sevenflanks/omw@latest opencode`。
 3. 回到 Web 管理介面查看 Project、Instance 與 Session。
 
 **完成指標：**OpenCode TUI 正常啟動，且 OMW Web 顯示對應的 Local TUI Instance。若看到 `continuing with native OpenCode`，請依[對應排障](#看到continuing-with-native-opencode)處理，不能視為已受 OMW 管理。
@@ -133,22 +140,22 @@ npm exec --yes --package="$omwPackage" -- omw
 在要工作的 Project 目錄執行：
 
 ```powershell
-omw opencode
+npx @sevenflanks/omw@latest opencode
 ```
 
 沒有提供 `[project]` 時，wrapper 使用目前工作目錄。也可以明確提供 Project 路徑：
 
 ```powershell
-omw opencode 'C:\develop\projects\example'
+npx @sevenflanks/omw@latest opencode 'C:\develop\projects\example'
 ```
 
 要開啟特定 OpenCode Session：
 
 ```powershell
-omw opencode 'C:\develop\projects\example' -s '<session-id>'
+npx @sevenflanks/omw@latest opencode 'C:\develop\projects\example' -s '<session-id>'
 ```
 
-若使用原始碼／本機 artifact 替代路徑，將上述 `omw` 命令替換為 `npm exec --yes --package="$omwPackage" -- omw`。
+若使用可選的 global install，可將 `npx @sevenflanks/omw@latest` 縮短為 `omw`。若使用原始碼／本機 artifact 替代路徑，則替換為 `npm exec --yes --package="$omwPackage" -- omw`。
 
 Wrapper 會保留呼叫時的 cwd、Project 與原始 OpenCode arguments。它只補上缺少的 loopback hostname 與 OMW 保留的固定 port，再啟動 OpenCode TUI。
 
@@ -168,7 +175,7 @@ opencode
 
 ```powershell
 $env:OMW_REQUIRED = '1'
-omw opencode
+npx @sevenflanks/omw@latest opencode
 ```
 
 `OMW_REQUIRED=1` 會讓任何 bootstrap failure 直接結束。未設定 `OMW_REQUIRED=1` 時，首次設定缺失或使用者取消初始化仍不會 fail-open；既有 credentials 損毀、DPAPI 無法解密或其他 Manager bootstrap failure 則會顯示診斷並啟動未受管理的 native OpenCode。
@@ -285,7 +292,7 @@ OMW 管理的是 binding 與入口；Session 內容仍由 OpenCode 保存。停�
 
 #### 停止 OMW
 
-管理介面會立即斷線，但 OpenCode 工作繼續。之後重新執行 plain `omw` 即可重建 Manager 管理介面並重用既有資料。
+管理介面會立即斷線，但 OpenCode 工作繼續。之後重新執行 `npx @sevenflanks/omw@latest` 即可重建 Manager 管理介面並重用既有資料。
 
 **用途：**在送出前核對停止範圍。
 
@@ -313,14 +320,14 @@ OMW 管理的是 binding 與入口；Session 內容仍由 OpenCode 保存。停�
 
 OMW 維持 loopback-only；明示開啟 remote mode 時，會沿用已安裝、已登入的 Tailscale，保守新增並驗證缺少的 Serve mappings。它不會自動 login/up、啟動 OS service、開啟 Funnel 或覆寫既有不相容設定。
 
-本手冊對應已發布 package 的 CLI 介面；原始碼／本機 artifact 替代路徑使用相同介面：
+本手冊對應已發布 package 的 CLI 介面；日常建議命令為：
 
 ```text
-omw
-omw opencode [project] [-s session]
+npx @sevenflanks/omw@latest
+npx @sevenflanks/omw@latest opencode [project] [-s session]
 ```
 
-原生 `opencode` 命令不會被 OMW 改寫、攔截或自動接管。只有透過 `omw opencode ...` 啟動時，OMW wrapper 才會嘗試啟動或重用 Manager、保留執行個體的固定連線埠並登錄追蹤資訊。
+原生 `opencode` 命令不會被 OMW 改寫、攔截或自動接管。只有透過 `npx @sevenflanks/omw@latest opencode ...`（或可選 global install 的等價 `omw opencode ...`）啟動時，OMW wrapper 才會嘗試啟動或重用 Manager、保留執行個體的固定連線埠並登錄追蹤資訊。
 
 ![OMW 本機與 Tailnet 架構](diagrams/omw-architecture.svg)
 
@@ -356,16 +363,16 @@ $env:OMW_DATA_DIR = 'D:\private\omw-data'
 
 這是改用另一個資料根目錄，不是自動搬移。不要為了排除啟動問題刪除或覆寫既有 `%LOCALAPPDATA%\OMW`；也不要把舊 `.omw` 目錄當成新版本要自動搬移的資料來源。
 
-如果使用 override，plain `omw` 與每一次 wrapper 命令都必須使用同一個 `OMW_DATA_DIR`，否則會看到不同的 OMW 狀態。
+如果使用 override，plain Manager 與每一次 wrapper 命令都必須使用同一個 `OMW_DATA_DIR`，否則會看到不同的 OMW 狀態。
 
 ### Tailnet 與手機存取
 
-未設定 remote env 時，plain `omw` 預設只提供本機存取。要啟用 Tailnet：
+未設定 remote env 時，OMW 預設只提供本機存取。要啟用 Tailnet：
 
-1. 確認本機 Tailscale 已安裝、登入，並核對 Tailnet policy 允許哪些裝置。
+1. 在 OMW 主機與要訪問的電腦或手機自行安裝 Tailscale，登入同一個 Tailnet，並確認 Tailnet policy 允許該裝置存取主機。
 2. 從 OMW 本機 UI 按「啟用遠端存取」，閱讀 exposure 說明，以目前 OMW 帳密按「同意並啟用」。取消不會新增映射。
 3. OMW 自動取得此裝置的 Tailnet DNSName，沿用目前 Manager port 與 Instance pool；保存非機密設定後，立即要求 Basic 登入並嘗試註冊 Serve，無需設定 env 或重啟。
-4. 註冊失敗時修正畫面指出的問題，再按「自動註冊」。設定會保留，下次啟動也會自動註冊。
+4. 確認畫面顯示可用的遠端 URL，再從有存取權的 Tailnet 裝置開啟。註冊失敗時修正畫面指出的問題，再按「自動註冊」；設定會保留，下次啟動也會自動註冊。
 
 Manager server 仍只綁定 loopback。啟用會為 Manager 與目前 Instance pool 建立固定 Serve 映射；OpenCode ports 沒有額外帳密保護，Tailnet 裝置存取政策必須先核對。帳密不會存入瀏覽器 localStorage 或 URL，reload 後依瀏覽器 Basic 登入提示驗證。
 
@@ -411,7 +418,7 @@ OMW runtime 預設使用 `pwsh.exe`，不是 Windows PowerShell 5.1 的 `powersh
 
 ```powershell
 $env:OMW_POWERSHELL_EXECUTABLE = 'C:\Program Files\PowerShell\7\pwsh.exe'
-omw
+npx @sevenflanks/omw@latest
 ```
 
 此設定只覆蓋 OMW runtime 內採用它的 PowerShell 呼叫，不會覆蓋其他 scripts 或手動指令。
@@ -424,7 +431,7 @@ Repository Quick Start 找不到 local package 時，回到 repository root 重�
 npm exec --yes --package="$omwPackage" -- omw
 ```
 
-若要使用已發布版本，請固定安裝 `@sevenflanks/omw@0.1.0`；已驗證的 registry、artifact identity 與 smoke 範圍見[release verification 紀錄](acceptance/release-verification-0.1.0-2026-09-21.md)。
+日常使用已發布版本時，執行 `npx @sevenflanks/omw@latest`；npm 首次詢問下載時確認即可。歷史 `@sevenflanks/omw@0.1.0` registry、artifact identity 與 smoke 證據範圍見[release verification 紀錄](acceptance/release-verification-0.1.0-2026-09-21.md)，不代表目前 `latest` 的完整 E2E 已驗證。
 
 ### 找不到 OpenCode executable
 
@@ -474,8 +481,8 @@ $env:OMW_OPENCODE_EXECUTABLE = (Resolve-Path -LiteralPath $target).Path
 
 ### Manager readiness 或連線失敗
 
-- plain `omw`：回報錯誤並結束；它不會啟動 TUI。
-- `omw opencode ...`：預設顯示 bootstrap failure 診斷並啟動 native OpenCode；此 TUI 是 unmanaged。
+- plain Manager 命令：回報錯誤並結束；它不會啟動 TUI。
+- `npx @sevenflanks/omw@latest opencode ...`：預設顯示 bootstrap failure 診斷並啟動 native OpenCode；此 TUI 是 unmanaged。
 - `OMW_REQUIRED=1`：wrapper 回報錯誤並結束，不啟動 native OpenCode。
 - 若本次剛建立的背景 Manager readiness 失敗，launcher 只清理本次自己建立的 process object，不會依 port 或猜測的 PID 停止其他程序。
 
@@ -500,7 +507,7 @@ $env:OMW_OPENCODE_EXECUTABLE = (Resolve-Path -LiteralPath $target).Path
 | Public npm publication / target package | VERIFIED（2026-09-21） | PR #22 已合併至 `cb87fc68df98fc310834ac24dc4c9bddc51bccda`；target `@sevenflanks/omw@0.1.0` 已發布，registry latest 為 `0.1.0` |
 | Fresh consumer install / published artifact resolution | VERIFIED（2026-09-21） | Registry consumer `npm install --save-exact @sevenflanks/omw@0.1.0` 成功，`50 packages`、`0 vulnerabilities`；tarball、integrity 與 shasum 見[release verification 紀錄](acceptance/release-verification-0.1.0-2026-09-21.md) |
 | Published CLI/Manager/Web smoke | VERIFIED（2026-09-21） | CLI exit `0`；Manager identity HTTP `200`（`omw-manager`、protocol `1`）；Web HTTP `200` app container；shutdown HTTP `202` 後不可連線 |
-| Public `npx @sevenflanks/omw` end-to-end | NOT VERIFIED | 本手冊刻意不把它列為可執行步驟 |
+| Public `npx @sevenflanks/omw@latest` end-to-end | NOT VERIFIED | 目前是本手冊建議命令，但尚未完成該入口的完整 E2E |
 | Manager 初始化與返回終端 | 人工 PASS（2026-09-20） | 使用者依人工隔離環境 guide，在一般 `pwsh` 完成初始化並確認控制權返回終端；不是 agent synthetic PTY 重跑 |
 | Wrapper 啟動真實 OpenCode TUI | 人工 PASS（2026-09-20） | cwd、cwd + `-s target`、指定 Project + `-s target` 與 `Ctrl+C` 均由使用者親自驗收通過 |
 | Web 登錄、Manager-only shutdown 與 restart | 人工 PASS（2026-09-20） | cwd TUI 可在 Web 登錄；`stopManager` 後 TUI 仍可操作；restart 後 target 保留；測試 TUI 與 Manager 均已停止 |
@@ -530,7 +537,7 @@ Bin resolution probe 只證明 local artifact 與 bin entry 可用。另見 [Iss
 
 - Credential 更新後新帳密可用、舊帳密拒絕、launcher token 保留與 persistence failure rollback。
 - 個人既有 OpenCode 設定、plugin、Session 與資料相容性。
-- `npx @sevenflanks/omw` end-to-end，以及 packaged release 的真實 OpenCode TUI、reservation、register、finalize lifecycle。
+- `npx @sevenflanks/omw@latest` end-to-end，以及 packaged release 的真實 OpenCode TUI、reservation、register、finalize lifecycle。
 - browser UI 操作、完整 Web walkthrough、Tailnet、真手機與個人既有 OpenCode 設定／資料相容性。
 
 真手機經 Tailnet／Tailscale Serve 的 list/detail、touch、back gesture、Session navigation、帳密與 stop confirmation 仍是 `NOT VERIFIED`，但使用者已明確同意移出 Issue #11 本輪 PR 必要條件。上方 desktop 與 `390 × 844` mobile viewport 證據維持有效；它們不代表真手機或 Tailnet 已通過。

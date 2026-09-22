@@ -13,11 +13,11 @@
 
 | 介面 | 用途 | 權威文件 |
 | --- | --- | --- |
-| `omw` | 初始化、啟動或重用 Manager；不啟動 OpenCode TUI | [使用手冊 Quick Start](user-guide.md#quick-start) |
-| `omw opencode [project] [-s session]` | 透過 OMW wrapper 啟動 Local TUI Instance | [Local TUI launcher](development.md#local-tui-launcher) |
+| `npx @sevenflanks/omw@latest` | 初始化、啟動或重用 Manager；不啟動 OpenCode TUI | [使用手冊 Quick Start](user-guide.md#quick-start) |
+| `npx @sevenflanks/omw@latest opencode [project] [-s session]` | 透過 OMW wrapper 啟動 Local TUI Instance | [Local TUI launcher](development.md#local-tui-launcher) |
 | `opencode ...` | 原生 OpenCode；OMW 不攔截、不自動登錄 | [Launcher contract](security/launcher-contract.md#local-cli-invocation) |
 
-`@sevenflanks/omw@0.1.0` 已發布至 public npm registry；日常操作優先使用[使用手冊 Quick Start](user-guide.md#quick-start) 的 exact-version global install，原始碼／本機 `.tgz` 是替代路徑，已發布 package 的安裝與 smoke 範圍見[release verification 紀錄](acceptance/release-verification-0.1.0-2026-09-21.md)。
+日常操作優先使用[使用手冊 Quick Start](user-guide.md#quick-start) 的 `npx @sevenflanks/omw@latest`；global install 是可選路徑，原始碼／本機 `.tgz` 是建置驗證或替代安裝路徑，repository development 使用[隔離入口](development.md#quick-start)。歷史 `@sevenflanks/omw@0.1.0` 安裝與 smoke 證據範圍見[release verification 紀錄](acceptance/release-verification-0.1.0-2026-09-21.md)，不代表目前 `latest` 的完整 E2E 已驗證。
 
 ## Runtime
 
