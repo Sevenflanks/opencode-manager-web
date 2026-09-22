@@ -5,10 +5,19 @@ import { ref, watch } from "vue"
 import { managerApi } from "@/api"
 import { Button } from "@/components/ui/button"
 
-const props = withDefaults(defineProps<{ instanceId: string; session: SessionMetadata; depth?: number; openDisabled?: boolean }>(), {
+const props = withDefaults(defineProps<{
+  instanceId: string
+  session: SessionMetadata
+  depth?: number
+  openDisabled?: boolean
+  allowSwitch?: boolean
+  switchDisabled?: boolean
+}>(), {
   openDisabled: false,
+  allowSwitch: false,
+  switchDisabled: false,
 })
-const emit = defineEmits<{ open: [sessionId: string] }>()
+const emit = defineEmits<{ open: [sessionId: string]; switch: [] }>()
 const expanded = ref(false)
 const loaded = ref(false)
 const loading = ref(false)
@@ -64,6 +73,15 @@ async function toggle(): Promise<void> {
       <Button variant="ghost" size="icon" aria-label="在 OpenCode Web 開啟 Session" :disabled="openDisabled" @click="emit('open', session.id)">
         <ExternalLinkIcon />
       </Button>
+      <Button
+        v-if="allowSwitch"
+        variant="outline"
+        size="sm"
+        class="session-switch-button"
+        :aria-label="`切換為主要 Session：${session.title}`"
+        :disabled="switchDisabled"
+        @click="emit('switch')"
+      >切換</Button>
     </div>
     <p v-if="error" class="inline-error">{{ error }}</p>
     <p v-if="expanded && loaded && children.length === 0" class="tree-empty">沒有已載入的 direct children</p>
