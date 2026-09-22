@@ -1,12 +1,14 @@
 import assert from "node:assert/strict"
 import process from "node:process"
-import test from "node:test"
+import test, { type TestContext } from "node:test"
 import type { ConnectivityInfo } from "@omw/contracts"
 import { buildApp } from "../src/app.js"
 import { SeparateRequestAuthenticator, type StoredCredentials } from "../src/auth.js"
 import type { RemoteAccessConfig } from "../src/config.js"
 import { ConnectivityService, type CommandRunner, tailscaleExecutable } from "../src/connectivity.js"
-import type { ManagerService } from "../src/service.js"
+import { ManagerRepository, type InstanceRecord } from "../src/repository.js"
+import { OpenCodeRuntime, type InspectResult, type RuntimeSummary } from "../src/runtime.js"
+import { ManagerService } from "../src/service.js"
 
 const MANAGER_PORT = 4_174
 const PUBLIC_PORT = 8_443
@@ -236,6 +238,197 @@ test("cache coalesces concurrent callers and refreshes after five seconds", asyn
   const refreshed = await connectivity.get()
   assert.equal(refreshed.checkedAt, "2026-09-18T12:00:05.001Z")
   assert.equal(runner.calls.length, 4)
+})
+
+test("overview refreshes an expired connectivity snapshot before presenting remote URLs", { timeout: 5_000 }, async (t) => {
+  const runner = new FakeRunner({
+    "status --json": statusFixture(),
+    "serve status --json": serveFixture(),
+  })
+  let now = new Date("2026-09-18T12:00:00.000Z")
+  let monotonicNow = 0
+  const connectivity = provider(runner, () => now, () => monotonicNow)
+  const { app } = overviewFixture(t, connectivity)
+
+  await connectivity.get()
+  monotonicNow = 4_999
+  let response = await app.inject({
+    method: "GET",
+    url: "/api/v1/overview",
+    headers: { host: `127.0.0.1:${MANAGER_PORT}` },
+  })
+  assert.equal(response.statusCode, 200)
+  assert.equal(response.json().instances[0].remoteUrlUnavailableReason, null)
+  assert.equal(runner.calls.length, 2, "fresh overview reuses the cached connectivity snapshot")
+
+  now = new Date("2026-09-18T12:00:05.000Z")
+  monotonicNow = 5_000
+  response = await app.inject({
+    method: "GET",
+    url: "/api/v1/overview",
+    headers: { host: `127.0.0.1:${MANAGER_PORT}` },
+  })
+  assert.equal(response.statusCode, 200)
+  assert.equal(response.json().instances[0].remoteUrlUnavailableReason, null)
+  assert.equal(runner.calls.length, 4, "expired overview refreshes connectivity exactly at the TTL boundary")
+})
+
+test("overview verifies connectivity after an active runtime probe crosses the cache TTL", { timeout: 5_000 }, async (t) => {
+  const runner = new FakeRunner({
+    "status --json": statusFixture(),
+    "serve status --json": serveFixture(),
+  })
+  let now = new Date("2026-09-18T12:00:00.000Z")
+  let monotonicNow = 0
+  const connectivity = provider(runner, () => now, () => monotonicNow)
+  const { app } = overviewFixture(t, connectivity, {
+    state: "ready",
+    afterSummary: () => {
+      now = new Date("2026-09-18T12:00:05.000Z")
+      monotonicNow = 5_000
+    },
+  })
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/api/v1/overview",
+    headers: { host: `127.0.0.1:${MANAGER_PORT}` },
+  })
+
+  assert.equal(response.statusCode, 200)
+  assert.equal(response.json().instances[0].remoteUrlUnavailableReason, null)
+  assert.equal(runner.calls.length, 2, "connectivity is refreshed once, after the active probe completes")
+})
+
+test("slow active probes keep every overview poll verified through thirty seconds", { timeout: 5_000 }, async (t) => {
+  const runner = new FakeRunner({
+    "status --json": statusFixture(),
+    "serve status --json": serveFixture(),
+  })
+  const startedAt = Date.parse("2026-09-18T12:00:00.000Z")
+  let monotonicNow = 0
+  let now = new Date(startedAt)
+  const connectivity = provider(runner, () => now, () => monotonicNow)
+  const { app } = overviewFixture(t, connectivity, {
+    state: "ready",
+    instanceCount: 2,
+    afterSummary: () => {
+      monotonicNow += 2_500
+      now = new Date(startedAt + monotonicNow)
+    },
+  })
+
+  for (const elapsed of [5_000, 10_000, 15_000, 20_000, 25_000, 30_000]) {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/overview",
+      headers: { host: `127.0.0.1:${MANAGER_PORT}` },
+    })
+    const instances = response.json().instances
+
+    assert.equal(response.statusCode, 200)
+    assert.equal(monotonicNow, elapsed)
+    assert.equal(instances.length, 2)
+    assert.equal(instances.every((instance: { remoteUrlUnavailableReason: string | null }) => instance.remoteUrlUnavailableReason === null), true)
+  }
+  assert.equal(runner.calls.length, 12, "each five-second poll performs one shared post-probe refresh")
+})
+
+test("overview stays readable while refreshed connectivity fails closed", { timeout: 5_000 }, async (t) => {
+  const cases: Array<{ name: string; responses: Record<string, RunnerResponse> }> = [
+    {
+      name: "Serve mismatch",
+      responses: {
+        "status --json": statusFixture(),
+        "serve status --json": serveFixture({ managerTarget: "http://127.0.0.1:9999" }),
+      },
+    },
+    {
+      name: "Funnel enabled",
+      responses: {
+        "status --json": statusFixture(),
+        "serve status --json": serveFixture({ funnel: true }),
+      },
+    },
+    {
+      name: "Tailscale CLI failure",
+      responses: { "status --json": new Error("fixture command failure") },
+    },
+  ]
+
+  for (const entry of cases) {
+    await t.test(entry.name, async (t) => {
+      const connectivity = provider(new FakeRunner(entry.responses))
+      const { app } = overviewFixture(t, connectivity)
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/v1/overview",
+        headers: { host: `127.0.0.1:${MANAGER_PORT}` },
+      })
+
+      assert.equal(response.statusCode, 200)
+      assert.equal(response.json().instances.length, 1)
+      assert.equal(response.json().instances[0].id, "overview-instance")
+      assert.equal(response.json().instances[0].remoteUrlUnavailableReason, "Tailscale Serve 映射尚未通過驗證。")
+    })
+  }
+})
+
+test("overview remains fail closed when remote verification rejects", { timeout: 5_000 }, async (t) => {
+  const runner = new FakeRunner({
+    "status --json": statusFixture(),
+    "serve status --json": serveFixture(),
+  })
+  const connectivity = provider(runner)
+  await connectivity.get()
+  const { app } = overviewFixture(t, connectivity, {
+    verifyRemoteUrl: async () => { throw new Error("fixture verification failure") },
+  })
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/api/v1/overview",
+    headers: { host: `127.0.0.1:${MANAGER_PORT}` },
+  })
+
+  assert.equal(response.statusCode, 200)
+  assert.equal(response.json().instances[0].remoteUrlUnavailableReason, "Tailscale Serve 映射尚未通過驗證。")
+  assert.equal(runner.calls.length, 2, "a rejected verifier cannot reuse a valid runtime gate as proof of availability")
+})
+
+test("concurrent overview and connectivity requests share one refresh", { timeout: 5_000 }, async (t) => {
+  let resolveStatus!: (value: string) => void
+  const pendingStatus = new Promise<string>((resolve) => { resolveStatus = resolve })
+  const runner = new FakeRunner({
+    "status --json": pendingStatus,
+    "serve status --json": serveFixture(),
+  })
+  const connectivity = provider(runner)
+  const { app } = overviewFixture(t, connectivity)
+
+  let overviewSettled = false
+  const overviewResponse = app.inject({
+    method: "GET",
+    url: "/api/v1/overview",
+    headers: { host: `127.0.0.1:${MANAGER_PORT}` },
+  }).finally(() => { overviewSettled = true })
+  const connectivityResponse = app.inject({
+    method: "GET",
+    url: "/api/v1/connectivity",
+    headers: { host: `127.0.0.1:${MANAGER_PORT}` },
+  })
+
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  try {
+    assert.equal(overviewSettled, false, "overview waits for the shared connectivity refresh")
+  } finally {
+    resolveStatus(statusFixture())
+  }
+  const [overview, connectivityResult] = await Promise.all([overviewResponse, connectivityResponse])
+
+  assert.equal(overview.statusCode, 200)
+  assert.equal(connectivityResult.statusCode, 200)
+  assert.deepEqual(runner.calls.map((call) => call.args.join(" ")), ["status --json", "serve status --json"])
 })
 
 test("cached command errors retry normally after the TTL", async () => {
@@ -719,6 +912,87 @@ function provider(
     now,
     monotonicNow,
   })
+}
+
+function overviewFixture(
+  t: TestContext,
+  connectivity: ConnectivityService,
+  options: {
+    state?: "ready" | "stopped"
+    instanceCount?: number
+    afterSummary?: (instance: InstanceRecord) => void
+    verifyRemoteUrl?: (port: number) => Promise<void>
+  } = {},
+) {
+  const repository = new ManagerRepository(":memory:")
+  const state = options.state ?? "stopped"
+  for (let index = 0; index < (options.instanceCount ?? 1); index++) {
+    const port = POOL.min + index
+    repository.createInstance({
+      id: index === 0 ? "overview-instance" : `overview-instance-${index + 1}`,
+      projectName: `overview fixture ${index + 1}`,
+      projectDirectory: `C:\\fixture\\overview-${index + 1}`,
+      state,
+      endpoint: `http://127.0.0.1:${port}`,
+      port,
+      pid: state === "ready" ? 12_345 + index : null,
+      creationTimeUtc: state === "ready" ? "2026-09-18T11:00:00.000Z" : null,
+      creationTimeTicks: state === "ready" ? String(12_345 + index) : null,
+      executable: state === "ready" ? process.execPath : null,
+      launchedAt: "2026-09-18T11:00:00.000Z",
+      healthVersion: null,
+      stoppedAt: state === "stopped" ? "2026-09-18T11:30:00.000Z" : null,
+      error: null,
+      stderrSummary: null,
+    })
+  }
+  const runtimeOptions = {
+    executable: process.execPath,
+    dataDirectory: "fixture-only",
+    publicOriginForPort: (port: number) => connectivity.remoteOriginForPort(port),
+  }
+  const runtime = options.afterSummary
+    ? new ActiveOverviewRuntime(runtimeOptions, options.afterSummary)
+    : new OpenCodeRuntime(runtimeOptions)
+  const service = new ManagerService(
+    repository,
+    runtime,
+    POOL,
+    options.verifyRemoteUrl ?? ((port) => connectivity.ensureRemoteOriginForPort(port)),
+  )
+  const app = buildApp({
+    service,
+    connectivity,
+    authority: { hostname: "127.0.0.1", port: MANAGER_PORT },
+    allowedOrigins: new Set([`http://127.0.0.1:${MANAGER_PORT}`]),
+  })
+  t.after(async () => {
+    await app.close()
+    repository.close()
+  })
+  return { app }
+}
+
+class ActiveOverviewRuntime extends OpenCodeRuntime {
+  constructor(options: ConstructorParameters<typeof OpenCodeRuntime>[0], private readonly afterSummary: (instance: InstanceRecord) => void) {
+    super(options)
+  }
+
+  override async inspect(_instance: InstanceRecord): Promise<InspectResult> {
+    return { processState: "running", running: true, matched: true, portOwnerMatched: true, portOwnedByOther: false }
+  }
+
+  override async summary(instance: InstanceRecord): Promise<RuntimeSummary> {
+    this.afterSummary(instance)
+    return {
+      activity: "reported-non-busy",
+      busySessions: 0,
+      pendingQuestions: 0,
+      pendingPermissions: 0,
+      error: null,
+      sessions: [],
+    }
+  }
 }
 
 class RegistrationRunner implements CommandRunner {
