@@ -1811,12 +1811,14 @@ test("connectivity UI reports, copies, shares, and degrades safely", { skip: !en
       Reflect.set(window, "__omwCopiedUrls", [])
       Reflect.set(window, "__omwShareCalls", 0)
       Reflect.set(window, "__omwVisibilityState", "visible")
+      Reflect.set(window, "__omwPollIntervals", [])
       Object.defineProperty(document, "visibilityState", {
         configurable: true,
         get: () => Reflect.get(window, "__omwVisibilityState"),
       })
       const originalSetInterval = window.setInterval.bind(window)
       window.setInterval = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+        ;(Reflect.get(window, "__omwPollIntervals") as number[]).push(timeout ?? 0)
         if (timeout === 30_000 && typeof handler === "function") Reflect.set(window, "__omwConnectivityPoll", handler)
         return originalSetInterval(handler, timeout, ...args)
       }) as typeof window.setInterval
@@ -1863,6 +1865,11 @@ test("connectivity UI reports, copies, shares, and degrades safely", { skip: !en
     })
 
     await page.goto(origin, { waitUntil: "networkidle" })
+    assert.deepEqual(
+      await page.evaluate(() => (Reflect.get(window, "__omwPollIntervals") as number[]).sort((left, right) => left - right)),
+      [5_000, 30_000],
+      "overview polls every 5 seconds while Connectivity polls every 30 seconds",
+    )
     await page.getByRole("heading", { level: 2, name: "遠端入口已連線" }).waitFor()
     assert.equal(await page.getByText("Serve 映射吻合", { exact: false }).count() > 0, true)
     assert.equal(await page.getByText(publicUrl, { exact: true }).count(), 1)

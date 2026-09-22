@@ -583,7 +583,11 @@ export class ManagerService {
     const inFlight = this.overviewInFlight.get(includeHidden)
     if (inFlight) return await inFlight
     const records = this.repository.listInstances().filter((record) => includeHidden || !record.trackingHidden)
-    const request = mapWithConcurrency(records, OVERVIEW_CONCURRENCY, async (record) => await this.present(record))
+    const request = mapWithConcurrency(
+      records,
+      OVERVIEW_CONCURRENCY,
+      async (record) => await this.present(record, { refreshRemoteUrl: true }),
+    )
     this.overviewInFlight.set(includeHidden, request)
     try {
       const instances = await request
@@ -801,7 +805,7 @@ export class ManagerService {
     if (unavailableReason) throw new ManagerError("REMOTE_URL_UNAVAILABLE", unavailableReason, 409)
   }
 
-  private async present(record: InstanceRecord): Promise<ManagedInstance> {
+  private async present(record: InstanceRecord, options: { refreshRemoteUrl?: boolean } = {}): Promise<ManagedInstance> {
     const primaryBeforeProbe = this.repository.getPrimarySession(record.id)
     let summary: RuntimeSummary = { ...EMPTY_SUMMARY, sessions: [] }
     let stopAllowed = false
@@ -849,6 +853,16 @@ export class ManagerService {
       && (primarySummary.scope !== "unknown" || summary.activity === "unknown")) state = "unreachable"
     const trackingHidden = record.trackingHidden ?? false
     const removeAllowed = state === "stopped" && this.repository.getAllocationForInstance(record.id) === null
+    let remoteUrlVerificationFailure: string | null = null
+    if (options.refreshRemoteUrl) {
+      try {
+        // Runtime probes may outlive the Connectivity TTL; verify after them so the synchronous gate below reads fresh state.
+        await this.verifyRemoteUrl?.(record.port)
+      } catch {
+        remoteUrlVerificationFailure = "Tailscale Serve 映射尚未通過驗證。"
+      }
+    }
+    const remoteUrlUnavailableReason = this.runtime.remoteUrlUnavailableReason?.(record) ?? remoteUrlVerificationFailure
     return {
       id: record.id,
       kind: record.kind ?? "headless",
@@ -861,7 +875,7 @@ export class ManagerService {
       launchedAt: record.launchedAt,
       healthVersion: record.healthVersion,
       stopAllowed,
-      remoteUrlUnavailableReason: this.runtime.remoteUrlUnavailableReason?.(record) ?? null,
+      remoteUrlUnavailableReason,
       primarySession,
       primarySummary,
       trackingHidden,
