@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.2.0...v0.2.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* 修復獨立安裝套件缺少 contracts runtime ([ef9dc8a](https://github.com/Sevenflanks/opencode-manager-web/commit/ef9dc8adc98c022308b5ad0c6f48fdb05a19bf0b))
+* 將 contracts runtime 納入獨立安裝套件 ([07b5d5d](https://github.com/Sevenflanks/opencode-manager-web/commit/07b5d5d8394366d0b1e7265ef8ec51b2557ef03f))
+
 ## [0.2.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.1.2...v0.2.0) (2026-09-22)
 
 
