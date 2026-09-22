@@ -5,7 +5,7 @@ import readline from "node:readline"
 
 const supervisorScript = path.join(import.meta.dirname, "windows-job-supervisor.ps1")
 
-export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs, powershellPath = "pwsh.exe" }) {
+export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs, powershellPath = "pwsh.exe", spawnProcess = spawn }) {
   const executable = await resolveExecutable(command, cwd, env)
   await mkdir(root, { recursive: true })
   const argumentsFile = path.join(root, "arguments.json")
@@ -13,7 +13,7 @@ export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs
   const stderrPath = path.join(root, "stderr.log")
   await writeFile(argumentsFile, JSON.stringify(args), "utf8")
 
-  const supervisor = spawn(powershellPath, [
+  const supervisor = spawnProcess(powershellPath, [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-File", supervisorScript,
     "-Executable", executable,
     "-ArgumentsFile", argumentsFile,
@@ -30,23 +30,29 @@ export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs
 
   let stderr = ""
   let resultReceived = false
+  let resultEvent = null
   let closedEvent = null
   let terminal = null
   supervisor.stderr.setEncoding("utf8")
   supervisor.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-64 * 1024) })
+  supervisor.stdin.on("error", () => {
+    // Process completion and protocol validation below provide the actionable error.
+  })
 
+  const lines = readline.createInterface({ input: supervisor.stdout })
+  const protocolDrainedPromise = new Promise((resolve) => lines.once("close", resolve))
+  const processClosedPromise = new Promise((resolve) => {
+    supervisor.once("close", (code, signal) => resolve({ kind: "close", code, signal }))
+  })
   const terminalPromise = new Promise((resolve) => {
     const finish = (outcome) => {
       if (terminal) return
       terminal = outcome
       resolve(outcome)
     }
-    supervisor.once("exit", (code, signal) => {
-      finish({ kind: "exit", code, signal })
-    })
     supervisor.once("error", (error) => finish({ kind: "error", error }))
+    Promise.all([processClosedPromise, protocolDrainedPromise]).then(([outcome]) => finish(outcome))
   })
-  const lines = readline.createInterface({ input: supervisor.stdout })
   const result = new Promise((resolve, reject) => {
     const deadline = setTimeout(() => {
       supervisor.kill()
@@ -66,6 +72,7 @@ export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs
       if (event.event === "result") {
         clearTimeout(deadline)
         resultReceived = true
+        resultEvent = event
         resolve(event)
       } else if (event.event === "closed") {
         closedEvent = event
@@ -78,7 +85,7 @@ export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs
         reject(outcome.error)
         return
       }
-      reject(new Error(`Windows Job supervisor exited before result (${outcome.code ?? outcome.signal}): ${stderr.trim()}`))
+      reject(new Error(`Windows Job supervisor closed before result (${outcome.code ?? outcome.signal}): ${stderr.trim()}`))
     })
   })
 
@@ -92,7 +99,9 @@ export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs
     },
     async close() {
       if (!terminal) {
-        if (resultReceived) supervisor.stdin.end("close\n")
+        if (resultEvent?.timedOut) {
+          // Timeout already finalized the Job; wait for its drained terminal protocol.
+        } else if (resultReceived) supervisor.stdin.end("close\n")
         else supervisor.kill()
       }
       let completed = await boundedOutcome(terminalPromise, 10_000)
@@ -105,6 +114,12 @@ export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs
       if (completed.code !== 0) {
         throw new Error(`Windows Job supervisor close failed (${completed.code ?? completed.signal}): ${stderr.trim()}`)
       }
+      if (!resultEvent) throw new Error("Windows Job supervisor closed without a result protocol event.")
+      if (resultEvent.timedOut) {
+        if (resultEvent.jobEmpty !== true) throw new Error("Windows Job supervisor timeout did not prove the Job empty.")
+        return resultEvent
+      }
+      if (!closedEvent) throw new Error("Windows Job supervisor closed without a closed protocol event.")
       return closedEvent
     },
   }

@@ -38,7 +38,9 @@ test("packed production consumer starts omw with its runtime contracts", {
     }
     try {
       const closed = await launchJob?.close()
-      if (closed) {
+      if (closed?.timedOut) {
+        assert.equal(closed.jobEmpty, true, `retaining ${root} because the timed-out Windows Job did not become empty`)
+      } else if (closed) {
         assert.equal(closed.jobEmpty, true, `retaining ${root} because the current-run Windows Job did not become empty`)
         assert.equal(closed.graceful, true, `retaining ${root} because official shutdown did not drain the current-run Windows Job`)
       }

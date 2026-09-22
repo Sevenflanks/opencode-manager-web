@@ -1,8 +1,10 @@
 import assert from "node:assert/strict"
+import { EventEmitter } from "node:events"
 import { access, mkdtemp, realpath, rm } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
+import { PassThrough, Writable } from "node:stream"
 import test from "node:test"
 import { startWindowsJob } from "./windows-job-supervisor.mjs"
 
@@ -41,6 +43,7 @@ test("Windows Job timeout prevents an armed detached descendant from starting la
   const result = await job.result
   assert.equal(result.timedOut, true)
   assert.equal(result.jobEmpty, true)
+  assert.equal(await job.close(), result)
   await access(armed)
 
   await new Promise((resolve) => setTimeout(resolve, 1_000))
@@ -65,6 +68,52 @@ test("missing supervisor executable rejects result and close without hanging", {
   assert.equal(resultError.code, "ENOENT")
   const closeError = await rejectionWithin(job.close(), 1000)
   assert.equal(closeError, resultError)
+})
+
+test("timeout result is parsed after process exit before terminal classification", async (t) => {
+  const fixture = protocolFixture({
+    start(child) {
+      child.emit("exit", 0, null)
+      setImmediate(() => child.finish([{ event: "result", timedOut: true, exitCode: null, jobEmpty: true }]))
+    },
+  })
+  const { job } = await fixtureJob(t, fixture)
+
+  const result = await job.result
+  assert.equal(result.jobEmpty, true)
+  assert.equal(await job.close(), result)
+})
+
+test("normal close waits for a closed event emitted after process exit", async (t) => {
+  const fixture = protocolFixture({
+    start(child) {
+      child.write({ event: "result", timedOut: false, exitCode: 0, jobEmpty: false })
+    },
+    close(child) {
+      child.emit("exit", 0, null)
+      setImmediate(() => child.finish([{ event: "closed", graceful: true, jobEmpty: true }]))
+    },
+  })
+  const { job } = await fixtureJob(t, fixture)
+
+  await job.result
+  assert.deepEqual(await job.close(), { event: "closed", graceful: true, jobEmpty: true })
+})
+
+test("normal close rejects when the drained protocol has no closed event", async (t) => {
+  const fixture = protocolFixture({
+    start(child) {
+      child.write({ event: "result", timedOut: false, exitCode: 0, jobEmpty: false })
+    },
+    close(child) {
+      child.emit("exit", 0, null)
+      setImmediate(() => child.finish([]))
+    },
+  })
+  const { job } = await fixtureJob(t, fixture)
+
+  await job.result
+  await assert.rejects(job.close(), /closed protocol event/)
 })
 
 function availablePort() {
@@ -107,4 +156,47 @@ function rejectionWithin(promise, timeoutMs) {
     rejection(promise).finally(() => clearTimeout(deadline)),
     new Promise((resolve) => { deadline = setTimeout(() => resolve(new Error("close remained pending")), timeoutMs) }),
   ])
+}
+
+async function fixtureJob(t, fixture) {
+  const root = await mkdtemp(path.join(await realpath(os.tmpdir()), "omw-job-protocol-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const job = await startWindowsJob(process.execPath, ["--version"], {
+    cwd: root,
+    env: process.env,
+    root: path.join(root, "supervisor"),
+    timeoutMs: 1000,
+    spawnProcess: fixture,
+  })
+  return { job, root }
+}
+
+function protocolFixture({ start, close }) {
+  return () => {
+    const child = new EventEmitter()
+    child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
+    child.stdin = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback()
+      },
+      final(callback) {
+        close?.(child)
+        callback()
+      },
+    })
+    child.kill = () => {
+      child.finish([])
+      return true
+    }
+    child.write = (event) => child.stdout.write(`${JSON.stringify(event)}\n`)
+    child.finish = (events) => {
+      for (const event of events) child.write(event)
+      child.stdout.end()
+      child.stderr.end()
+      child.emit("close", 0, null)
+    }
+    setImmediate(() => start(child))
+    return child
+  }
 }
