@@ -42,6 +42,8 @@ interface ActivityObserverState {
   attempts: number
   observer: RuntimeActivityObserver | null
   retryTimer: NodeJS.Timeout | null
+  connectionToken: object | null
+  candidate: { sessionId: string; expectedPrimary: PrimarySession } | null
 }
 
 export class ManagerService {
@@ -406,7 +408,7 @@ export class ManagerService {
     const primarySession = primarySessionFrom(session, "new-session")
     this.repository.replacePrimarySession(id, primarySession)
     this.invalidateOverviewSnapshots()
-    this.closeActivityObserver(id)
+    this.primarySessionChanged(record)
     try {
       return { url: this.runtime.openUrl(record, session.id), instanceId: id, sessionId: session.id }
     } catch (error) {
@@ -428,7 +430,7 @@ export class ManagerService {
     const url = this.runtime.openUrl(record, session.id)
     this.repository.replacePrimarySession(id, primarySessionFrom(session, "manual"))
     this.invalidateOverviewSnapshots()
-    this.closeActivityObserver(id)
+    this.primarySessionChanged(record)
     return { url, instanceId: id, sessionId: session.id }
   }
 
@@ -709,9 +711,16 @@ export class ManagerService {
   }
 
   private ensureActivityObserver(record: InstanceRecord): void {
-    if (this.shuttingDown || record.trackingHidden || record.state !== "ready" || this.repository.getPrimarySession(record.id)
+    if (this.shuttingDown || record.trackingHidden || record.state !== "ready"
+      || ((record.kind ?? "headless") !== "local-tui" && this.repository.getPrimarySession(record.id))
       || !this.runtime.activity || !this.runtime.observeActivity || this.activityObservers.has(record.id)) return
-    const state: ActivityObserverState = { attempts: 0, observer: null, retryTimer: null }
+    const state: ActivityObserverState = {
+      attempts: 0,
+      observer: null,
+      retryTimer: null,
+      connectionToken: null,
+      candidate: null,
+    }
     this.activityObservers.set(record.id, state)
     this.startActivityObserver(record.id, state)
   }
@@ -719,32 +728,48 @@ export class ManagerService {
   private startActivityObserver(id: string, state: ActivityObserverState): void {
     if (this.shuttingDown || this.activityObservers.get(id) !== state) return
     const record = this.repository.getInstance(id)
-    if (!record || record.trackingHidden || record.state !== "ready" || this.repository.getPrimarySession(id) || !this.runtime.observeActivity) {
+    if (!record || record.trackingHidden || record.state !== "ready"
+      || ((record.kind ?? "headless") !== "local-tui" && this.repository.getPrimarySession(id))
+      || !this.runtime.observeActivity) {
       this.closeActivityObserver(id)
       return
     }
+    const connectionToken = {}
+    state.connectionToken = connectionToken
     let observer: RuntimeActivityObserver
     try {
-      observer = this.runtime.observeActivity(record, async (event) => await this.handleActivityEvent(id, state, event))
+      observer = this.runtime.observeActivity(
+        record,
+        async (event) => await this.handleActivityEvent(id, state, connectionToken, event),
+      )
     } catch {
-      this.activityObserverEnded(id, state)
+      this.activityObserverEnded(id, state, connectionToken)
       return
     }
     state.observer = observer
     void observer.done.then(
-      () => this.activityObserverEnded(id, state),
-      () => this.activityObserverEnded(id, state),
+      () => this.activityObserverEnded(id, state, connectionToken),
+      () => this.activityObserverEnded(id, state, connectionToken),
     )
   }
 
-  private activityObserverEnded(id: string, state: ActivityObserverState): void {
-    if (this.activityObservers.get(id) !== state) return
+  private activityObserverEnded(id: string, state: ActivityObserverState, connectionToken: object): void {
+    if (this.activityObservers.get(id) !== state || state.connectionToken !== connectionToken) return
+    // 先讓這條 connection 的 pending callbacks失效，避免它們在 reconnect 後寫入或清掉新候選。
+    state.connectionToken = null
     state.observer = null
-    if (this.shuttingDown || this.repository.getPrimarySession(id)) {
+    state.candidate = null
+    const record = this.repository.getInstance(id)
+    if (this.shuttingDown || !record || record.trackingHidden || record.state !== "ready"
+      || ((record.kind ?? "headless") !== "local-tui" && this.repository.getPrimarySession(id))) {
       this.closeActivityObserver(id)
       return
     }
-    const retryDelay = OBSERVER_RETRY_DELAYS_MS[state.attempts++]
+    let retryDelay = OBSERVER_RETRY_DELAYS_MS[state.attempts++]
+    // Local TUI 必須持續追蹤後續 /new；暫時斷線只把 backoff 固定在上限，不可停止觀察。
+    if (retryDelay === undefined && record.kind === "local-tui") {
+      retryDelay = OBSERVER_RETRY_DELAYS_MS[OBSERVER_RETRY_DELAYS_MS.length - 1]
+    }
     if (retryDelay === undefined) {
       this.activityObservers.delete(id)
       return
@@ -755,13 +780,31 @@ export class ManagerService {
     }, retryDelay)
   }
 
-  private async handleActivityEvent(id: string, observerState: ActivityObserverState, event: RuntimeActivityEvent): Promise<void> {
-    if (event.type !== "activity" || event.sessionIds.length === 0 || this.shuttingDown
-      || this.activityObservers.get(id) !== observerState
-      || this.repository.getPrimarySession(id)) return
+  private async handleActivityEvent(
+    id: string,
+    observerState: ActivityObserverState,
+    connectionToken: object,
+    event: RuntimeActivityEvent,
+  ): Promise<void> {
+    if (this.shuttingDown || this.activityObservers.get(id) !== observerState
+      || observerState.connectionToken !== connectionToken) return
+    if (event.type === "session-created") {
+      observerState.candidate = null
+      const record = this.repository.getInstance(id)
+      const primary = this.repository.getPrimarySession(id)
+      if (record?.kind === "local-tui" && record.state === "ready" && primary && primary.sessionId !== event.sessionId) {
+        observerState.candidate = { sessionId: event.sessionId, expectedPrimary: primary }
+      }
+      return
+    }
+    if (event.sessionIds.length === 0) return
+    const candidate = observerState.candidate
     try {
       const record = this.repository.getInstance(id)
       if (!record || record.state !== "ready") return
+      const currentPrimary = this.repository.getPrimarySession(id)
+      if (currentPrimary && (record.kind !== "local-tui" || !candidate)) return
+      const expectedPrimary = currentPrimary ? candidate?.expectedPrimary ?? null : null
       await this.requireFreshEndpointIdentity(record)
       const evidenceIds = new Set(event.sessionIds)
       if (event.source === "event" && this.runtime.activity) {
@@ -769,28 +812,47 @@ export class ManagerService {
       }
       const root = resolveActivityRoot([...evidenceIds], await this.runtime.sessions(record))
       if (!root || this.shuttingDown || this.activityObservers.get(id) !== observerState
-        || this.repository.getPrimarySession(id)) return
+        || observerState.connectionToken !== connectionToken
+        || (candidate && observerState.candidate !== candidate)
+        || (expectedPrimary && root.id !== candidate?.sessionId)) return
       const current = this.repository.getInstance(id)
       if (!current || current.state !== "ready") return
       await this.requireFreshEndpointIdentity(current)
       // Await 後先淘汰 shutdown/disposed observer，避免 repository 關閉後仍讀寫。
-      if (this.shuttingDown || this.activityObservers.get(id) !== observerState) return
+      if (this.shuttingDown || this.activityObservers.get(id) !== observerState
+        || observerState.connectionToken !== connectionToken) return
       const latest = this.repository.getInstance(id)
       if (!latest || latest.state !== "ready" || !sameInstanceIdentity(latest, current)
-        || this.repository.getPrimarySession(id)) return
-      // Metadata/identity checks是非同步的；CAS再防止最後同步區段與 explicit choice 競爭。
-      if (this.repository.bindPrimarySessionIfAbsent(id, primarySessionFrom(root, "activity"))) {
-        this.closeActivityObserver(id)
+        || (candidate && observerState.candidate !== candidate)) return
+      // Metadata/identity checks是非同步的；CAS避免較早 candidate 覆寫後來的 explicit choice。
+      const primarySession = primarySessionFrom(root, "activity")
+      const bindingChanged = expectedPrimary
+        ? this.repository.replacePrimarySessionIfUnchanged(id, expectedPrimary, primarySession)
+        : this.repository.bindPrimarySessionIfAbsent(id, primarySession)
+      if (bindingChanged) {
+        observerState.candidate = null
+        if ((latest.kind ?? "headless") !== "local-tui") this.closeActivityObserver(id)
       }
     } catch {
-      // Unknown, conflicting, or stale evidence deliberately leaves the binding null.
+      // Identity/metadata 驗證失敗後不可沿用 candidate，避免 endpoint 恢復時誤配舊 created event。
+      if (this.activityObservers.get(id) === observerState
+        && observerState.connectionToken === connectionToken
+        && observerState.candidate === candidate) observerState.candidate = null
     }
+  }
+
+  private primarySessionChanged(record: InstanceRecord): void {
+    const observerState = this.activityObservers.get(record.id)
+    if (observerState) observerState.candidate = null
+    if ((record.kind ?? "headless") === "local-tui") this.ensureActivityObserver(record)
+    else this.closeActivityObserver(record.id)
   }
 
   private closeActivityObserver(id: string): void {
     const state = this.activityObservers.get(id)
     if (!state) return
     this.activityObservers.delete(id)
+    state.connectionToken = null
     if (state.retryTimer) clearTimeout(state.retryTimer)
     state.observer?.close()
   }

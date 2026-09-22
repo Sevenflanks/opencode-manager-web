@@ -70,9 +70,11 @@ class FakeRuntime implements RuntimePort {
   failCreatedSessionUrl = false
   remoteUrlError: string | null = null
   activityBusySessions = new Map<string, string[]>()
+  activityError: Error | null = null
   activityGate: Promise<void> | null = null
   releaseActivity: (() => void) | null = null
   observers = new Map<string, (event: RuntimeActivityEvent) => Promise<void> | void>()
+  observerEnds = new Map<string, () => void>()
   inspectResults = new Map<string, Partial<{
     processState: "running" | "not-found" | "unknown"
     matched: boolean
@@ -204,6 +206,7 @@ class FakeRuntime implements RuntimePort {
   async activity(instance: InstanceRecord) {
     this.activityCalls++
     if (this.activityGate) await this.activityGate
+    if (this.activityError) throw this.activityError
     return { busySessionIds: this.activityBusySessions.get(instance.id) ?? [] }
   }
 
@@ -211,10 +214,14 @@ class FakeRuntime implements RuntimePort {
     this.observers.set(instance.id, onEvent)
     let resolveDone!: () => void
     const done = new Promise<void>((resolve) => { resolveDone = resolve })
+    this.observerEnds.set(instance.id, resolveDone)
     return {
       done,
       close: () => {
-        if (this.observers.delete(instance.id)) this.observerCloseCount++
+        if (this.observerEnds.get(instance.id) === resolveDone) {
+          this.observerEnds.delete(instance.id)
+          if (this.observers.delete(instance.id)) this.observerCloseCount++
+        }
         resolveDone()
       },
     }
@@ -222,6 +229,13 @@ class FakeRuntime implements RuntimePort {
 
   async emitActivity(instanceId: string, event: RuntimeActivityEvent): Promise<void> {
     await this.observers.get(instanceId)?.(event)
+  }
+
+  endActivityObserver(instanceId: string): void {
+    this.observers.delete(instanceId)
+    const resolveDone = this.observerEnds.get(instanceId)
+    this.observerEnds.delete(instanceId)
+    resolveDone?.()
   }
 
   blockActivity(): void {
@@ -348,6 +362,19 @@ async function fixture(t: test.TestContext, access?: {
     await rm(root, { recursive: true, force: true })
   })
   return { root, project, childDirectory, repository, runtime, service, app }
+}
+
+async function startLocalTui(
+  service: ManagerService,
+  runtime: FakeRuntime,
+  project: string,
+  clientInvocationId: string,
+  pid: number,
+): Promise<string> {
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid })
+  await waitFor(() => runtime.observers.has(reservation.reservationId), 500)
+  return reservation.reservationId
 }
 
 test("remote entry requires OMW Basic auth and never trusts forwarded authority", async (t) => {
@@ -1409,6 +1436,199 @@ test("primary Session binding is instance-owned and captures a short busy event 
     assert.equal(response.statusCode, 409)
     assert.equal(response.json().error.code, "INSTANCE_STOPPED")
   }
+})
+
+test("Local TUI follows each newly created root only after that Instance reports its activity", async (t) => {
+  const { app, project, runtime, service } = await fixture(t)
+  runtime.sessionMetadata.set(project, [
+    { id: "root-a", title: "Root A" },
+    { id: "root-b", title: "Root B" },
+    { id: "root-c", title: "Root C" },
+  ])
+  const id = await startLocalTui(service, runtime, project, "10000000-0000-4000-8000-000000000001", 5101)
+  await app.inject({
+    method: "POST",
+    url: `/api/v1/instances/${id}/primary-session`,
+    headers: mutationHeaders,
+    payload: { sessionId: "root-a" },
+  })
+
+  await runtime.emitActivity(id, { type: "session-created", sessionId: "root-b" })
+  assert.equal((await service.overview()).instances[0]?.primarySession?.sessionId, "root-a", "created alone is not activity proof")
+
+  await runtime.emitActivity(id, { type: "activity", source: "event", sessionIds: ["root-b"] })
+  assert.equal((await service.overview()).instances[0]?.primarySession?.sessionId, "root-b")
+  assert.equal(runtime.observers.has(id), true, "Local TUI observer remains active after rebinding")
+
+  await runtime.emitActivity(id, { type: "activity", source: "event", sessionIds: ["root-c"] })
+  assert.equal((await service.overview()).instances[0]?.primarySession?.sessionId, "root-b", "activity without a creation candidate cannot switch")
+  await runtime.emitActivity(id, { type: "session-created", sessionId: "root-c" })
+  await runtime.emitActivity(id, { type: "activity", source: "event", sessionIds: ["root-c"] })
+  assert.equal((await service.overview()).instances[0]?.primarySession?.sessionId, "root-c")
+
+  const created = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/sessions`, headers: mutationHeaders })
+  assert.equal(created.statusCode, 201)
+  assert.equal((await service.overview()).instances[0]?.primarySession?.source, "new-session")
+  assert.equal(runtime.observers.has(id), true, "OMW New Session does not stop Local TUI observation")
+})
+
+test("Local TUI candidates reject child, ambiguous, foreign-Instance, and pre-reconnect evidence", async (t) => {
+  const { app, project, runtime, service } = await fixture(t)
+  runtime.sessionMetadata.set(project, [
+    { id: "root-a", title: "Root A" },
+    { id: "root-b", title: "Root B" },
+    { id: "root-c", title: "Root C" },
+    { id: "child-b", title: "Child B", parentID: "root-b" },
+  ])
+  const firstId = await startLocalTui(service, runtime, project, "10000000-0000-4000-8000-000000000002", 5102)
+  const secondId = await startLocalTui(service, runtime, project, "10000000-0000-4000-8000-000000000003", 5103)
+  for (const id of [firstId, secondId]) {
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/instances/${id}/primary-session`,
+      headers: mutationHeaders,
+      payload: { sessionId: "root-a" },
+    })
+  }
+
+  await runtime.emitActivity(firstId, { type: "session-created", sessionId: "root-b" })
+  await runtime.emitActivity(secondId, { type: "activity", source: "event", sessionIds: ["root-b"] })
+  assert.equal((await service.overview()).instances.find((instance) => instance.id === firstId)?.primarySession?.sessionId, "root-a")
+  assert.equal((await service.overview()).instances.find((instance) => instance.id === secondId)?.primarySession?.sessionId, "root-a")
+
+  await runtime.emitActivity(firstId, { type: "session-created", sessionId: "child-b" })
+  await runtime.emitActivity(firstId, { type: "activity", source: "event", sessionIds: ["child-b"] })
+  assert.equal((await service.overview()).instances.find((instance) => instance.id === firstId)?.primarySession?.sessionId, "root-a")
+
+  await runtime.emitActivity(firstId, { type: "session-created", sessionId: "root-b" })
+  await runtime.emitActivity(firstId, { type: "activity", source: "snapshot", sessionIds: ["root-b", "root-c"] })
+  assert.equal((await service.overview()).instances.find((instance) => instance.id === firstId)?.primarySession?.sessionId, "root-a")
+
+  await runtime.emitActivity(firstId, { type: "session-created", sessionId: "root-b" })
+  runtime.identityMatches = false
+  runtime.portOwnerMatched = false
+  runtime.portOwnedByOther = true
+  await runtime.emitActivity(firstId, { type: "activity", source: "event", sessionIds: ["root-b"] })
+  runtime.identityMatches = true
+  runtime.portOwnerMatched = true
+  runtime.portOwnedByOther = false
+  await runtime.emitActivity(firstId, { type: "activity", source: "event", sessionIds: ["root-b"] })
+  assert.equal((await service.overview()).instances.find((instance) => instance.id === firstId)?.primarySession?.sessionId, "root-a")
+
+  await runtime.emitActivity(firstId, { type: "session-created", sessionId: "root-b" })
+  runtime.endActivityObserver(firstId)
+  await waitFor(() => runtime.observers.has(firstId), 1_000)
+  await runtime.emitActivity(firstId, { type: "activity", source: "event", sessionIds: ["root-b"] })
+  assert.equal((await service.overview()).instances.find((instance) => instance.id === firstId)?.primarySession?.sessionId, "root-a")
+  for (const timeout of [1_500, 2_500, 2_500]) {
+    runtime.endActivityObserver(firstId)
+    await waitFor(() => runtime.observers.has(firstId), timeout)
+  }
+  await runtime.emitActivity(firstId, { type: "session-created", sessionId: "root-b" })
+  await runtime.emitActivity(firstId, { type: "activity", source: "event", sessionIds: ["root-b"] })
+  assert.equal((await service.overview()).instances.find((instance) => instance.id === firstId)?.primarySession?.sessionId, "root-b")
+})
+
+test("a delayed Local TUI candidate cannot overwrite a newer manual binding", async (t) => {
+  const { app, project, runtime, service } = await fixture(t)
+  runtime.sessionMetadata.set(project, [
+    { id: "root-a", title: "Root A" },
+    { id: "root-b", title: "Root B" },
+    { id: "root-manual", title: "Manual root" },
+  ])
+  const id = await startLocalTui(service, runtime, project, "10000000-0000-4000-8000-000000000004", 5104)
+  await app.inject({
+    method: "POST",
+    url: `/api/v1/instances/${id}/primary-session`,
+    headers: mutationHeaders,
+    payload: { sessionId: "root-a" },
+  })
+  await runtime.emitActivity(id, { type: "session-created", sessionId: "root-b" })
+  runtime.blockActivity()
+  const activityCalls = runtime.activityCalls
+  const delayed = runtime.emitActivity(id, { type: "activity", source: "event", sessionIds: ["root-b"] })
+  await waitFor(() => runtime.activityCalls > activityCalls, 500)
+
+  await app.inject({
+    method: "POST",
+    url: `/api/v1/instances/${id}/primary-session`,
+    headers: mutationHeaders,
+    payload: { sessionId: "root-manual" },
+  })
+  runtime.releaseActivity?.()
+  await delayed
+
+  assert.equal((await service.overview()).instances[0]?.primarySession?.sessionId, "root-manual")
+  assert.equal((await service.overview()).instances[0]?.primarySession?.source, "manual")
+  assert.equal(runtime.observers.has(id), true)
+})
+
+test("callbacks from an ended Local TUI connection cannot bind stale activity or clear a new candidate", async (t) => {
+  const { app, project, runtime, service } = await fixture(t)
+  runtime.sessionMetadata.set(project, [
+    { id: "root-a", title: "Root A" },
+    { id: "stale-root", title: "Stale root" },
+    { id: "new-root", title: "New root" },
+  ])
+  const id = await startLocalTui(service, runtime, project, "10000000-0000-4000-8000-000000000005", 5105)
+
+  runtime.blockActivity()
+  let activityCalls = runtime.activityCalls
+  const staleBinding = runtime.emitActivity(id, { type: "activity", source: "event", sessionIds: ["stale-root"] })
+  await waitFor(() => runtime.activityCalls > activityCalls, 500)
+  runtime.endActivityObserver(id)
+  await waitFor(() => runtime.observers.has(id), 1_000)
+  runtime.releaseActivity?.()
+  await staleBinding
+  assert.equal((await service.overview()).instances[0]?.primarySession, null)
+
+  await app.inject({
+    method: "POST",
+    url: `/api/v1/instances/${id}/primary-session`,
+    headers: mutationHeaders,
+    payload: { sessionId: "root-a" },
+  })
+  await runtime.emitActivity(id, { type: "session-created", sessionId: "stale-root" })
+  runtime.blockActivity()
+  runtime.activityError = new Error("stale connection activity failed")
+  activityCalls = runtime.activityCalls
+  const staleRejection = runtime.emitActivity(id, { type: "activity", source: "event", sessionIds: ["stale-root"] })
+  await waitFor(() => runtime.activityCalls > activityCalls, 500)
+  runtime.endActivityObserver(id)
+  await waitFor(() => runtime.observers.has(id), 1_500)
+  await runtime.emitActivity(id, { type: "session-created", sessionId: "new-root" })
+  runtime.releaseActivity?.()
+  await staleRejection
+  runtime.activityError = null
+
+  await runtime.emitActivity(id, { type: "activity", source: "event", sessionIds: ["new-root"] })
+  assert.equal((await service.overview()).instances[0]?.primarySession?.sessionId, "new-root")
+})
+
+test("Local TUI candidate CAS uses the binding captured by its creation event", async (t) => {
+  const { app, project, repository, runtime, service } = await fixture(t)
+  runtime.sessionMetadata.set(project, [
+    { id: "root-a", title: "Root A" },
+    { id: "root-b", title: "Root B" },
+    { id: "root-newer", title: "Newer root" },
+  ])
+  const id = await startLocalTui(service, runtime, project, "10000000-0000-4000-8000-000000000006", 5106)
+  await app.inject({
+    method: "POST",
+    url: `/api/v1/instances/${id}/primary-session`,
+    headers: mutationHeaders,
+    payload: { sessionId: "root-a" },
+  })
+  await runtime.emitActivity(id, { type: "session-created", sessionId: "root-b" })
+  repository.replacePrimarySession(id, {
+    sessionId: "root-newer",
+    title: "Newer root",
+    source: "manual",
+    boundAt: "2026-09-22T12:00:00.000Z",
+  })
+
+  await runtime.emitActivity(id, { type: "activity", source: "event", sessionIds: ["root-b"] })
+  assert.equal((await service.overview()).instances[0]?.primarySession?.sessionId, "root-newer")
 })
 
 test("activity binding resolves child ancestry but never guesses missing, cyclic, or multiple roots", async (t) => {

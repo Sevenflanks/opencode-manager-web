@@ -259,6 +259,19 @@ export class ManagerRepository {
     return result.changes === 1
   }
 
+  replacePrimarySessionIfUnchanged(instanceId: string, expected: PrimarySession, session: PrimarySession): boolean {
+    // title 可由 metadata refresh 獨立更新；binding 的 CAS identity 只看 Session、source 與 boundAt。
+    const result = this.database.prepare(`
+      UPDATE instance_primary_sessions
+      SET session_id = ?, title = ?, source = ?, bound_at = ?
+      WHERE instance_id = ? AND session_id = ? AND source = ? AND bound_at = ?
+    `).run(
+      session.sessionId, session.title, session.source, session.boundAt,
+      instanceId, expected.sessionId, expected.source, expected.boundAt,
+    )
+    return result.changes === 1
+  }
+
   updatePrimarySessionTitle(instanceId: string, expected: PrimarySession, title: string): boolean {
     const result = this.database.prepare(`
       UPDATE instance_primary_sessions SET title = ?
