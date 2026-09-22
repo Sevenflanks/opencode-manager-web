@@ -28,7 +28,19 @@ export interface InspectResult {
   portOwnedByOther: boolean
 }
 export interface StopResult { stopped: boolean; reason: string | null }
-export interface RuntimeSummary extends InstanceSummary { sessions: SessionMetadata[] }
+export interface RuntimeSessionStatus { sessionId: string; type: "busy" | "idle" | "retry" }
+export interface RuntimePendingRequest { id: string; sessionId: string }
+export interface RuntimeSummary extends InstanceSummary {
+  retrySessions?: number | null
+  sessions: SessionMetadata[]
+  sessionsKnown?: boolean
+  sessionStatuses?: RuntimeSessionStatus[] | null
+  invalidStatusSessionIds?: string[] | null
+  questionRequests?: RuntimePendingRequest[] | null
+  invalidQuestionSessionIds?: string[] | null
+  permissionRequests?: RuntimePendingRequest[] | null
+  invalidPermissionSessionIds?: string[] | null
+}
 export interface RuntimeActivityEvidence { busySessionIds: string[] }
 export type RuntimeActivityEvent =
   | { type: "activity"; source: "snapshot" | "event"; sessionIds: string[] }
@@ -241,7 +253,9 @@ export class OpenCodeRuntime implements RuntimePort {
       routed("/session/status", instance.projectDirectory),
     )
     if (!isObject(value)) throw new Error("OpenCode status response 不是 object")
-    return { busySessionIds: parseStatusMap(value).busySessionIds }
+    const status = parseStatusMap(value)
+    if (status.invalidSessionIds.length > 0) throw new Error("OpenCode status response 含無效 entry")
+    return { busySessionIds: status.busySessionIds }
   }
 
   observeActivity(
@@ -276,10 +290,14 @@ export class OpenCodeRuntime implements RuntimePort {
     ])
     const errors: string[] = []
     const sessions = sessionsResult.status === "fulfilled" ? sessionsResult.value : []
+    const sessionsKnown = sessionsResult.status === "fulfilled"
     if (sessionsResult.status === "rejected") errors.push("session: REQUEST_FAILED")
 
     let activity: RuntimeSummary["activity"] = "unknown"
     let busySessions: number | null = null
+    let retrySessions: number | null = null
+    let sessionStatuses: RuntimeSessionStatus[] | null = null
+    let invalidStatusSessionIds: string[] | null = null
     if (statusesResult.status === "rejected") {
       errors.push("status: REQUEST_FAILED")
     } else if (!isObject(statusesResult.value)) {
@@ -287,25 +305,44 @@ export class OpenCodeRuntime implements RuntimePort {
     } else {
       try {
         const status = parseStatusMap(statusesResult.value)
-        busySessions = status.busySessions
-        activity = status.activity
+        sessionStatuses = status.sessionStatuses
+        invalidStatusSessionIds = status.invalidSessionIds
+        if (status.invalidSessionIds.length > 0) {
+          errors.push("status: RESPONSE_INVALID")
+        } else {
+          busySessions = status.busySessions
+          retrySessions = status.retrySessions
+          activity = status.activity
+        }
       } catch (error) {
         errors.push("status: RESPONSE_INVALID")
       }
     }
 
     let pendingQuestions: number | null = null
+    let questionRequests: RuntimePendingRequest[] | null = null
+    let invalidQuestionSessionIds: string[] | null = null
     try {
       if (questionsResult.status === "rejected") throw questionsResult.reason
-      pendingQuestions = uniqueRequestCount(questionsResult.value)
+      const parsed = parsePendingRequests(questionsResult.value)
+      questionRequests = parsed.requests
+      invalidQuestionSessionIds = parsed.invalidSessionIds
+      if (parsed.invalidSessionIds.length > 0) throw new Error("OpenCode question response 含無效 entry")
+      pendingQuestions = uniqueRequestCount(parsed.requests)
     } catch (error) {
       errors.push(questionsResult.status === "rejected" ? "question: REQUEST_FAILED" : "question: RESPONSE_INVALID")
     }
 
     let pendingPermissions: number | null = null
+    let permissionRequests: RuntimePendingRequest[] | null = null
+    let invalidPermissionSessionIds: string[] | null = null
     try {
       if (permissionsResult.status === "rejected") throw permissionsResult.reason
-      pendingPermissions = uniqueRequestCount(permissionsResult.value)
+      const parsed = parsePendingRequests(permissionsResult.value)
+      permissionRequests = parsed.requests
+      invalidPermissionSessionIds = parsed.invalidSessionIds
+      if (parsed.invalidSessionIds.length > 0) throw new Error("OpenCode permission response 含無效 entry")
+      pendingPermissions = uniqueRequestCount(parsed.requests)
     } catch (error) {
       errors.push(permissionsResult.status === "rejected" ? "permission: REQUEST_FAILED" : "permission: RESPONSE_INVALID")
     }
@@ -313,10 +350,18 @@ export class OpenCodeRuntime implements RuntimePort {
     return {
       activity,
       busySessions,
+      retrySessions,
       pendingQuestions,
       pendingPermissions,
       error: errors.length ? errors.join("；") : null,
       sessions,
+      sessionsKnown,
+      sessionStatuses,
+      invalidStatusSessionIds,
+      questionRequests,
+      invalidQuestionSessionIds,
+      permissionRequests,
+      invalidPermissionSessionIds,
     }
   }
 
@@ -646,36 +691,51 @@ function parseSessions(value: unknown, expectedDirectory?: string): SessionMetad
   })
 }
 
-function uniqueRequestCount(value: unknown): number {
+function parsePendingRequests(value: unknown): { requests: RuntimePendingRequest[]; invalidSessionIds: string[] } {
   if (!Array.isArray(value)) throw new Error("OpenCode pending response 不是 array")
-  const ids = new Set<string>()
+  const requests: RuntimePendingRequest[] = []
+  const invalidSessionIds: string[] = []
   for (const [index, item] of value.entries()) {
-    if (!isObject(item)
-      || typeof item.id !== "string"
-      || item.id.trim().length === 0
-      || typeof item.sessionID !== "string"
-      || item.sessionID.trim().length === 0) {
-      throw new Error(`OpenCode pending entry ${index + 1} 缺少合法 id/sessionID`)
+    if (!isObject(item) || typeof item.sessionID !== "string" || item.sessionID.trim().length === 0) {
+      throw new Error(`OpenCode pending entry ${index + 1} 缺少可歸屬的 sessionID`)
     }
-    ids.add(item.id)
+    if (typeof item.id !== "string" || item.id.trim().length === 0) {
+      invalidSessionIds.push(item.sessionID)
+      continue
+    }
+    requests.push({ id: item.id, sessionId: item.sessionID })
   }
-  return ids.size
+  return { requests, invalidSessionIds }
+}
+
+function uniqueRequestCount(requests: RuntimePendingRequest[]): number {
+  return new Set(requests.map((request) => request.id)).size
 }
 
 function parseStatusMap(value: Record<string, unknown>): {
   activity: RuntimeSummary["activity"]
   busySessions: number
+  retrySessions: number
   busySessionIds: string[]
+  sessionStatuses: RuntimeSessionStatus[]
+  invalidSessionIds: string[]
 } {
   const busySessionIds: string[] = []
+  const sessionStatuses: RuntimeSessionStatus[] = []
+  const invalidSessionIds: string[] = []
   for (const [sessionId, status] of Object.entries(value)) {
     if (!sessionId) throw new Error("Session status 缺少合法 session ID")
     if (!isObject(status) || typeof status.type !== "string") {
-      throw new Error(`Session ${sessionId} status 缺少合法 type`)
+      invalidSessionIds.push(sessionId)
+      continue
     }
     if (status.type === "busy" || status.type === "idle") {
-      if (!hasOnlyKeys(status, ["type"])) throw new Error(`Session ${sessionId} ${status.type} status shape 無效`)
+      if (!hasOnlyKeys(status, ["type"])) {
+        invalidSessionIds.push(sessionId)
+        continue
+      }
       if (status.type === "busy") busySessionIds.push(sessionId)
+      sessionStatuses.push({ sessionId, type: status.type })
       continue
     }
     if (status.type === "retry") {
@@ -684,16 +744,23 @@ function parseStatusMap(value: Record<string, unknown>): {
         || typeof status.message !== "string"
         || !isNonNegativeInteger(status.next)
         || (status.action !== undefined && !isRetryAction(status.action))) {
-        throw new Error(`Session ${sessionId} retry status shape 無效`)
+        invalidSessionIds.push(sessionId)
+        continue
       }
+      sessionStatuses.push({ sessionId, type: "retry" })
       continue
     }
-    throw new Error(`Session ${sessionId} status type ${status.type} 尚未支援`)
+    invalidSessionIds.push(sessionId)
   }
   return {
     busySessions: busySessionIds.length,
+    retrySessions: sessionStatuses.filter((status) => status.type === "retry").length,
     busySessionIds,
-    activity: busySessionIds.length > 0 ? "busy" : Object.keys(value).length > 0 ? "reported-non-busy" : "none-reported",
+    sessionStatuses,
+    invalidSessionIds,
+    activity: invalidSessionIds.length > 0
+      ? "unknown"
+      : busySessionIds.length > 0 ? "busy" : Object.keys(value).length > 0 ? "reported-non-busy" : "none-reported",
   }
 }
 

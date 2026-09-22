@@ -153,6 +153,98 @@ test("detail header keeps long project title and state badge on one line", { ski
   }
 })
 
+test("primary Session attention reasons stay consistent in the list, detail, and filter", { skip: !enabled, timeout: 45_000 }, async () => {
+  const executablePath = process.env.OMW_BROWSER_EXECUTABLE
+  assert.ok(executablePath, "OMW_BROWSER_EXECUTABLE is required")
+  const sandbox = await mkdtemp(path.join(tmpdir(), "omw-browser-primary-attention-"))
+  await Promise.all([
+    mkdir(path.join(sandbox, "browser-profile", "AppData", "Roaming"), { recursive: true }),
+    mkdir(path.join(sandbox, "browser-profile", "AppData", "Local"), { recursive: true }),
+    mkdir(path.join(sandbox, "browser-profile", "Temp"), { recursive: true }),
+  ])
+  const repository = new ManagerRepository(":memory:")
+  const service = new ManagerService(repository, new BrowserRuntime())
+  const port = await freePort()
+  const origin = `http://127.0.0.1:${port}`
+  const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist")
+  const app = buildApp({ service, authority: { hostname: "127.0.0.1", port }, allowedOrigins: new Set([origin]), webRoot })
+  const directory = "C:\\fixture\\primary-attention"
+  const instances = [
+    fakeManagedInstance({
+      id: "inst-zero-busy",
+      projectDirectory: directory,
+      primarySession: { sessionId: "root-zero", title: "Ready for next step", source: "manual", boundAt: "2026-09-22T00:00:00.000Z" },
+      summary: { activity: "busy", busySessions: 1, pendingQuestions: 0, pendingPermissions: 0, error: null },
+      primarySummary: { scope: "known", activity: "none-reported", busySessions: 0, retrySessions: 0, pendingQuestions: 0, pendingPermissions: 0, error: null },
+    }),
+    fakeManagedInstance({
+      id: "inst-unbound",
+      projectDirectory: directory,
+      primarySession: null,
+      primarySummary: { scope: "unbound", activity: "none-reported", busySessions: null, retrySessions: null, pendingQuestions: null, pendingPermissions: null, error: null },
+    }),
+    fakeManagedInstance({
+      id: "inst-retry",
+      projectDirectory: directory,
+      primarySession: { sessionId: "root-retry", title: "Retrying work", source: "manual", boundAt: "2026-09-22T00:00:00.000Z" },
+      primarySummary: { scope: "known", activity: "reported-non-busy", busySessions: 0, retrySessions: 1, pendingQuestions: 0, pendingPermissions: 0, error: null },
+    }),
+    fakeManagedInstance({
+      id: "inst-unknown-scope",
+      projectDirectory: directory,
+      primarySession: { sessionId: "missing-root", title: "Missing hierarchy", source: "manual", boundAt: "2026-09-22T00:00:00.000Z" },
+      primarySummary: { scope: "unknown", activity: "unknown", busySessions: null, retrySessions: null, pendingQuestions: null, pendingPermissions: null, error: "PRIMARY_SESSION_SCOPE_UNKNOWN" },
+    }),
+  ]
+  let browser: Browser | undefined
+
+  try {
+    await app.listen({ host: "127.0.0.1", port })
+    browser = await chromium.launch({ executablePath, headless: true, env: createBrowserEnvironment(sandbox) })
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" })
+    await page.route("**/api/v1/**", async (route) => {
+      const request = route.request()
+      const url = new URL(request.url())
+      if (request.method() === "GET" && url.pathname === "/api/v1/overview") {
+        const visible = url.searchParams.get("filter") === "attention"
+          ? instances.filter((instance) => instance.id === "inst-zero-busy" || instance.id === "inst-unbound")
+          : instances
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ shortcuts: [], instances: visible }) })
+        return
+      }
+      await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: { code: "FIXTURE_ROUTE_MISSING", message: url.pathname } }) })
+    })
+
+    await page.goto(origin, { waitUntil: "networkidle" })
+    const zeroBusy = page.locator('.instance-row[data-instance-id="inst-zero-busy"]')
+    const unbound = page.locator('.instance-row[data-instance-id="inst-unbound"]')
+    const retry = page.locator('.instance-row[data-instance-id="inst-retry"]')
+    const unknown = page.locator('.instance-row[data-instance-id="inst-unknown-scope"]')
+    assert.match(await zeroBusy.textContent() ?? "", /需處理 · 無執行中 Session.*主 Session 工作範圍.*可連線/s)
+    assert.match(await unbound.textContent() ?? "", /需處理 · 未綁定主 Session.*可連線/s)
+    assert.match(await retry.textContent() ?? "", /重試中.*主 Session 工作範圍.*可連線/s)
+    assert.match(await unknown.textContent() ?? "", /無法確認.*主 Session 工作範圍.*可連線/s)
+
+    await zeroBusy.click()
+    await page.locator(".detail-pane").waitFor()
+    assert.match(await page.locator(".primary-session-attention").textContent() ?? "", /需處理 · 無執行中 Session/)
+    assert.match(await page.locator(".summary-grid").textContent() ?? "", /主 Session 範圍.*0.*執行中 Session/s)
+    assert.match(await page.locator(".status-note").textContent() ?? "", /請查看對話並決定下一步/)
+
+    await page.getByRole("button", { name: "返回列表" }).click()
+    await Promise.all([
+      page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/overview"),
+      page.getByRole("button", { name: "需處理", exact: true }).click(),
+    ])
+    assert.deepEqual((await page.locator(".instance-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-instance-id")))).sort(), ["inst-unbound", "inst-zero-busy"])
+  } finally {
+    await browser?.close()
+    await app.close()
+    repository.close()
+    await rm(sandbox, { recursive: true, force: true })
+  }
+})
+
 test("mobile list-detail navigation preserves context and separates stopped history", { skip: !enabled, timeout: 55_000 }, async () => {
   const executablePath = process.env.OMW_BROWSER_EXECUTABLE
   assert.ok(executablePath, "OMW_BROWSER_EXECUTABLE is required")
@@ -767,7 +859,7 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
       })
     })
     await page.getByRole("button", { name: /啟動全新 Instance/ }).click()
-    await page.getByText("摘要未知：INSTANCE_SUMMARY_PARTIAL", { exact: true }).waitFor()
+    await page.getByText("主 Session 摘要未知：INSTANCE_SUMMARY_PARTIAL", { exact: true }).waitFor()
     await startDialog.waitFor({ state: "hidden" })
     await page.waitForFunction(() => !document.querySelector(".shell")?.hasAttribute("inert"))
     await page.getByText(/執行個體已啟動，目前無法連線，請查看狀態（[a-f0-9-]{8}）。/).waitFor()
@@ -791,8 +883,8 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 2)
 
     await page.getByRole("button", { name: "有執行中", exact: true }).click()
-    await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 1)
-    assert.equal(await page.locator(".instance-row").count(), 1)
+    await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 0)
+    assert.equal(await page.locator(".instance-row").count(), 0, "unbound instance-wide activity does not satisfy the primary Session active filter")
     await page.getByRole("button", { name: "需處理", exact: true }).click()
     await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 1)
     assert.equal(await page.locator(".instance-row").count(), 1)
@@ -2293,6 +2385,18 @@ interface SessionFixture {
 
 function fakeManagedInstance(overrides: Pick<ManagedInstance, "id" | "projectDirectory"> & Partial<ManagedInstance>): ManagedInstance {
   const { id, projectDirectory, ...rest } = overrides
+  const summary = rest.summary ?? { activity: "reported-non-busy", busySessions: 0, pendingQuestions: 0, pendingPermissions: 0, error: null }
+  const primarySummary = rest.primarySummary ?? (rest.primarySession
+    ? { ...summary, scope: "known" as const, retrySessions: 0 }
+    : {
+        scope: "unbound" as const,
+        activity: summary.activity,
+        busySessions: null,
+        retrySessions: null,
+        pendingQuestions: null,
+        pendingPermissions: null,
+        error: summary.error,
+      })
   return {
     id,
     kind: "headless",
@@ -2307,7 +2411,8 @@ function fakeManagedInstance(overrides: Pick<ManagedInstance, "id" | "projectDir
     stopAllowed: true,
     remoteUrlUnavailableReason: null,
     error: null,
-    summary: { activity: "reported-non-busy", busySessions: 0, pendingQuestions: 0, pendingPermissions: 0, error: null },
+    summary,
+    primarySummary,
     sessions: [],
     primarySession: null,
     trackingHidden: false,

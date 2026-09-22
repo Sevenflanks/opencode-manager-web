@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { primarySessionDisposition } from "@omw/contracts"
 import type { ConnectivityInfo, DirectoryListing, DirectoryShortcut, ManagedInstance, OpenUrlResponse, OverviewFilter, SessionMetadata, SessionRootsResponse } from "@omw/contracts"
 import {
   ActivityIcon,
@@ -1385,10 +1386,11 @@ async function revealSelectedDetail(expectedGeneration?: number, expectedInstanc
 
 function statusCategory(instance: ManagedInstance): InstanceStatusCategory {
   if (instance.state === "stopped") return "stopped"
-  if (instance.state === "failed" || instance.state === "unreachable" || instance.summary.activity === "unknown") return "unknown"
-  if ([instance.summary.busySessions, instance.summary.pendingQuestions, instance.summary.pendingPermissions].some((value) => value === null)) return "unknown"
-  if (instance.state === "ready" && ((instance.summary.pendingQuestions ?? 0) > 0 || (instance.summary.pendingPermissions ?? 0) > 0)) return "attention"
-  return instance.state === "ready" ? "operable" : "unknown"
+  if (instance.state === "failed" || instance.state === "unreachable") return "unknown"
+  if (instance.state !== "ready") return "unknown"
+  const disposition = primarySessionDisposition(instance.primarySummary)
+  if (disposition === "attention") return "attention"
+  return disposition === "unknown" ? "unknown" : "operable"
 }
 
 function statusCategoryLabel(instance: ManagedInstance): string {
@@ -1396,10 +1398,22 @@ function statusCategoryLabel(instance: ManagedInstance): string {
 }
 
 function attentionSummary(instance: ManagedInstance): string {
+  if (instance.primarySummary.scope === "unbound") return "需處理 · 未綁定主 Session"
   const items: string[] = []
-  if ((instance.summary.pendingQuestions ?? 0) > 0) items.push(`${instance.summary.pendingQuestions} 項待回答`)
-  if ((instance.summary.pendingPermissions ?? 0) > 0) items.push(`${instance.summary.pendingPermissions} 項待授權`)
-  return `需處理：${items.join("、")}`
+  if ((instance.primarySummary.pendingQuestions ?? 0) > 0) items.push(`${instance.primarySummary.pendingQuestions} 項待回答`)
+  if ((instance.primarySummary.pendingPermissions ?? 0) > 0) items.push(`${instance.primarySummary.pendingPermissions} 項待授權`)
+  return items.length ? `需處理 · ${items.join("、")}` : "需處理 · 無執行中 Session"
+}
+
+function statusHeadline(instance: ManagedInstance): string {
+  if (statusCategory(instance) === "attention") return attentionSummary(instance)
+  if (instance.state === "ready" && primarySessionDisposition(instance.primarySummary) === "retry") return "重試中"
+  return statusCategoryLabel(instance)
+}
+
+function statusContext(instance: ManagedInstance): string {
+  const scope = instance.state === "ready" && instance.primarySummary.scope !== "unbound" ? "主 Session 工作範圍 · " : ""
+  return `${scope}${stateLabel(instance.state)} · ${shortId(instance.id)}`
 }
 
 function stateLabel(state: ManagedInstance["state"]): string {
@@ -1629,7 +1643,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
               <span class="instance-copy">
                 <span class="instance-title-line"><code class="instance-pid">{{ instancePid(instance) }}</code><strong :title="instanceTitle(instance)">{{ instanceTitle(instance) }}</strong></span>
               </span>
-              <span class="instance-meta"><b :data-category="statusCategory(instance)">{{ statusCategoryLabel(instance) }}</b><span>{{ stateLabel(instance.state) }} · <code>{{ shortId(instance.id) }}</code></span></span>
+              <span class="instance-meta"><b :data-category="statusCategory(instance)">{{ statusHeadline(instance) }}</b><span>{{ statusContext(instance) }}</span></span>
             </button>
             <template v-if="group.stoppedInstances.length">
               <button
@@ -1656,7 +1670,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
                   <span class="instance-copy">
                     <span class="instance-title-line"><code class="instance-pid">{{ instancePid(instance) }}</code><strong :title="instanceTitle(instance)">{{ instanceTitle(instance) }}</strong></span>
                   </span>
-                  <span class="instance-meta"><b :data-category="statusCategory(instance)">{{ statusCategoryLabel(instance) }}</b><span>{{ stateLabel(instance.state) }} · <code>{{ shortId(instance.id) }}</code></span></span>
+                  <span class="instance-meta"><b :data-category="statusCategory(instance)">{{ statusHeadline(instance) }}</b><span>{{ statusContext(instance) }}</span></span>
                 </button>
               </div>
             </template>
@@ -1748,6 +1762,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
             <strong v-else>尚未綁定主 Session</strong>
           </div>
           <p v-if="statusCategory(selected) === 'attention'" class="status-attention primary-session-attention"><AlertTriangleIcon />{{ attentionSummary(selected) }}</p>
+          <p v-else-if="selected.state === 'ready' && selected.primarySummary.scope === 'unknown'" class="inline-error primary-session-attention"><AlertTriangleIcon />無法確認主 Session 工作範圍。</p>
           <div class="detail-actions primary-actions">
             <Button :disabled="opening || selected.state !== 'ready' || !selected.primarySession" @click="openPrimarySession(selected)"><ExternalLinkIcon />{{ opening ? '連線中…' : '進入主 Session' }}</Button>
             <Button variant="outline" class="new-session-button" :disabled="overviewMutationsBlocked || opening || selected.state !== 'ready'" @click="openNewSession(selected)"><PlusIcon />{{ opening ? '連線中…' : 'New Session' }}</Button>
@@ -1766,13 +1781,13 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
             </div>
           </details>
           <div class="summary-grid">
-            <article><ActivityIcon /><span><small>此 Instance 回報</small><strong>{{ count(selected.summary.busySessions) }}</strong><b>執行中 Session</b></span></article>
-            <article><span class="summary-mark">Q</span><span><small>request #</small><strong>{{ count(selected.summary.pendingQuestions) }}</strong><b>待回答</b></span></article>
-            <article><span class="summary-mark">P</span><span><small>request #</small><strong>{{ count(selected.summary.pendingPermissions) }}</strong><b>待授權</b></span></article>
+            <article><ActivityIcon /><span><small>主 Session 範圍</small><strong>{{ count(selected.primarySummary.busySessions) }}</strong><b>執行中 Session</b></span></article>
+            <article><span class="summary-mark">Q</span><span><small>主 Session request</small><strong>{{ count(selected.primarySummary.pendingQuestions) }}</strong><b>待回答</b></span></article>
+            <article><span class="summary-mark">P</span><span><small>主 Session request</small><strong>{{ count(selected.primarySummary.pendingPermissions) }}</strong><b>待授權</b></span></article>
           </div>
-           <p v-if="selected.summary.activity === 'none-reported'" class="status-note">此 Instance 成功回應，但未回報執行中。</p>
-           <p v-if="selected.summary.activity === 'reported-non-busy'" class="status-note">此 Instance 回報已知的非 busy 狀態。</p>
-           <p v-if="selected.summary.activity === 'unknown'" class="inline-error">摘要未知：{{ selected.summary.error ?? 'endpoint 無法連線' }}</p>
+          <p v-if="selected.primarySummary.scope === 'known' && selected.primarySummary.busySessions === 0 && selected.primarySummary.retrySessions === 0" class="status-note">主 Session 工作範圍目前沒有執行中的 Session；請查看對話並決定下一步。</p>
+          <p v-if="selected.primarySummary.scope === 'known' && selected.primarySummary.busySessions === 0 && (selected.primarySummary.retrySessions ?? 0) > 0" class="status-note">主 Session 工作範圍正在重試。</p>
+          <p v-if="selected.primarySummary.activity === 'unknown'" class="inline-error">主 Session 摘要未知：{{ selected.primarySummary.error ?? 'endpoint 無法連線' }}</p>
           <p v-if="selected.remoteUrlUnavailableReason" class="inline-error">Remote URL unavailable：{{ selected.remoteUrlUnavailableReason }}</p>
           <p v-if="selected.error" class="inline-error">{{ selected.error }}</p>
 
