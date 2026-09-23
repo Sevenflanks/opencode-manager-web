@@ -63,13 +63,13 @@ test("detail header keeps long project title and state badge on one line", { ski
     webRoot,
   })
   const projectName = "omw-tty-acceptance"
-  const states: Array<{ label: string; state: InstanceRecord["state"] }> = [
-    { label: "可連線", state: "ready" },
-    { label: "已停止", state: "stopped" },
-    { label: "已失聯", state: "unreachable" },
+  const states: Array<{ label: string; state: InstanceRecord["state"]; id: string }> = [
+    { label: "可連線", state: "ready", id: randomUUID() },
+    { label: "已停止", state: "stopped", id: randomUUID() },
+    { label: "已失聯", state: "unreachable", id: randomUUID() },
   ]
-  states.forEach(({ state }, index) => repository.createInstance({
-    id: randomUUID(),
+  states.forEach(({ state, id }, index) => repository.createInstance({
+    id,
     projectName,
     projectDirectory: path.join(projectDirectory, String(index)),
     state,
@@ -96,9 +96,9 @@ test("detail header keeps long project title and state badge on one line", { ski
 
     for (const width of [1440, 390, 360]) {
       await page.setViewportSize({ width, height: 844 })
-      for (const { label } of states) {
+      for (const { label, id } of states) {
         await returnToInstanceList(page)
-        const row = page.locator(".instance-row").filter({ hasText: label })
+        const row = page.locator(`.instance-row[data-instance-id="${id}"]`)
         assert.equal(await row.count(), 1, `${width}px fixture row for ${label} is missing`)
         if (!await row.isVisible()) {
           const historyToggle = page.locator(".history-toggle").filter({ hasText: "已停止紀錄" })
@@ -153,7 +153,7 @@ test("detail header keeps long project title and state badge on one line", { ski
   }
 })
 
-test("primary Session attention reasons stay consistent in the list, detail, and filter", { skip: !enabled, timeout: 45_000 }, async () => {
+test("primary Session attention reasons stay consistent in the list, detail, and filter", { skip: !enabled, timeout: 45_000 }, async (t) => {
   const executablePath = process.env.OMW_BROWSER_EXECUTABLE
   assert.ok(executablePath, "OMW_BROWSER_EXECUTABLE is required")
   const sandbox = await mkdtemp(path.join(tmpdir(), "omw-browser-primary-attention-"))
@@ -169,6 +169,8 @@ test("primary Session attention reasons stay consistent in the list, detail, and
   const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist")
   const app = buildApp({ service, authority: { hostname: "127.0.0.1", port }, allowedOrigins: new Set([origin]), webRoot })
   const directory = "C:\\fixture\\primary-attention"
+  const longSessionTitle = "Long running Session for an important cross-project investigation"
+  const longAttentionReason = "需處理 · 12 項待回答、13 項待授權"
   const instances = [
     fakeManagedInstance({
       id: "inst-zero-busy",
@@ -195,6 +197,26 @@ test("primary Session attention reasons stay consistent in the list, detail, and
       primarySession: { sessionId: "missing-root", title: "Missing hierarchy", source: "manual", boundAt: "2026-09-22T00:00:00.000Z" },
       primarySummary: { scope: "unknown", activity: "unknown", busySessions: null, retrySessions: null, pendingQuestions: null, pendingPermissions: null, error: "PRIMARY_SESSION_SCOPE_UNKNOWN" },
     }),
+    fakeManagedInstance({
+      id: "inst-same-session",
+      projectDirectory: "D:\\fixture\\primary-attention",
+      primarySession: { sessionId: "root-zero", title: "Ready for next step", source: "manual", boundAt: "2026-09-22T00:00:00.000Z" },
+      primarySummary: { scope: "known", activity: "busy", busySessions: 1, retrySessions: 0, pendingQuestions: 0, pendingPermissions: 0, error: null },
+    }),
+    fakeManagedInstance({
+      id: "inst-activity-unknown",
+      projectDirectory: directory,
+      primarySession: { sessionId: "root-unknown", title: "Activity unavailable", source: "manual", boundAt: "2026-09-22T00:00:00.000Z" },
+      primarySummary: { scope: "known", activity: "unknown", busySessions: null, retrySessions: null, pendingQuestions: null, pendingPermissions: null, error: "fixture unavailable" },
+    }),
+    fakeManagedInstance({ id: "inst-starting", projectDirectory: directory, state: "starting" }),
+    fakeManagedInstance({ id: "inst-failed", projectDirectory: directory, state: "failed" }),
+    fakeManagedInstance({
+      id: "inst-long-attention",
+      projectDirectory: directory,
+      primarySession: { sessionId: "root-long-attention", title: longSessionTitle, source: "manual", boundAt: "2026-09-22T00:00:00.000Z" },
+      primarySummary: { scope: "known", activity: "busy", busySessions: 1, retrySessions: 0, pendingQuestions: 12, pendingPermissions: 13, error: null },
+    }),
   ]
   let browser: Browser | undefined
 
@@ -220,10 +242,68 @@ test("primary Session attention reasons stay consistent in the list, detail, and
     const unbound = page.locator('.instance-row[data-instance-id="inst-unbound"]')
     const retry = page.locator('.instance-row[data-instance-id="inst-retry"]')
     const unknown = page.locator('.instance-row[data-instance-id="inst-unknown-scope"]')
-    assert.match(await zeroBusy.textContent() ?? "", /需處理 · 無執行中 Session.*主 Session 工作範圍.*可連線/s)
-    assert.match(await unbound.textContent() ?? "", /需處理 · 未綁定主 Session.*可連線/s)
-    assert.match(await retry.textContent() ?? "", /重試中.*主 Session 工作範圍.*可連線/s)
-    assert.match(await unknown.textContent() ?? "", /無法確認.*主 Session 工作範圍.*可連線/s)
+    assert.match(await zeroBusy.textContent() ?? "", /需處理 · 無執行中 Session/)
+    assert.match(await unbound.textContent() ?? "", /需處理 · 未綁定主 Session/)
+    assert.match(await retry.textContent() ?? "", /重試中/)
+    assert.match(await unknown.textContent() ?? "", /無法確認 · 主 Session 範圍未知/)
+    for (const [id, category, text] of [
+      ["inst-zero-busy", "attention", "無執行中 Session"],
+      ["inst-unbound", "attention", "未綁定主 Session"],
+      ["inst-retry", "operable", "重試中"],
+      ["inst-unknown-scope", "unknown", "主 Session 範圍未知"],
+      ["inst-activity-unknown", "unknown", "活動未知"],
+      ["inst-same-session", "operable", "執行中"],
+      ["inst-starting", "unknown", "啟動中"],
+      ["inst-failed", "unknown", "啟動失敗"],
+      ["inst-long-attention", "attention", "12 項待回答、13 項待授權"],
+    ] as const) {
+      const badge = page.locator(`.instance-row[data-instance-id="${id}"] .instance-meta b`)
+      assert.equal(await badge.getAttribute("data-category"), category)
+      assert.match(await badge.textContent() ?? "", new RegExp(text))
+    }
+    assert.equal(await page.locator('.instance-row[data-instance-id="inst-same-session"] .instance-path').getAttribute("title"), "D:\\fixture\\primary-attention")
+    assert.equal(await page.locator('.instance-row[data-instance-id="inst-zero-busy"] .instance-path').getAttribute("title"), directory,
+      "the same Session remains distinguishable across Instances in different paths")
+    assert.equal(await page.locator(".history-toggle").count(), 0, "starting and failed do not count as stopped")
+
+    for (const width of [900, 1024]) {
+      await page.setViewportSize({ width, height: 844 })
+      const layout = await page.locator('.instance-row[data-instance-id="inst-long-attention"]').evaluate((row) => {
+        const title = row.querySelector<HTMLElement>(".instance-copy strong")!
+        const badge = row.querySelector<HTMLElement>(".instance-meta b")!
+        const titleBounds = title.getBoundingClientRect()
+        const badgeBounds = badge.getBoundingClientRect()
+        const rowBounds = row.getBoundingClientRect()
+        return {
+          paneWidth: document.querySelector<HTMLElement>(".instance-pane")!.getBoundingClientRect().width,
+          titleWidth: titleBounds.width,
+          titleTooltip: title.title,
+          badgeText: badge.textContent,
+          badgeTooltip: badge.title,
+          badgeWidth: badge.clientWidth,
+          badgeScrollWidth: badge.scrollWidth,
+          badgeHeight: badge.clientHeight,
+          badgeScrollHeight: badge.scrollHeight,
+          badgeWhiteSpace: getComputedStyle(badge).whiteSpace,
+          badgeLeft: badgeBounds.left,
+          badgeRight: badgeBounds.right,
+          rowLeft: rowBounds.left,
+          rowRight: rowBounds.right,
+          documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+        }
+      })
+      assert.equal(layout.documentWidth <= width, true, `${width}px desktop list overflows the page`)
+      assert.equal(layout.titleTooltip, longSessionTitle)
+      assert.equal(layout.titleWidth >= 100, true, `${width}px desktop Session name only has ${layout.titleWidth}px`)
+      assert.equal(layout.badgeText, longAttentionReason)
+      assert.equal(layout.badgeTooltip, longAttentionReason)
+      assert.equal(layout.badgeWhiteSpace, "normal", `${width}px desktop badge must show its reason across lines`)
+      assert.equal(layout.badgeScrollWidth <= layout.badgeWidth + 1 && layout.badgeScrollHeight <= layout.badgeHeight + 1, true,
+        `${width}px desktop badge clips its reason`)
+      assert.equal(layout.badgeLeft >= layout.rowLeft && layout.badgeRight <= layout.rowRight + 1, true, `${width}px badge escapes row`)
+      t.diagnostic(`${width}px desktop pane ${layout.paneWidth.toFixed(1)}px: Session ${layout.titleWidth.toFixed(1)}px; badge ${layout.badgeWidth}x${layout.badgeHeight}px, complete reason visible`)
+    }
+    await page.setViewportSize({ width: 390, height: 844 })
 
     await zeroBusy.click()
     await page.locator(".detail-pane").waitFor()
@@ -445,7 +525,7 @@ test("mobile list-detail navigation preserves context and separates stopped hist
     releaseDelayedSearch?.()
     await stoppedRow.waitFor()
     assert.equal(await historyToggle.getAttribute("aria-expanded"), "true", "search reveals matching stopped history")
-    assert.match(await page.locator(".project-group-head").textContent() ?? "", /mobile-navigation-project.*1/s, "stopped-only results keep their folder and count")
+    assert.match(await stoppedRow.locator(".instance-path").textContent() ?? "", /mobile-navigation-project/, "stopped-only results keep their path")
     await page.getByRole("textbox", { name: "搜尋" }).fill("")
     assert.equal(await historyToggle.getAttribute("aria-expanded"), "true", "clearing input without submitting keeps the applied search visible")
     await page.getByRole("button", { name: "執行搜尋" }).click()
@@ -1247,7 +1327,7 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
   }
 })
 
-test("grouped Instance UI and recovery actions honor the browser contract", { skip: !enabled, timeout: 65_000 }, async () => {
+test("Session-first Instance list and recovery actions honor the browser contract", { skip: !enabled, timeout: 65_000 }, async () => {
   const executablePath = process.env.OMW_BROWSER_EXECUTABLE
   assert.ok(executablePath, "OMW_BROWSER_EXECUTABLE is required")
   const sandbox = await mkdtemp(path.join(tmpdir(), "omw-browser-recovery-"))
@@ -1305,7 +1385,7 @@ test("grouped Instance UI and recovery actions honor the browser contract", { sk
       projectDirectory: directoryB,
       state: "unreachable",
       pid: null,
-      launchedAt: "2026-09-18T01:00:00.000Z",
+       launchedAt: "2026-09-18T01:00:00.000Z",
       healthVersion: null,
       stopAllowed: false,
       primarySession: { sessionId: "ses-b2", title: "Partial resume fixture", source: "activity", boundAt: "2026-09-18T01:00:00.000Z" },
@@ -1316,6 +1396,7 @@ test("grouped Instance UI and recovery actions honor the browser contract", { sk
       id: "inst-check-55555555",
       projectName: "recheck-project",
       projectDirectory: "C:\\fake-data\\recheck-project",
+      launchedAt: "2026-09-18T01:00:00.000Z",
        state: "unreachable",
       pid: null,
       healthVersion: null,
@@ -1483,7 +1564,7 @@ test("grouped Instance UI and recovery actions honor the browser contract", { sk
     })
 
     await page.goto(origin, { waitUntil: "networkidle" })
-    await page.locator(".project-group").first().waitFor()
+    await page.locator('.instance-row[data-instance-id="inst-a1-11111111"]').waitFor()
     const reducedStartTrigger = page.locator(".topbar").getByRole("button", { name: "啟動執行個體" })
     await reducedStartTrigger.click()
     const reducedOverlay = page.locator(".start-panel-overlay")
@@ -1502,29 +1583,34 @@ test("grouped Instance UI and recovery actions honor the browser contract", { sk
     await page.getByRole("button", { name: "關閉啟動面板" }).click()
     await page.getByRole("dialog", { name: "啟動執行個體" }).waitFor({ state: "hidden" })
 
-    const sameNameGroups = page.locator(".project-group-head").filter({ hasText: "shared-project" })
-    assert.equal(await sameNameGroups.count(), 2, "same basename directories must remain separate Project groups")
-      assert.equal(await page.getByTitle(directoryA).locator("b").textContent(), "2")
-      assert.equal(await page.getByTitle(directoryB).locator("b").textContent(), "2")
-      const longTitleRow = page.getByRole("button", { name: `#11001 ${longTitle}` })
+    assert.equal(await page.locator(".project-group-head").count(), 0, "the list no longer groups by Project")
+       assert.deepEqual(await page.locator(".instance-list > .instance-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-instance-id"))),
+       ["inst-b1-33333333", "inst-a1-11111111", "inst-b2-44444444", "inst-check-55555555"], "non-stopped Instances sort newest-first across directories with ID tie-break")
+    const longTitleRow = page.locator('.instance-row[data-instance-id="inst-a1-11111111"]')
+    assert.match(await longTitleRow.textContent() ?? "", /shared-project.*team-a.*#11001/s, "row retains path and Instance identity beneath the Session title")
       const stoppedPrimaryRow = page.locator('.instance-row[data-instance-id="inst-a2-22222222"]')
       await longTitleRow.waitFor()
       assert.equal(await stoppedPrimaryRow.isVisible(), false, "stopped history is collapsed by default")
-      await page.getByTitle(directoryA).locator("..").getByRole("button", { name: /已停止紀錄/ }).click()
-      await stoppedPrimaryRow.waitFor()
-      await longTitleRow.click()
+      assert.equal(await page.locator(".history-toggle").count(), 1, "stopped history has one disclosure for the whole list")
+       await page.locator(".history-toggle").click()
+       await stoppedPrimaryRow.waitFor()
+       assert.equal(await stoppedPrimaryRow.locator(".instance-meta b").getAttribute("data-category"), "stopped", "stopped history uses a gray status badge")
+       await stoppedPrimaryRow.click()
+       assert.match(await stoppedPrimaryRow.getAttribute("class") ?? "", /\bselected\b/, "stopped history remains selectable")
+       await returnToInstanceList(page)
+       await longTitleRow.click()
 
       for (const width of [390, 360]) await assertDetailIdentityLayout(page, width, longTitle, "shared-project", directoryA)
 
       await returnToInstanceList(page)
-      for (const width of [1440, 390, 360]) await assertGroupedInstanceLayout(page, width)
+      for (const width of [1440, 390, 360]) await assertSessionFirstInstanceLayout(page, width)
     await page.setViewportSize({ width: 390, height: 844 })
     const orderBeforeRefresh = await page.locator(".instance-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("aria-label")))
     await page.evaluate(() => Reflect.set(window, "__omwStableRow", document.querySelector(".instance-row")))
     const nextPoll = page.waitForResponse((response) => response.url().includes("/api/v1/overview?") && response.ok(), { timeout: 7_000 })
     await nextPoll
     const orderAfterRefresh = await page.locator(".instance-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("aria-label")))
-    assert.deepEqual(orderAfterRefresh, orderBeforeRefresh, "polling must not reorder grouped Instances")
+    assert.deepEqual(orderAfterRefresh, orderBeforeRefresh, "polling must not reorder Session-first Instances")
     assert.equal(await page.evaluate(() => Reflect.get(window, "__omwStableRow") === document.querySelector(".instance-row")), true, "polling must reuse keyed rows")
     assert.equal(await page.locator(".instance-row").first().evaluate((row) => getComputedStyle(row).animationName), "none", "polling rows must not re-animate")
 
@@ -1717,9 +1803,9 @@ test("grouped Instance UI and recovery actions honor the browser contract", { sk
     const screenshotDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../.scratch")
     await mkdir(screenshotDirectory, { recursive: true })
     await page.setViewportSize({ width: 1440, height: 900 })
-    await page.screenshot({ path: path.join(screenshotDirectory, "grouped-recovery-fake-1440.png"), fullPage: true })
+    await page.screenshot({ path: path.join(screenshotDirectory, "session-first-recovery-fake-1440.png"), fullPage: true })
     await page.setViewportSize({ width: 390, height: 844 })
-    await page.screenshot({ path: path.join(screenshotDirectory, "grouped-recovery-fake-390.png"), fullPage: true })
+    await page.screenshot({ path: path.join(screenshotDirectory, "session-first-recovery-fake-390.png"), fullPage: true })
 
     const touchPage = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true })
     await touchPage.goto(origin, { waitUntil: "networkidle" })
@@ -2567,56 +2653,41 @@ async function assertPrimaryActionLayout(page: Page, width: number): Promise<voi
   }
 }
 
-async function assertGroupedInstanceLayout(page: Page, width: number): Promise<void> {
+async function assertSessionFirstInstanceLayout(page: Page, width: number): Promise<void> {
   await page.setViewportSize({ width, height: 844 })
   const layout = await page.evaluate(() => {
     const visible = <T extends HTMLElement>(elements: NodeListOf<T>): T[] => Array.from(elements).filter((element) => element.getClientRects().length > 0)
     return {
-    documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
-    touchTargets: visible(document.querySelectorAll<HTMLElement>(".instance-row, .project-group-head, .filters button, .hidden-toggle")).map((element) => element.getBoundingClientRect().height),
-    rowHeights: visible(document.querySelectorAll<HTMLElement>(".instance-row")).map((element) => element.getBoundingClientRect().height),
-    groupPaths: Array.from(document.querySelectorAll<HTMLElement>(".project-group-head code"), (element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth })),
-    titles: visible(document.querySelectorAll<HTMLElement>(".instance-copy strong")).map((element) => ({
-      clientWidth: element.clientWidth,
-      scrollWidth: element.scrollWidth,
-      textOverflow: getComputedStyle(element).textOverflow,
-      whiteSpace: getComputedStyle(element).whiteSpace,
-    })),
-    identityLines: visible(document.querySelectorAll<HTMLElement>(".instance-title-line")).map((line) => {
-      const pid = line.querySelector<HTMLElement>(".instance-pid")
-      const title = line.querySelector<HTMLElement>("strong")
-      if (!pid || !title) throw new Error("Instance identity line is incomplete")
-      const pidBounds = pid.getBoundingClientRect()
-      const titleBounds = title.getBoundingClientRect()
-      return {
-        pidClientWidth: pid.clientWidth,
-        pidScrollWidth: pid.scrollWidth,
-        pidWhiteSpace: getComputedStyle(pid).whiteSpace,
-        pidRight: pidBounds.right,
-        pidTop: pidBounds.top,
-        pidBottom: pidBounds.bottom,
-        titleLeft: titleBounds.left,
-        titleTop: titleBounds.top,
-        titleBottom: titleBounds.bottom,
-      }
-    }),
-    highFrequencyTransitions: Array.from(document.querySelectorAll<HTMLElement>(".instance-row, .filters button, .no-press-transform"), (element) => getComputedStyle(element).transitionProperty),
+      documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+      touchTargets: visible(document.querySelectorAll<HTMLElement>(".instance-row, .history-toggle, .filters button, .hidden-toggle")).map((element) => element.getBoundingClientRect().height),
+      titles: visible(document.querySelectorAll<HTMLElement>(".instance-copy strong")).map((element) => ({
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        textOverflow: getComputedStyle(element).textOverflow,
+        whiteSpace: getComputedStyle(element).whiteSpace,
+      })),
+      paths: visible(document.querySelectorAll<HTMLElement>(".instance-path")).map((element) => ({
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        textOverflow: getComputedStyle(element).textOverflow,
+      })),
+      badges: visible(document.querySelectorAll<HTMLElement>(".instance-meta b")).map((element) => {
+        const bounds = element.getBoundingClientRect()
+        const rowBounds = element.closest(".instance-row")!.getBoundingClientRect()
+        return { left: bounds.left, right: bounds.right, rowLeft: rowBounds.left, rowRight: rowBounds.right }
+      }),
+      highFrequencyTransitions: Array.from(document.querySelectorAll<HTMLElement>(".instance-row, .filters button, .no-press-transform"), (element) => getComputedStyle(element).transitionProperty),
     }
   })
-  assert.equal(layout.documentWidth <= width, true, `${width}px grouped Instance UI has horizontal overflow`)
-  for (const line of layout.identityLines) {
-    assert.equal(line.pidScrollWidth <= line.pidClientWidth, true, `${width}px PID label is truncated`)
-    assert.equal(line.pidWhiteSpace, "nowrap", `${width}px PID label wraps`)
-    assert.equal(line.pidRight <= line.titleLeft, true, `${width}px PID label overlaps the Session title`)
-    assert.equal(Math.min(line.pidBottom, line.titleBottom) > Math.max(line.pidTop, line.titleTop), true, `${width}px PID and Session title are not inline`)
-  }
+  assert.equal(layout.documentWidth <= width, true, `${width}px Session-first Instance UI has horizontal overflow`)
+  assert.equal(layout.titles.length > 0 && layout.paths.length > 0 && layout.badges.length > 0, true, "Session, path, and status are all present")
+  for (const badge of layout.badges) assert.equal(badge.left >= badge.rowLeft && badge.right <= badge.rowRight + 1, true, `${width}px badge escapes its row`)
   for (const transition of layout.highFrequencyTransitions) assert.doesNotMatch(transition, /transform/, `${width}px high-frequency control has a movement transition`)
   if (width <= 390) {
-    for (const height of layout.touchTargets) assert.equal(height >= 44, true, `${width}px grouped Instance target is smaller than 44px`)
-    for (const height of layout.rowHeights) assert.equal(height <= 62, true, `${width}px Instance row grew beyond the dense mobile layout`)
+    for (const height of layout.touchTargets) assert.equal(height >= 44, true, `${width}px Instance target is smaller than 44px`)
   }
   if (width === 360) {
-    assert.equal(layout.groupPaths.some((item) => item.scrollWidth > item.clientWidth), true, "long Project paths should truncate on narrow mobile")
+    assert.equal(layout.paths.some((item) => item.scrollWidth > item.clientWidth && item.textOverflow === "ellipsis"), true, "long Project paths should truncate on narrow mobile")
     assert.equal(layout.titles.some((item) => item.textOverflow === "ellipsis" && item.whiteSpace === "nowrap"), true, "long primary Session titles should use single-line ellipsis on narrow mobile")
   }
 }

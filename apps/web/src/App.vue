@@ -11,7 +11,6 @@ import {
   EyeIcon,
   EyeOffIcon,
   ExternalLinkIcon,
-  FolderIcon,
   FolderPlusIcon,
   LoaderCircleIcon,
   PencilIcon,
@@ -41,6 +40,7 @@ const filters: Array<{ value: OverviewFilter; label: string }> = [
   { value: "unreachable", label: "已失聯" },
 ]
 const SESSION_PAGE_SIZE = 10
+const STOPPED_HISTORY_KEY = "stopped"
 type LifecycleAction = "start" | "stop" | "recheck" | "resume" | "tracking" | "remove"
 type RecoveryAction = "recheck" | "resume" | "tracking" | "remove"
 type ConfirmationTone = "positive" | "caution" | "danger"
@@ -250,32 +250,11 @@ const lifecycleUnavailableReasons = computed(() => {
     .filter((action) => !recoveryActionAllowed(action))
     .map((action) => ({ label: recoveryActionLabel(selected.value!, action), reason: lifecycleReason(selected.value!, action) }))
 })
-const projectGroups = computed(() => {
-  const groups = new Map<string, { key: string; name: string; directory: string; instances: ManagedInstance[] }>()
-  for (const instance of overview.value.instances) {
-    const key = normalizedDirectoryKey(instance.projectDirectory)
-    const group = groups.get(key) ?? {
-      key,
-      name: projectFolderName(instance.projectDirectory),
-      directory: instance.projectDirectory,
-      instances: [],
-    }
-    group.instances.push(instance)
-    groups.set(key, group)
-  }
-  return [...groups.values()]
-    .map((group) => {
-      const instances = group.instances.toSorted((left, right) =>
-        Date.parse(right.launchedAt) - Date.parse(left.launchedAt) || left.id.localeCompare(right.id))
-      return {
-        ...group,
-        instances,
-        activeInstances: instances.filter((instance) => instance.state !== "stopped"),
-        stoppedInstances: instances.filter((instance) => instance.state === "stopped"),
-      }
-    })
-    .toSorted((left, right) => left.name.localeCompare(right.name, "zh-TW") || left.directory.localeCompare(right.directory, "zh-TW"))
-})
+// 排序只依啟動時間與 Instance ID；polling 更新 activity 時不可讓同一列在清單中跳動。
+const orderedInstances = computed(() => overview.value.instances.toSorted((left, right) =>
+  Date.parse(right.launchedAt) - Date.parse(left.launchedAt) || left.id.localeCompare(right.id)))
+const currentInstances = computed(() => orderedInstances.value.filter((instance) => instance.state !== "stopped"))
+const stoppedInstances = computed(() => orderedInstances.value.filter((instance) => instance.state === "stopped"))
 
 onMounted(async () => {
   mobileBreakpoint = window.matchMedia("(max-width: 860px)")
@@ -687,17 +666,17 @@ function isMobileViewport(): boolean {
   return mobileBreakpoint?.matches ?? window.matchMedia("(max-width: 860px)").matches
 }
 
-function toggleHistory(groupKey: string): void {
+function toggleHistory(): void {
   const next = new Set(historyOpen.value)
-  if (next.has(groupKey)) next.delete(groupKey)
-  else next.add(groupKey)
+  if (next.has(STOPPED_HISTORY_KEY)) next.delete(STOPPED_HISTORY_KEY)
+  else next.add(STOPPED_HISTORY_KEY)
   historyOpen.value = next
   persistMobileListHistory()
 }
 
-function historyExpanded(group: { key: string; stoppedInstances: ManagedInstance[] }): boolean {
+function historyExpanded(): boolean {
   return Boolean(appliedQuery.value.trim())
-    || historyOpen.value.has(group.key)
+    || historyOpen.value.has(STOPPED_HISTORY_KEY)
 }
 
 async function clearOverviewFilters(): Promise<void> {
@@ -1406,14 +1385,16 @@ function attentionSummary(instance: ManagedInstance): string {
 }
 
 function statusHeadline(instance: ManagedInstance): string {
+  if (instance.state === "stopped") return "已停止"
+  if (instance.state === "starting" || instance.state === "failed" || instance.state === "unreachable") {
+    return `無法確認 · ${stateLabel(instance.state)}`
+  }
   if (statusCategory(instance) === "attention") return attentionSummary(instance)
-  if (instance.state === "ready" && primarySessionDisposition(instance.primarySummary) === "retry") return "重試中"
-  return statusCategoryLabel(instance)
-}
-
-function statusContext(instance: ManagedInstance): string {
-  const scope = instance.state === "ready" && instance.primarySummary.scope !== "unbound" ? "主 Session 工作範圍 · " : ""
-  return `${scope}${stateLabel(instance.state)} · ${shortId(instance.id)}`
+  const disposition = primarySessionDisposition(instance.primarySummary)
+  if (disposition === "unknown") {
+    return instance.primarySummary.scope === "unknown" ? "無法確認 · 主 Session 範圍未知" : "無法確認 · 活動未知"
+  }
+  return disposition === "retry" ? "重試中" : "執行中"
 }
 
 function stateLabel(state: ManagedInstance["state"]): string {
@@ -1442,9 +1423,6 @@ function managerMappingLabel(value: boolean | null | undefined): string {
   return value === true ? "吻合" : value === false ? "不吻合" : "未知"
 }
 function shortId(value: string): string { return value.slice(0, 8) }
-function normalizedDirectoryKey(directory: string): string {
-  return directory.replace(/\\/g, "/").replace(/\/+$/, "").toLocaleLowerCase("en-US")
-}
 function projectFolderName(directory: string): string {
   const normalized = directory.replace(/[\\/]+$/, "")
   return normalized.split(/[\\/]/).at(-1) || directory
@@ -1624,57 +1602,49 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
         </label>
         <div v-if="loading" class="loading-copy"><LoaderCircleIcon class="spin" />讀取 Manager API…</div>
         <div class="instance-list" tabindex="-1">
-          <section v-for="(group, groupIndex) in projectGroups" :key="group.key" class="project-group">
-            <header class="project-group-head" :title="group.directory">
-              <FolderIcon />
-              <span><strong>{{ group.name }}</strong><code>{{ group.directory }}</code></span>
-              <b>{{ group.instances.length }}</b>
-            </header>
-            <button
-              v-for="instance in group.activeInstances"
-              :key="instance.id"
-              type="button"
-              class="instance-row"
-              :class="{ selected: selectedId === instance.id }"
-              :data-instance-id="instance.id"
-              :aria-label="instanceRowLabel(instance)"
-              @click="choose(instance)"
-            >
-              <span class="state-dot" :data-category="statusCategory(instance)" />
-              <span class="instance-copy">
-                <span class="instance-title-line"><code class="instance-pid">{{ instancePid(instance) }}</code><strong :title="instanceTitle(instance)">{{ instanceTitle(instance) }}</strong></span>
-              </span>
-              <span class="instance-meta"><b :data-category="statusCategory(instance)">{{ statusHeadline(instance) }}</b><span>{{ statusContext(instance) }}</span></span>
+          <header v-if="overview.instances.length" class="instance-list-heading"><span>Session / Instance</span><b>{{ currentInstances.length }} 個未停止</b></header>
+          <button
+            v-for="instance in currentInstances"
+            :key="instance.id"
+            type="button"
+            class="instance-row"
+            :class="{ selected: selectedId === instance.id }"
+            :data-instance-id="instance.id"
+            :aria-label="instanceRowLabel(instance)"
+            @click="choose(instance)"
+          >
+            <span class="state-dot" :data-category="statusCategory(instance)" />
+            <span class="instance-copy">
+              <strong :title="instanceTitle(instance)">{{ instanceTitle(instance) }}</strong>
+              <small class="instance-path" :title="instance.projectDirectory">{{ projectFolderName(instance.projectDirectory) }} · {{ instance.projectDirectory }}</small>
+              <small class="instance-identity">{{ instancePid(instance) }} · {{ shortId(instance.id) }}</small>
+            </span>
+            <span class="instance-meta"><b :data-category="statusCategory(instance)" :title="statusHeadline(instance)">{{ statusHeadline(instance) }}</b></span>
+          </button>
+          <section v-if="stoppedInstances.length" class="stopped-history">
+            <button type="button" class="history-toggle" :aria-expanded="historyExpanded()" aria-controls="instance-history" @click="toggleHistory">
+              <ChevronDownIcon :class="{ rotated: historyExpanded() }" />已停止紀錄 ({{ stoppedInstances.length }})
             </button>
-            <template v-if="group.stoppedInstances.length">
+            <div v-show="historyExpanded()" id="instance-history" class="history-list">
               <button
+                v-for="instance in stoppedInstances"
+                :key="instance.id"
                 type="button"
-                class="history-toggle"
-                :aria-expanded="historyExpanded(group)"
-                :aria-controls="`instance-history-${groupIndex}`"
-                @click="toggleHistory(group.key)"
+                class="instance-row stopped-row"
+                :class="{ selected: selectedId === instance.id }"
+                :data-instance-id="instance.id"
+                :aria-label="instanceRowLabel(instance)"
+                @click="choose(instance)"
               >
-                <ChevronDownIcon :class="{ rotated: historyExpanded(group) }" />已停止紀錄 ({{ group.stoppedInstances.length }})
+                <span class="state-dot" :data-category="statusCategory(instance)" />
+                <span class="instance-copy">
+                  <strong :title="instanceTitle(instance)">{{ instanceTitle(instance) }}</strong>
+                  <small class="instance-path" :title="instance.projectDirectory">{{ projectFolderName(instance.projectDirectory) }} · {{ instance.projectDirectory }}</small>
+                  <small class="instance-identity">{{ instancePid(instance) }} · {{ shortId(instance.id) }}</small>
+                </span>
+                <span class="instance-meta"><b :data-category="statusCategory(instance)" :title="statusHeadline(instance)">{{ statusHeadline(instance) }}</b></span>
               </button>
-              <div v-show="historyExpanded(group)" :id="`instance-history-${groupIndex}`" class="history-list">
-                <button
-                  v-for="instance in group.stoppedInstances"
-                  :key="instance.id"
-                  type="button"
-                  class="instance-row"
-                  :class="{ selected: selectedId === instance.id }"
-                  :data-instance-id="instance.id"
-                  :aria-label="instanceRowLabel(instance)"
-                  @click="choose(instance)"
-                >
-                  <span class="state-dot" :data-category="statusCategory(instance)" />
-                  <span class="instance-copy">
-                    <span class="instance-title-line"><code class="instance-pid">{{ instancePid(instance) }}</code><strong :title="instanceTitle(instance)">{{ instanceTitle(instance) }}</strong></span>
-                  </span>
-                  <span class="instance-meta"><b :data-category="statusCategory(instance)">{{ statusHeadline(instance) }}</b><span>{{ statusContext(instance) }}</span></span>
-                </button>
-              </div>
-            </template>
+            </div>
           </section>
         </div>
         <div v-if="!loading && overview.instances.length === 0" class="instance-empty">

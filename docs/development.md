@@ -136,9 +136,10 @@ real-time 保證。它不支援和外部 Serve 設定程序同時修改相同 no
 
 ### Instance recovery and tracking contract
 
-Overview 以完整 `Project` 目錄分組；group header 同時顯示資料夾名稱與完整 path。每個 Instance
-子列顯示 `#PID` 與 primary 最新 title。PID 未知時顯示 unknown，不造出 PID；UI 不使用
-`sessionowner` 稱呼。
+Overview 側欄以一個 Instance 一列呈現，主要顯示其主要 Session 最新 title，次要顯示資料夾、
+完整 path、`#PID` 與 Instance ID；未綁定時保留可辨識的 Instance 列。未停止的列依啟動時間
+新到舊排列，同時間以 ID 穩定排序，不隨 activity 更新改變位置。PID 未知時顯示 unknown，
+不造出 PID；UI 不使用 `sessionowner` 稱呼。
 
 #### 手機導覽與歷史紀錄
 
@@ -148,7 +149,7 @@ Overview 以完整 `Project` 目錄分組；group header 同時顯示資料夾�
   list entry，捲動位置則在進入詳細內容、頁面 hidden 或 pagehide 時快照，不在每次 scroll 寫入 History。
   初次 Overview 失敗不會銷毀詳細目標；成功取得未篩選 Overview 且確認該 Instance 已不存在後，才返回列表
   並提示使用者。非同步 fallback 只有在原 detail target 與導覽 generation 仍相符時才能改寫 History 或詳細頁。
-- 只有 `stopped` 收入各 Project 的「已停止紀錄」，預設收合；已失聯、啟動失敗與停止追蹤是不同概念。
+- 只有 `stopped` 收入清單下方唯一的「已停止紀錄」，預設收合；已失聯、啟動失敗與停止追蹤是不同概念。
   成功套用的非空搜尋會展開符合結果的歷史，清除搜尋成功後回復原展開偏好；未送出、pending 或
   失敗的查詢不會自行改變既有結果的展開狀態。選取過歷史 Instance 不會阻止使用者再次收合。
 - 詳細頁將主 Session 操作放在技術識別欄位前；手機摘要採緊湊三欄。狀態層級保留原始 lifecycle，
