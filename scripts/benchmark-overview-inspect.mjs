@@ -6,7 +6,9 @@ import { performance } from 'node:perf_hooks'
 
 const [baseline, candidate] = process.argv.slice(2)
 if (!baseline) throw new Error('Usage: node scripts/benchmark-overview-inspect.mjs <baseline.ps1> [candidate.ps1]')
-const db = new DatabaseSync(join(process.env.OMW_DATA_DIR ?? join(process.env.LOCALAPPDATA, 'OMW'), 'omw.sqlite'), { readOnly: true })
+const dataDirectory = process.env.OMW_DATA_DIR?.trim()
+if (!dataDirectory) throw new Error('OMW_DATA_DIR is required and must point to an isolated data directory; refusing to fall back to %LOCALAPPDATA%\\OMW.')
+const db = new DatabaseSync(join(resolve(dataDirectory), 'omw.sqlite'), { readOnly: true })
 let instances, visible
 try {
   instances = db.prepare(`SELECT pid, creation_time_ticks AS ticks, executable, port FROM managed_instances

@@ -444,7 +444,7 @@ function refreshAfterMutation(): Promise<boolean> {
 function loadOverview(showLoading = true, source: "user" | "background" = "user"): Promise<boolean> {
   if (source === "background" && document.visibilityState === "hidden") return Promise.resolve(false)
   if (source === "user") beginUserAction()
-  if (source === "user" || overviewStale.value) {
+  if (source === "user") {
     overviewRefreshing.value = true
     overviewError.value = ""
     if (overviewLastSucceededAt.value) overviewStale.value = true
@@ -500,7 +500,8 @@ async function fetchOverview(generation: number, controller: AbortController, sh
     appliedQuery.value = appliedQueryValue
     appliedFilter.value = appliedFilterValue
     overviewLastSucceededAt.value = new Date().toISOString()
-    overviewStale.value = false
+    // Mutation 開始前取得的前景 snapshot 不能解除操作防護；操作完成後會再發起驗證刷新。
+    overviewStale.value = Boolean(mutating.value || lifecyclePending.value || switchingSessionId.value)
     overviewRefreshing.value = false
     overviewError.value = ""
 

@@ -310,3 +310,110 @@ test("a mutation refresh cannot be overwritten by a pre-mutation overview respon
     }
   })
 })
+
+test("a foreground overview that finishes before recheck does not unlock stale mutations", { skip: !enabled, timeout: 15_000 }, async () => {
+  await withOverviewPage(async ({ page, origin, id }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.getByRole("button", { name: "執行個體操作" }).click()
+    const initial = await (await fetch(`${origin}/api/v1/overview?q=&filter=all`)).json()
+    let releaseMutation
+    const mutationHeld = new Promise((resolve) => { releaseMutation = resolve })
+    let mutationStarted
+    const mutationSent = new Promise((resolve) => { mutationStarted = resolve })
+    let releasePostRefresh
+    const postRefreshHeld = new Promise((resolve) => { releasePostRefresh = resolve })
+    let postRefreshStarted
+    const postRefreshSent = new Promise((resolve) => { postRefreshStarted = resolve })
+    let reads = 0
+    await page.route(`**/api/v1/instances/${id}/recheck`, async (route) => {
+      mutationStarted()
+      await mutationHeld
+      await route.continue()
+    })
+    await page.route("**/api/v1/overview?**", async (route) => {
+      reads++
+      if (reads === 1) await route.fulfill({ json: initial })
+      else {
+        postRefreshStarted()
+        await postRefreshHeld
+        await route.continue()
+      }
+    })
+    try {
+      await page.getByRole("button", { name: "重新檢查", exact: true }).click()
+      await mutationSent
+      const foreground = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/overview")
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+      await foreground
+      await page.waitForTimeout(100)
+      assert.equal(await page.locator(".overview-freshness").getAttribute("data-state"), "changed", "pre-mutation overview cannot clear the safety gate")
+      releaseMutation()
+      await postRefreshSent
+      await page.locator('.overview-freshness[data-state="refreshing"]').waitFor()
+      releasePostRefresh()
+      await page.locator('.overview-freshness[data-state="fresh"]').waitFor()
+      assert.equal(await page.locator(`[data-instance-id="${id}"]`).count(), 1)
+      assert.ok(reads >= 2)
+    } finally {
+      releaseMutation()
+      releasePostRefresh()
+    }
+  })
+})
+
+test("repeated failed background polls keep one alert without re-announcing refreshing", { skip: !enabled, timeout: 15_000 }, async () => {
+  await withOverviewPage(async ({ page }) => {
+    await page.route("**/api/v1/overview?**", async (route) => {
+      await route.fulfill({ status: 503, json: { error: { code: "UNAVAILABLE", message: "暫時無法更新" } } })
+    })
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+    const failed = page.locator('.overview-freshness[data-state="failed"] [role="alert"]')
+    await failed.waitFor()
+    const firstAlert = await failed.elementHandle()
+    assert.ok(firstAlert)
+    await page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/overview" && response.status() === 503, { timeout: 8_000 })
+    await page.waitForTimeout(100)
+    assert.equal(await page.locator('.overview-freshness[data-state="failed"]').count(), 1)
+    assert.equal(await page.locator(".overview-freshness [role=status]").count(), 0)
+    assert.equal(await page.evaluate((alert) => document.querySelector(".overview-freshness [role=alert]") === alert, firstAlert), true,
+      "polling must not remove and reinsert the live alert on identical failures")
+  })
+})
+
+test("narrow status keeps full timestamp and errors readable without moving the list", { skip: !enabled, timeout: 15_000 }, async () => {
+  await withOverviewPage(async ({ page }) => {
+    const longError = "暫時無法更新，請確認 Manager 與網路連線。".repeat(8)
+    for (const width of [320, 360]) {
+      await page.setViewportSize({ width, height: 844 })
+      const before = await page.locator(".instance-list").evaluate((element) => element.getBoundingClientRect().top)
+      const statusHeight = await page.locator(".overview-freshness").evaluate((element) => element.getBoundingClientRect().height)
+      await page.route("**/api/v1/overview?**", async (route) => {
+        await route.fulfill({ status: 503, json: { error: { code: "UNAVAILABLE", message: longError } } })
+      })
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+      await page.locator('.overview-freshness[data-state="failed"]').waitFor()
+      const result = await page.locator(".overview-freshness").evaluate((element) => {
+        const timestamp = element.querySelector("small")
+        const error = element.querySelector("small:last-child")
+        const content = element.querySelector(":scope > div")
+        if (content) content.scrollTop = content.scrollHeight
+        return {
+          height: element.getBoundingClientRect().height,
+          timestampWrap: timestamp && getComputedStyle(timestamp).whiteSpace === "normal" && timestamp.scrollWidth <= timestamp.clientWidth,
+          errorWrap: error && getComputedStyle(error).whiteSpace === "normal" && error.scrollWidth <= error.clientWidth,
+          longErrorScrollable: content && content.scrollHeight > content.clientHeight && content.scrollTop > 0,
+          noOverflow: document.documentElement.scrollWidth <= innerWidth,
+        }
+      })
+      assert.equal(result.height, statusHeight, `${width}px status stays fixed across refresh failure`)
+      assert.equal(result.timestampWrap, true, `${width}px timestamp is fully wrapped rather than ellipsized`)
+      assert.equal(result.errorWrap, true, `${width}px error is fully wrapped rather than ellipsized`)
+      assert.equal(result.longErrorScrollable, true, `${width}px long errors remain readable by scrolling inside the fixed status`)
+      assert.equal(result.noOverflow, true, `${width}px content fits the viewport`)
+      assert.equal(await page.locator(".instance-list").evaluate((element) => element.getBoundingClientRect().top), before)
+      await page.unrouteAll()
+      await page.getByRole("button", { name: "重試更新" }).click()
+      await page.locator('.overview-freshness[data-state="fresh"]').waitFor()
+    }
+  })
+})
