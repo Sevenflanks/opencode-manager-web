@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.2.1...v0.3.0) (2026-09-23)
+
+
+### Features
+
+* Instances 改為 Session 優先清單與狀態標籤 ([26d1614](https://github.com/Sevenflanks/opencode-manager-web/commit/26d1614b5cbe2693dc52e999a8b7f6c0c8aafb23))
+* 以 Session 優先清單呈現 Instance 與狀態 ([931e637](https://github.com/Sevenflanks/opencode-manager-web/commit/931e637a13294f1cd8ec5a11adf64d3a84c40fd8)), closes [#49](https://github.com/Sevenflanks/opencode-manager-web/issues/49)
+* 啟動時接替舊版 Manager 並顯示運行版本 ([ef50d4d](https://github.com/Sevenflanks/opencode-manager-web/commit/ef50d4dfbee0b31261712b9b737e806d7a427547)), closes [#46](https://github.com/Sevenflanks/opencode-manager-web/issues/46)
+* 啟動時自動接替舊版 OMW 並顯示運行版本 ([cf1fc9d](https://github.com/Sevenflanks/opencode-manager-web/commit/cf1fc9dc52f13d3151604049135428f38f021276))
+
+
+### Bug Fixes
+
+* 以前景新快照及操作後驗證解除 stale ([7e8ef2f](https://github.com/Sevenflanks/opencode-manager-web/commit/7e8ef2fe3eb30d8070b16f1c86bfc97ee6fa18ad))
+* 保留刷新安全狀態並隔離效能量測資料 ([7cd6eb6](https://github.com/Sevenflanks/opencode-manager-web/commit/7cd6eb6e76edc95ae5aa3db17073a2842e7236da))
+* 改善 overview 刷新回饋與慢回應協調 ([4b64ab5](https://github.com/Sevenflanks/opencode-manager-web/commit/4b64ab53878de35cac444782afbddfe0431df287)), closes [#51](https://github.com/Sevenflanks/opencode-manager-web/issues/51)
+
+
+### Performance Improvements
+
+* 縮短 Windows overview port-owner 探測等待 ([94cc72e](https://github.com/Sevenflanks/opencode-manager-web/commit/94cc72e9ae6bd6b42cc2e42af5ad9bb83ce990dd)), closes [#52](https://github.com/Sevenflanks/opencode-manager-web/issues/52)
+
 ## [0.2.1](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.2.0...v0.2.1) (2026-09-22)
 
 
