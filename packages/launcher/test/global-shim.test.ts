@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -39,13 +39,12 @@ test("npm global Windows shims run through a junction prefix", { skip: process.p
   const prefixAlias = path.join(root, "prefix-alias")
   await Promise.all([mkdir(fixture), mkdir(artifacts)])
   await Promise.all([
-    copyFile(fileURLToPath(new URL("../src/manager-cli.js", import.meta.url)), path.join(fixture, "manager-cli.js")),
-    copyFile(fileURLToPath(new URL("../src/cli.js", import.meta.url)), path.join(fixture, "cli.js")),
+    cp(fileURLToPath(new URL("../src/", import.meta.url)), path.join(fixture, "src"), { recursive: true }),
     writeFile(path.join(fixture, "package.json"), JSON.stringify({
       name: "@omw-test/global-shim",
       version: "1.0.0",
       type: "module",
-      bin: { omw: "manager-cli.js" },
+      bin: { omw: "src/manager-cli.js" },
     }), "utf8"),
   ])
 

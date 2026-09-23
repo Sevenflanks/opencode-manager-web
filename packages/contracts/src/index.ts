@@ -3,6 +3,11 @@ export type InstanceKind = "headless" | "local-tui"
 export type OverviewFilter = "all" | "active" | "attention" | "unreachable"
 export type ActivityState = "busy" | "reported-non-busy" | "none-reported" | "unknown"
 
+// unsupported 是固定能力差異；unavailable 是暫時不可用且必須提供原因。
+// 查詢失敗／未知使用既有 summary 的 null + error，不可當成已知為零。
+export type AgentCapability = { state: "supported" } | { state: "unsupported" } | { state: "unavailable"; reason: string }
+export type AgentCapabilities = Partial<Record<"sessions" | "sessionCreation" | "activity" | "pendingQuestions" | "pendingPermissions" | "nativeWeb", AgentCapability>>
+
 export interface ApiErrorBody {
   error: { code: string; message: string; details?: unknown }
 }
@@ -64,6 +69,8 @@ export interface PrimarySession {
 
 export interface ManagedInstance {
   id: string
+  agentFamily?: string
+  capabilities?: AgentCapabilities
   kind: InstanceKind
   projectName: string
   projectDirectory: string
