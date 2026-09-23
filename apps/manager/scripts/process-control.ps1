@@ -55,12 +55,39 @@ function Test-ListenerOverlapsManagerEndpoint([string]$LocalAddress) {
 function Get-PortOwners {
     # Query failure must not look like a free port, or Stop could be granted without port-reuse evidence.
     # Manager 只 probe 127.0.0.1；具體 Tailnet 或其他 loopback 位址的同 port listener 不會重疊。
-    $listeners = @(Get-NetTCPConnection -ErrorAction Stop | Where-Object {
-        $_.State -eq 'Listen' -and
-        $_.LocalPort -eq $Port -and
-        (Test-ListenerOverlapsManagerEndpoint $_.LocalAddress)
-    })
-    return @($listeners | ForEach-Object { [int]$_.OwningProcess } | Select-Object -Unique)
+    # -p tcp 會漏掉純 IPv6 listener；不指定 -p 才能同時取得 TCP 與 TCPv6。
+    # 所有 TCP 列都要能解析，否則不可把查詢失敗誤判成無 port owner。
+    $netstat = Join-Path $env:SystemRoot 'System32\netstat.exe'
+    $lines = @(& $netstat -ano)
+    if ($LASTEXITCODE -ne 0 -or $lines.Count -eq 0) { throw 'TCP owner query failed.' }
+    $owners = [Collections.Generic.HashSet[int]]::new()
+    $parsedRows = 0
+    foreach ($line in $lines) {
+        if ($line -notmatch '^\s*TCP\s') { continue }
+        if ($line -notmatch '^\s*TCP\s+(\S+)\s+\S+\s+(\S+)\s+(\d+)\s*$') {
+            throw 'TCP owner query returned an invalid row.'
+        }
+        $localEndpoint = $Matches[1]
+        $state = $Matches[2]
+        $owner = [int]$Matches[3]
+        if ($localEndpoint -notmatch '^(\[[^]]+\]|[^:]+):(\d+)$') {
+            throw 'TCP owner query returned an invalid endpoint.'
+        }
+        $address = $Matches[1].Trim('[', ']')
+        $localPort = [int]$Matches[2]
+        $parsedAddress = $null
+        if ($localPort -lt 0 -or $localPort -gt 65535 -or
+            -not [Net.IPAddress]::TryParse($address, [ref]$parsedAddress) -or
+            $state -notin @('BOUND', 'CLOSED', 'LISTENING', 'ESTABLISHED', 'TIME_WAIT', 'CLOSE_WAIT',
+                'FIN_WAIT_1', 'FIN_WAIT_2', 'LAST_ACK', 'CLOSING', 'SYN_SENT', 'SYN_RECEIVED', 'DELETE_TCB')) {
+            throw 'TCP owner query returned an invalid endpoint or state.'
+        }
+        $parsedRows++
+        if ($localPort -eq $Port -and $state -eq 'LISTENING' -and
+            (Test-ListenerOverlapsManagerEndpoint $address)) { $null = $owners.Add($owner) }
+    }
+    if ($parsedRows -eq 0) { throw 'TCP owner query returned no TCP rows.' }
+    return @($owners)
 }
 
 function Test-PortSafeForStop {

@@ -26,7 +26,7 @@ import {
   WifiIcon,
   XIcon,
 } from "lucide-vue-next"
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue"
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { ApiError, managerApi } from "@/api"
 import SessionTreeNode from "@/components/SessionTreeNode.vue"
 import { Button } from "@/components/ui/button"
@@ -97,6 +97,7 @@ const actionError = ref("")
 const overviewError = ref("")
 const overviewLastSucceededAt = ref("")
 const overviewStale = ref(false)
+const overviewRefreshing = ref(false)
 const notice = ref("")
 const startPanelOpen = ref(false)
 const startPanelBlocking = ref(false)
@@ -142,6 +143,15 @@ let inputModality: "pointer" | "keyboard" = "keyboard"
 let restoreFocusAfterStartPanelClose = true
 let revealDetailAfterStartPanelClose = false
 let overviewGeneration = 0
+// 超時只釋放前端 singleflight；Manager 端可能仍有舊 probe，後續讀取必須先 drain 再驗證。
+const OVERVIEW_WAIT_MS = 15_000
+type OverviewRequest = { key: string; result: Promise<boolean>; controller: AbortController; afterMutation: boolean }
+let overviewRequest: OverviewRequest | null = null
+let foregroundObsoleteRequest: OverviewRequest | null = null
+let foregroundRefresh: Promise<boolean> | null = null
+let visibilityEpoch = 0
+let overviewNeedsDrain = false
+let restoringFilteredDetail = false
 let connectivityReadGeneration = 0
 let connectivityMutationGeneration = 0
 let mobileHistoryGeneration = 0
@@ -240,10 +250,15 @@ const recoveryMetadataValid = computed(() => {
 })
 const recoveryDiagnostic = computed(() => selected.value && !recoveryMetadataValid.value ? recoveryDiagnosticMessage : "")
 const overviewMutationsBlocked = computed(() => overviewStale.value)
-const overviewFreshnessState = computed<"loading" | "unavailable" | "fresh" | "stale">(() => {
-  if (!overviewLastSucceededAt.value) return overviewError.value ? "unavailable" : "loading"
-  return overviewStale.value ? "stale" : "fresh"
+const overviewFreshnessState = computed<"initial" | "unavailable" | "refreshing" | "changed" | "failed" | "fresh">(() => {
+  if (!overviewLastSucceededAt.value) return overviewError.value ? "unavailable" : "initial"
+  if (overviewRefreshing.value) return "refreshing"
+  if (overviewError.value) return "failed"
+  return overviewStale.value ? "changed" : "fresh"
 })
+watch([query, filter, includeHidden], () => {
+  if (!restoringFilteredDetail) invalidateOverview("changed")
+}, { flush: "sync" })
 const lifecycleUnavailableReasons = computed(() => {
   if (!selected.value || !recoveryMetadataValid.value || lifecyclePending.value) return []
   return (Object.keys(recoveryActionKeys) as RecoveryAction[])
@@ -274,7 +289,9 @@ onMounted(async () => {
   window.addEventListener("pageshow", handleForegroundRefresh)
   window.addEventListener("pagehide", handlePageHide)
   connectivityPollTimer = window.setInterval(() => void loadConnectivity("background"), 30_000)
-  pollTimer = window.setInterval(() => void loadOverview(false, "background"), 5_000)
+  pollTimer = window.setInterval(() => {
+    if (!mutating.value && !lifecyclePending.value && !switchingSessionId.value) void loadOverview(false, "background")
+  }, 5_000)
 })
 onBeforeUnmount(() => {
   window.clearInterval(pollTimer)
@@ -290,6 +307,7 @@ onBeforeUnmount(() => {
   mobileBreakpoint?.removeEventListener("change", handleMobileBreakpointChange)
   if (startPanelBlocking.value) document.body.style.overflow = previousBodyOverflow
   overviewGeneration++
+  overviewRequest?.controller.abort()
   connectivityReadGeneration++
   connectivityMutationGeneration++
   sessionsGeneration++
@@ -414,10 +432,42 @@ async function handleShareFailure(cause: unknown): Promise<void> {
   if (!copied) connectivityCopyMessage.value = "分享失敗，請選取網址手動分享。"
 }
 
-async function loadOverview(showLoading = true, source: "user" | "background" = "user"): Promise<boolean> {
-  if (source === "background" && document.visibilityState === "hidden") return false
+function invalidateOverview(reason: "changed" | "mutation" = "mutation"): void {
+  overviewGeneration++
+  overviewRequest?.controller.abort()
+  overviewRequest = null
+  if (overviewLastSucceededAt.value) overviewStale.value = true
+  overviewRefreshing.value = reason === "mutation" && Boolean(overviewLastSucceededAt.value)
+}
+
+function refreshAfterMutation(): Promise<boolean> {
+  // Manager 可能合併同一 includeHidden 的 in-flight probe；mutation 完成後不可沿用前一筆前端回應。
+  invalidateOverview()
+  return loadOverview(false, "background", true)
+}
+
+function loadOverview(showLoading = true, source: "user" | "background" = "user", afterMutation = false): Promise<boolean> {
+  if (source === "background" && document.visibilityState === "hidden") return Promise.resolve(false)
   if (source === "user") beginUserAction()
+  if (source === "user") {
+    overviewRefreshing.value = true
+    overviewError.value = ""
+    if (overviewLastSucceededAt.value) overviewStale.value = true
+  }
+  if (source === "user" && foregroundObsoleteRequest && !foregroundRefresh) handleForegroundRefresh()
+  if (source === "user" && foregroundRefresh) return foregroundRefresh
+  const key = JSON.stringify([query.value, filter.value, includeHidden.value])
+  if (overviewRequest?.key === key) return overviewRequest.result
   const generation = ++overviewGeneration
+  const controller = new AbortController()
+  const result = fetchOverview(generation, controller, showLoading, source, afterMutation)
+  const request = { key, result, controller, afterMutation }
+  overviewRequest = request
+  void result.finally(() => { if (overviewRequest === request) overviewRequest = null })
+  return result
+}
+
+async function fetchOverview(generation: number, controller: AbortController, showLoading: boolean, source: "user" | "background", afterMutation: boolean): Promise<boolean> {
   const requestedQuery = query.value
   const requestedFilter = filter.value
   const requestedIncludeHidden = includeHidden.value
@@ -427,21 +477,35 @@ async function loadOverview(showLoading = true, source: "user" | "background" = 
     && requestedHistoryGeneration === mobileHistoryGeneration
     && mobileHistoryView() === "detail"
     && mobileHistoryInstanceId() === detailTarget
-  if (showLoading) loading.value = true
+  if (showLoading && !overviewLastSucceededAt.value) loading.value = true
+  const timeout = window.setTimeout(() => controller.abort(), OVERVIEW_WAIT_MS)
   try {
-    let next = await managerApi.overview(requestedQuery, requestedFilter, requestedIncludeHidden)
+    if (overviewNeedsDrain) {
+      // 前一個 HTTP 等待已超時時，Manager 可能仍合併該次 in-flight；先丟棄一次回應，再讀新的 snapshot。
+      await managerApi.overview(requestedQuery, requestedFilter, requestedIncludeHidden, controller.signal)
+      if (generation !== overviewGeneration || (source === "background" && document.visibilityState === "hidden")) return false
+      overviewNeedsDrain = false
+    }
+    if (source === "background" && document.visibilityState === "hidden") return false
+    let next = await managerApi.overview(requestedQuery, requestedFilter, requestedIncludeHidden, controller.signal)
     if (generation !== overviewGeneration) return false
     let appliedQueryValue = requestedQuery
     let appliedFilterValue = requestedFilter
     // 篩選結果不能當成 Instance 已移除；只有同一 includeHidden 範圍的未篩選成功結果才能確認缺少。
     if (detailRouteIsCurrent() && !next.instances.some((item) => item.id === detailTarget)
       && (requestedQuery.trim() || requestedFilter !== "all")) {
-      const fallback = await managerApi.overview("", "all", requestedIncludeHidden)
+      if (source === "background" && document.visibilityState === "hidden") return false
+      const fallback = await managerApi.overview("", "all", requestedIncludeHidden, controller.signal)
       if (generation !== overviewGeneration) return false
       if (detailRouteIsCurrent() && fallback.instances.some((item) => item.id === detailTarget)) {
         next = fallback
-        query.value = ""
-        filter.value = "all"
+        restoringFilteredDetail = true
+        try {
+          query.value = ""
+          filter.value = "all"
+        } finally {
+          restoringFilteredDetail = false
+        }
         appliedQueryValue = ""
         appliedFilterValue = "all"
         replaceMobileHistory("detail", detailTarget)
@@ -451,7 +515,9 @@ async function loadOverview(showLoading = true, source: "user" | "background" = 
     appliedQuery.value = appliedQueryValue
     appliedFilter.value = appliedFilterValue
     overviewLastSucceededAt.value = new Date().toISOString()
-    overviewStale.value = false
+    // 操作前啟動的 snapshot 不可解除防護；操作後的驗證即使外層 pending 尚未清除，也可以解除 stale。
+    overviewStale.value = !afterMutation && Boolean(mutating.value || lifecyclePending.value || switchingSessionId.value)
+    overviewRefreshing.value = false
     overviewError.value = ""
 
     if (detailRouteIsCurrent() && next.instances.some((item) => item.id === detailTarget)) {
@@ -478,10 +544,13 @@ async function loadOverview(showLoading = true, source: "user" | "background" = 
     return true
   } catch (cause) {
     if (generation !== overviewGeneration) return false
-    overviewError.value = message(cause)
+    if (controller.signal.aborted) overviewNeedsDrain = true
+    overviewError.value = controller.signal.aborted ? "更新逾時，請重試。" : message(cause)
     overviewStale.value = Boolean(overviewLastSucceededAt.value)
+    overviewRefreshing.value = false
     return false
   } finally {
+    window.clearTimeout(timeout)
     if (generation === overviewGeneration) loading.value = false
   }
 }
@@ -612,17 +681,49 @@ async function handleMobileHistoryChange(): Promise<void> {
 
 function handleForegroundRefresh(): void {
   if (document.visibilityState !== "visible") {
+    visibilityEpoch++
+    if (overviewRequest) {
+      // 不 abort：Manager 可能仍合併這筆 inspect。等它完成後，前景才可取得新的 snapshot。
+      foregroundObsoleteRequest = overviewRequest
+      overviewGeneration++
+      overviewRequest = null
+    }
     persistMobileListHistory()
     return
   }
   connectivityStale.value = connectivity.value !== null
   overviewStale.value = Boolean(overviewLastSucceededAt.value)
+  overviewRefreshing.value = true
   if (overviewStale.value && confirmation.value?.requiresFreshOverview) {
     ensureFreshOverviewMutation(confirmation.value.freshnessErrorTarget)
     closeConfirmation()
   }
   void loadConnectivity("background")
-  void loadOverview(false, "background")
+  if (foregroundRefresh) return
+  const refresh = (async (): Promise<boolean> => {
+    while (document.visibilityState === "visible") {
+      const epoch = visibilityEpoch
+      const previous = foregroundObsoleteRequest ?? overviewRequest
+      foregroundObsoleteRequest = null
+      if (previous) {
+        if (overviewRequest === previous) {
+          overviewGeneration++
+          overviewRequest = null
+        }
+        const expectedGeneration = overviewGeneration
+        await previous.result
+        if (previous.controller.signal.aborted) overviewNeedsDrain = true
+        if (epoch === visibilityEpoch && expectedGeneration !== overviewGeneration) return false
+      }
+      if (document.visibilityState !== "visible") return false
+      if (epoch !== visibilityEpoch) continue
+      const refreshed = await loadOverview(false, "background", previous?.afterMutation ?? false)
+      if (epoch === visibilityEpoch) return refreshed
+    }
+    return false
+  })()
+  foregroundRefresh = refresh
+  void refresh.finally(() => { if (foregroundRefresh === refresh) foregroundRefresh = null })
 }
 
 function handlePageHide(): void {
@@ -748,7 +849,7 @@ async function saveShortcut(): Promise<void> {
     else await managerApi.createShortcut(payload)
     clearShortcutForm()
     showNotice("目錄捷徑已儲存。")
-    await loadOverview(false, "background")
+    await refreshAfterMutation()
   })
 }
 
@@ -766,7 +867,7 @@ async function deleteShortcut(shortcut: DirectoryShortcut): Promise<void> {
   await mutate(async () => {
     await managerApi.deleteShortcut(shortcut.id)
     showNotice("目錄捷徑已移除；執行個體未受影響。")
-    await loadOverview(false, "background")
+    await refreshAfterMutation()
   })
 }
 
@@ -797,7 +898,7 @@ async function selectNewInstance(target: ManagedInstance | string): Promise<bool
   const instanceId = typeof target === "string" ? target : target.id
   query.value = ""
   filter.value = "all"
-  await loadOverview(false, "background")
+  await refreshAfterMutation()
 
   let instance = overview.value.instances.find((item) => item.id === instanceId)
   if (!instance && typeof target !== "string") {
@@ -829,7 +930,7 @@ async function performStopInstance(instance: ManagedInstance): Promise<void> {
   await lifecycleMutation("stop", async () => {
     replaceInstance(await managerApi.stop(instance.id))
     showNotice("背景執行個體已停止。")
-    await loadOverview(false, "background")
+    await refreshAfterMutation()
   })
 }
 
@@ -856,7 +957,7 @@ async function recheckInstance(instance: ManagedInstance): Promise<void> {
   await lifecycleMutation("recheck", async () => {
     replaceInstance(await managerApi.recheck(instance.id))
     showNotice("執行個體狀態已重新檢查。")
-    await loadOverview(false, "background")
+    await refreshAfterMutation()
   })
 }
 
@@ -897,7 +998,7 @@ async function setInstanceTracking(instance: ManagedInstance, hidden: boolean): 
       mobileDetailOpen.value = false
       replaceMobileHistory("list")
     }
-    await loadOverview(false, "background")
+    await refreshAfterMutation()
   })
 }
 
@@ -925,7 +1026,7 @@ async function performRemoveInstance(instance: ManagedInstance): Promise<void> {
       }
     }
     showNotice("OMW 追蹤紀錄與綁定已移除；OpenCode Sessions 與檔案未受影響。")
-    await loadOverview(false, "background")
+    await refreshAfterMutation()
     if (removedSelection && isMobileViewport()) await restoreListContext()
   })
 }
@@ -937,6 +1038,7 @@ async function lifecycleMutation(
 ): Promise<void> {
   if (lifecyclePending.value) return
   if (!ensureFreshOverviewMutation("lifecycle")) return
+  invalidateOverview()
   beginUserAction()
   lifecycleError.value = ""
   lifecyclePending.value = action
@@ -1023,7 +1125,7 @@ async function openPrimarySession(instance: ManagedInstance): Promise<void> {
 }
 
 async function refreshSelectedInstance(instanceId: string): Promise<void> {
-  await loadOverview(false, "background")
+  await refreshAfterMutation()
   if (selectedId.value === instanceId) await loadSessions()
 }
 
@@ -1041,6 +1143,7 @@ function openNewSession(instance: ManagedInstance): void {
 
 async function createNewSession(instance: ManagedInstance): Promise<void> {
   if (!ensureFreshOverviewMutation("action")) return
+  invalidateOverview()
   beginUserAction()
   try {
     const response = await openWithPopup(instance, () => managerApi.createSession(instance.id))
@@ -1073,6 +1176,7 @@ function selectPrimarySession(instance: ManagedInstance, session: SessionMetadat
 
 async function performSelectPrimarySession(instance: ManagedInstance, sessionId: string): Promise<void> {
   if (!ensureFreshOverviewMutation("action")) return
+  invalidateOverview()
   beginUserAction()
   switchingSessionId.value = sessionId
   try {
@@ -1179,6 +1283,7 @@ function confirmationFallbackFocus(): HTMLElement | null {
 
 async function mutate(operation: () => Promise<void>): Promise<void> {
   beginUserAction()
+  invalidateOverview()
   mutating.value = true
   try {
     await operation()
@@ -1499,8 +1604,8 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
       <div class="topbar-actions">
         <Button variant="success" data-dialog-focus-fallback @click="openStartPanel"><PlusIcon />啟動執行個體</Button>
         <Button variant="outline" size="sm" class="no-press-transform" @click="openManagerSettings"><Settings2Icon />OMW 設定</Button>
-        <Button variant="outline" size="sm" class="no-press-transform" :disabled="loading" @click="loadOverview(true, 'user')">
-          <RefreshCwIcon :class="{ spin: loading }" />重新整理
+        <Button variant="outline" size="sm" class="no-press-transform" :disabled="loading || overviewRefreshing" @click="loadOverview(true, 'user')">
+          <RefreshCwIcon />重新整理
         </Button>
       </div>
     </header>
@@ -1569,21 +1674,22 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
       </details>
     </section>
 
-    <section
-      v-if="overviewLastSucceededAt || overviewError"
-      class="overview-freshness"
-      :data-state="overviewFreshnessState"
-      role="status"
-    >
-      <AlertTriangleIcon v-if="overviewFreshnessState === 'stale' || overviewFreshnessState === 'unavailable'" />
+    <section class="overview-freshness" :data-state="overviewFreshnessState" aria-label="執行個體資料狀態">
+      <AlertTriangleIcon v-if="overviewFreshnessState === 'failed' || overviewFreshnessState === 'unavailable'" />
+      <RefreshCwIcon v-else />
       <div>
         <strong v-if="overviewFreshnessState === 'unavailable'">尚未取得執行個體資料</strong>
-        <strong v-else-if="overviewFreshnessState === 'stale'">資料已過期，最後更新 <time :datetime="overviewLastSucceededAt">{{ checkedAtLabel(overviewLastSucceededAt) }}</time></strong>
-        <span v-else>資料最後更新 <time :datetime="overviewLastSucceededAt">{{ checkedAtLabel(overviewLastSucceededAt) }}</time></span>
-        <small v-if="overviewError">{{ overviewError }}</small>
+        <strong v-else-if="overviewFreshnessState === 'initial'">正在取得執行個體資料</strong>
+        <strong v-else-if="overviewFreshnessState === 'refreshing'" role="status">正在更新，先顯示上次資料</strong>
+        <strong v-else-if="overviewFreshnessState === 'changed'">條件已變更，請更新資料</strong>
+        <strong v-else-if="overviewFreshnessState === 'failed'" role="alert">資料已過期，最後更新失敗</strong>
+        <span v-else>資料已是最新</span>
+        <small v-if="overviewLastSucceededAt">最後成功更新 <time :datetime="overviewLastSucceededAt">{{ checkedAtLabel(overviewLastSucceededAt) }}</time></small>
+        <small v-else-if="overviewError">{{ overviewError }}</small>
+        <small v-if="overviewError && overviewLastSucceededAt">{{ overviewError }}</small>
       </div>
-      <Button v-if="overviewError" variant="outline" size="sm" class="no-press-transform" :disabled="loading" @click="loadOverview(true, 'user')">
-        <RefreshCwIcon :class="{ spin: loading }" />重試更新
+      <Button variant="outline" size="sm" class="overview-retry no-press-transform" :class="{ 'retry-hidden': !overviewError && overviewFreshnessState !== 'changed' }" :tabindex="overviewError || overviewFreshnessState === 'changed' ? 0 : -1" :disabled="overviewRefreshing || (!overviewError && overviewFreshnessState !== 'changed')" @click="loadOverview(true, 'user')">
+        {{ overviewError ? '重試更新' : '更新資料' }}
       </Button>
     </section>
 
@@ -1600,7 +1706,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
           <input v-model="includeHidden" type="checkbox" @change="loadOverview(true, 'user')">
           <span>顯示已停止追蹤</span>
         </label>
-        <div v-if="loading" class="loading-copy"><LoaderCircleIcon class="spin" />讀取 Manager API…</div>
+        <div v-if="loading && !overviewLastSucceededAt" class="loading-copy"><LoaderCircleIcon class="spin" />讀取 Manager API…</div>
         <div class="instance-list" tabindex="-1">
           <header v-if="overview.instances.length" class="instance-list-heading"><span>Session / Instance</span><b>{{ currentInstances.length }} 個未停止</b></header>
           <button
@@ -1647,7 +1753,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
             </div>
           </section>
         </div>
-        <div v-if="!loading && overview.instances.length === 0" class="instance-empty">
+        <div v-if="!loading && !overviewError && overview.instances.length === 0" class="instance-empty">
           <template v-if="appliedQuery.trim() || appliedFilter !== 'all'">
             <p>沒有符合目前搜尋或篩選條件的執行個體。</p>
             <Button variant="outline" @click="clearOverviewFilters">清除篩選</Button>

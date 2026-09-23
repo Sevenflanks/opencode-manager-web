@@ -66,10 +66,10 @@ export const managerApi = {
   registerConnectivity() {
     return request<ConnectivityInfo>("/api/v1/connectivity/register", { method: "POST", body: "{}" })
   },
-  overview(query: string, filter: OverviewFilter, includeHidden = false) {
+  overview(query: string, filter: OverviewFilter, includeHidden = false, signal?: AbortSignal) {
     const params = new URLSearchParams({ q: query, filter })
     if (includeHidden) params.set("includeHidden", "true")
-    return request<OverviewResponse>(`/api/v1/overview?${params}`)
+    return request<OverviewResponse>(`/api/v1/overview?${params}`, signal ? { signal } : undefined)
   },
   browse(directory: string) {
     return request<DirectoryListing>(`/api/v1/directories?path=${encodeURIComponent(directory)}`)

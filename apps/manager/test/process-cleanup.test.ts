@@ -207,6 +207,97 @@ test("Inspect treats IPv4 and dual-stack wildcard listeners as endpoint owners",
   }
 })
 
+test("Inspect and Stop recognize a different IPv6-only wildcard port owner", { skip: !windows, timeout: 20_000 }, async () => {
+  const expectedProcess = await spawnOwnedListener("127.0.0.1")
+  let wildcard: OwnedListener | null = null
+  try {
+    wildcard = await spawnOwnedListener("::", 0, true)
+    const identity = describe(expectedProcess.child)
+    const args = [
+      "-ProcessId", String(identity.pid), "-ExpectedCreationTicks", identity.creationTimeTicks,
+      "-ExpectedExecutable", identity.executable, "-Port", String(wildcard.port),
+    ]
+    const inspected = runHelper(["-Action", "Inspect", ...args])
+    assert.equal(inspected.status, 0, inspected.stderr)
+    assert.deepEqual(JSON.parse(inspected.stdout.trim()), {
+      processState: "running", running: true, matched: true, portOwnerMatched: false, portOwnedByOther: true,
+    })
+    const stopped = runHelper(["-Action", "Stop", ...args])
+    assert.equal(stopped.status, 0, stopped.stderr)
+    assert.deepEqual(JSON.parse(stopped.stdout.trim()), { stopped: false, reason: "port is owned by another process" })
+    assert.equal(processExists(identity.pid), true)
+  } finally {
+    await Promise.all([stopOwnedListener(expectedProcess), stopOwnedListener(wildcard)])
+  }
+})
+
+test("Inspect ignores a pure IPv6 loopback listener that cannot overlap 127.0.0.1", { skip: !windows, timeout: 20_000 }, async () => {
+  const expectedProcess = await spawnOwnedListener("127.0.0.1")
+  let loopback: OwnedListener | null = null
+  try {
+    loopback = await spawnOwnedListener("::1", expectedProcess.port, true)
+    const identity = describe(expectedProcess.child)
+    const inspected = runHelper([
+      "-Action", "Inspect", "-ProcessId", String(identity.pid),
+      "-ExpectedCreationTicks", identity.creationTimeTicks, "-ExpectedExecutable", identity.executable,
+      "-Port", String(expectedProcess.port),
+    ])
+    assert.equal(inspected.status, 0, inspected.stderr)
+    assert.deepEqual(JSON.parse(inspected.stdout.trim()), {
+      processState: "running", running: true, matched: true, portOwnerMatched: true, portOwnedByOther: false,
+    })
+  } finally {
+    await Promise.all([stopOwnedListener(expectedProcess), stopOwnedListener(loopback)])
+  }
+})
+
+test("Inspect never trusts reused identity or a listener owned by another process", { skip: !windows, timeout: 20_000 }, async () => {
+  const owner = await spawnOwnedListener("127.0.0.1")
+  const other = await spawnOwnedListener("127.0.0.1")
+  try {
+    const ownerIdentity = describe(owner.child)
+    const otherIdentity = describe(other.child)
+    const wrongCreation = runHelper([
+      "-Action", "Inspect", "-ProcessId", String(ownerIdentity.pid),
+      "-ExpectedCreationTicks", otherIdentity.creationTimeTicks,
+      "-ExpectedExecutable", ownerIdentity.executable, "-Port", String(owner.port),
+    ])
+    assert.equal(wrongCreation.status, 0, wrongCreation.stderr)
+    assert.equal(JSON.parse(wrongCreation.stdout).matched, false)
+
+    const foreignOwner = runHelper([
+      "-Action", "Inspect", "-ProcessId", String(otherIdentity.pid),
+      "-ExpectedCreationTicks", otherIdentity.creationTimeTicks,
+      "-ExpectedExecutable", otherIdentity.executable, "-Port", String(owner.port),
+    ])
+    assert.equal(foreignOwner.status, 0, foreignOwner.stderr)
+    assert.deepEqual(JSON.parse(foreignOwner.stdout), {
+      processState: "running", running: true, matched: true, portOwnerMatched: false, portOwnedByOther: true,
+    })
+  } finally {
+    await Promise.all([stopOwnedListener(owner), stopOwnedListener(other)])
+  }
+})
+
+test("failed port-owner query rejects Inspect and cannot grant Stop", { skip: !windows, timeout: 20_000 }, async () => {
+  const owner = await spawnOwnedListener("127.0.0.1")
+  try {
+    const identity = describe(owner.child)
+    const arguments_ = [
+      "-ProcessId", String(identity.pid), "-ExpectedCreationTicks", identity.creationTimeTicks,
+      "-ExpectedExecutable", identity.executable, "-Port", String(owner.port),
+    ]
+    // Windows environment keys are case-insensitive; remove the original spelling before overriding it.
+    const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "systemroot"))
+    environment.SystemRoot = path.join(tmpdir(), "omw-missing-system-root")
+    assert.notEqual(runHelper(["-Action", "Inspect", ...arguments_], environment).status, 0)
+    assert.notEqual(runHelper(["-Action", "Stop", ...arguments_], environment).status, 0)
+    assert.equal(processExists(identity.pid), true)
+  } finally {
+    await stopOwnedListener(owner)
+  }
+})
+
 function fixtureDelegatingLauncher(pidFile: string): string {
   return `
 const { spawn } = require("node:child_process")
@@ -262,11 +353,11 @@ const backstop = setTimeout(stop, ${liveTreeFixtureBackstopMs})
 `
 }
 
-function runHelper(arguments_: string[]) {
+function runHelper(arguments_: string[], env = process.env) {
   return spawnSync("pwsh.exe", [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-File", helperPath,
     ...arguments_,
-  ], { encoding: "utf8", timeout: helperTimeoutMs, windowsHide: true })
+  ], { encoding: "utf8", timeout: helperTimeoutMs, windowsHide: true, env })
 }
 
 interface OwnedListener {
@@ -339,15 +430,15 @@ async function stopLiveTreeFixture(root: ChildProcess, childPidFile: string, cle
   }
 }
 
-async function spawnOwnedListener(address: string, port = 0): Promise<OwnedListener> {
+async function spawnOwnedListener(address: string, port = 0, ipv6Only = false): Promise<OwnedListener> {
   const script = [
     "const net = require('node:net')",
     "const server = net.createServer()",
     "server.on('error', (error) => { console.error(error.message); process.exit(2) })",
-    "server.listen({ host: process.argv[1], port: Number(process.argv[2]), exclusive: true }, () => process.stdout.write(String(server.address().port) + '\\n'))",
+    "server.listen({ host: process.argv[1], port: Number(process.argv[2]), exclusive: true, ipv6Only: process.argv[3] === 'true' }, () => process.stdout.write(String(server.address().port) + '\\n'))",
     "setTimeout(() => process.exit(0), 12000)",
   ].join(";")
-  const child = spawn(process.execPath, ["-e", script, address, String(port)], {
+  const child = spawn(process.execPath, ["-e", script, address, String(port), String(ipv6Only)], {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   })
