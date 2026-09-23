@@ -12,72 +12,91 @@ import { DpapiCredentialStore } from "./credential-store.js"
 import { ManagerRepository } from "./repository.js"
 import { OpenCodeRuntime } from "./runtime.js"
 import { ManagerService } from "./service.js"
+import { createLifecycleDiagnostics } from "./lifecycle-diagnostics.js"
 
 const host = "127.0.0.1"
-const port = parsePort(process.env.OMW_PORT ?? "4174")
-const managerVersion = await readManagerPackageVersion()
 const dataDirectory = readDataDirectory(process.env)
-const remoteProfileStore = new RemoteProfileStore(dataDirectory)
-const remoteAccess = await startupRemoteAccess(process.env, port, remoteProfileStore)
-const portPool = readInstancePortPoolConfig(process.env, remoteAccess)
-const launcherIntegration = process.env.OMW_LAUNCHER_INTEGRATION === "1"
-const credentialStore = new DpapiCredentialStore({
-  dataDirectory,
-  ...(process.env.OMW_POWERSHELL_EXECUTABLE ? { powershell: process.env.OMW_POWERSHELL_EXECUTABLE } : {}),
-})
-if (!credentialStore.exists()) throw new Error("請先執行 omw，在互動式終端完成初始設定。")
-const credentials: StoredCredentials = await credentialStore.load()
-const authenticator = new SeparateRequestAuthenticator(credentials)
-const credentialController = new CredentialController(credentialStore, authenticator, credentials)
-const repository = new ManagerRepository(path.join(dataDirectory, "omw.sqlite"))
-const connectivity = new RemoteAccessController({
-  managerPort: port,
-  remoteAccess,
-  portPool,
-  executable: tailscaleExecutable(process.env),
-  disabled: process.env.OMW_REMOTE_ACCESS === "0",
-  store: remoteProfileStore,
-})
-const runtime = new OpenCodeRuntime({
-  executable: process.env.OMW_OPENCODE_EXECUTABLE ?? "",
-  dataDirectory,
-  ...(process.env.OMW_POWERSHELL_EXECUTABLE ? { powershell: process.env.OMW_POWERSHELL_EXECUTABLE } : {}),
-  publicOriginForPort: (instancePort: number) => connectivity.remoteOriginForPort(instancePort),
-})
-const service = new ManagerService(
-  repository,
-  runtime,
-  portPool,
-  (instancePort) => connectivity.ensureRemoteOriginForPort(instancePort),
-)
-const allowedOrigins = readAllowedOrigins(port, remoteAccess?.publicManagerOrigin)
-const webRoot = path.resolve(process.env.OMW_WEB_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist"))
-const app = buildApp({
-  service,
-  connectivity,
-  authority: { hostname: host, port },
-  allowedOrigins,
-  webRoot,
-  ...(remoteAccess ? { publicOrigin: remoteAccess.publicManagerOrigin } : {}),
-  credentialController,
-  managerVersion,
-  shutdownManager: () => { void app.close() },
-  remoteAccess: connectivity,
-  remoteAuthenticator: authenticator,
-  ...(launcherIntegration ? { launcherAuthenticator: authenticator } : {}),
-})
+const diagnostics = createLifecycleDiagnostics(dataDirectory)
+let startupStage = "port"
+try {
+  const port = parsePort(process.env.OMW_PORT ?? "4174")
+  diagnostics.setContext({ port })
+  startupStage = "version"
+  const managerVersion = await readManagerPackageVersion()
+  diagnostics.setContext({ managerVersion })
+  startupStage = "remote_access"
+  const remoteProfileStore = new RemoteProfileStore(dataDirectory)
+  const remoteAccess = await startupRemoteAccess(process.env, port, remoteProfileStore)
+  startupStage = "configuration"
+  const portPool = readInstancePortPoolConfig(process.env, remoteAccess)
+  const launcherIntegration = process.env.OMW_LAUNCHER_INTEGRATION === "1"
+  const credentialStore = new DpapiCredentialStore({
+    dataDirectory,
+    ...(process.env.OMW_POWERSHELL_EXECUTABLE ? { powershell: process.env.OMW_POWERSHELL_EXECUTABLE } : {}),
+  })
+  startupStage = "credentials"
+  if (!credentialStore.exists()) throw new Error("請先執行 omw，在互動式終端完成初始設定。")
+  const credentials: StoredCredentials = await credentialStore.load()
+  const authenticator = new SeparateRequestAuthenticator(credentials)
+  const credentialController = new CredentialController(credentialStore, authenticator, credentials)
+  const repository = new ManagerRepository(path.join(dataDirectory, "omw.sqlite"))
+  startupStage = "application"
+  const connectivity = new RemoteAccessController({
+    managerPort: port,
+    remoteAccess,
+    portPool,
+    executable: tailscaleExecutable(process.env),
+    disabled: process.env.OMW_REMOTE_ACCESS === "0",
+    store: remoteProfileStore,
+  })
+  const runtime = new OpenCodeRuntime({
+    executable: process.env.OMW_OPENCODE_EXECUTABLE ?? "",
+    dataDirectory,
+    ...(process.env.OMW_POWERSHELL_EXECUTABLE ? { powershell: process.env.OMW_POWERSHELL_EXECUTABLE } : {}),
+    publicOriginForPort: (instancePort: number) => connectivity.remoteOriginForPort(instancePort),
+  })
+  const service = new ManagerService(
+    repository,
+    runtime,
+    portPool,
+    (instancePort) => connectivity.ensureRemoteOriginForPort(instancePort),
+  )
+  const allowedOrigins = readAllowedOrigins(port, remoteAccess?.publicManagerOrigin)
+  const webRoot = path.resolve(process.env.OMW_WEB_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist"))
+  const app = buildApp({
+    service,
+    connectivity,
+    authority: { hostname: host, port },
+    allowedOrigins,
+    webRoot,
+    ...(remoteAccess ? { publicOrigin: remoteAccess.publicManagerOrigin } : {}),
+    credentialController,
+    managerVersion,
+    shutdownManager: () => { diagnostics.record("shutdown_requested", { source: "api" }); void app.close() },
+    remoteAccess: connectivity,
+    remoteAuthenticator: authenticator,
+    ...(launcherIntegration ? { launcherAuthenticator: authenticator } : {}),
+  })
 
-app.addHook("onClose", async () => {
-  // Serve 已在 preClose 停止；這裡清理 Manager-owned observers，OpenCode Instances 刻意存活。
-  await service.shutdown()
-  repository.close()
-})
+  app.addHook("onClose", async () => {
+    // Serve 已在 preClose 停止；這裡清理 Manager-owned observers，OpenCode Instances 刻意存活。
+    await service.shutdown()
+    repository.close()
+    diagnostics.record("close_completed")
+  })
 
-await service.reconcile()
-await app.listen({ host, port })
-if (remoteAccess) {
-  // Serve provisioning is best-effort after listen so a Tailscale failure never takes down local management.
-  void connectivity.register("startup").catch(() => undefined)
+  startupStage = "reconcile"
+  await service.reconcile()
+  startupStage = "listen"
+  await app.listen({ host, port })
+  diagnostics.record("ready")
+  if (remoteAccess) {
+    // Serve provisioning is best-effort after listen so a Tailscale failure never takes down local management.
+    void connectivity.register("startup").catch(() => undefined)
+  }
+} catch (error) {
+  diagnostics.record("startup_failed", { stage: startupStage, error })
+  throw error
 }
 
 function parsePort(value: string): number {
