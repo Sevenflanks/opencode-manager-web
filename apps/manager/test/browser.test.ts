@@ -458,7 +458,9 @@ test("mobile list-detail navigation preserves context and separates stopped hist
 
     await page.goto(origin, { waitUntil: "networkidle" })
     await page.locator(".instance-pane").waitFor()
-    assert.match(await page.locator(".overview-freshness").textContent() ?? "", /最後更新/, "successful overview exposes its last-fetched timestamp")
+    const lastSuccessfulAt = await page.locator('.overview-freshness[data-state="fresh"] time').getAttribute("datetime")
+    assert.ok(lastSuccessfulAt && Number.isFinite(Date.parse(lastSuccessfulAt)), "successful overview exposes a valid last-success timestamp")
+    assert.match(await page.locator(".overview-freshness").textContent() ?? "", /最後成功更新/, "successful overview labels its last-success timestamp")
     assert.deepEqual(await page.evaluate(() => ({ view: history.state.omwMobileView, instanceId: history.state.omwInstanceId })), { view: "list", instanceId: "" }, "mobile navigation initializes a replaceable list history entry")
     assert.equal(await page.locator(".detail-pane").isVisible(), false, "mobile opens on the list without overview auto-selection")
     assert.equal(await page.locator(".connectivity").isVisible(), true, "connectivity remains in the mobile list view")
@@ -627,7 +629,7 @@ test("mobile list-detail navigation preserves context and separates stopped hist
     failOverview = true
     await page.reload({ waitUntil: "networkidle" })
     assert.equal(await page.evaluate(() => history.state.omwMobileView), "detail", "an initial overview failure preserves the requested detail history entry")
-    assert.match(await page.locator(".overview-freshness").textContent() ?? "", /尚未取得執行個體資料/, "first-fetch failure is unavailable, not stale")
+    assert.match(await page.locator('.overview-freshness[data-state="unavailable"]').textContent() ?? "", /尚未取得執行個體資料/, "first-fetch failure is unavailable, not stale")
     failOverview = false
     await page.getByRole("button", { name: "重試更新" }).click()
     await page.locator(".detail-pane").waitFor()
@@ -649,13 +651,15 @@ test("mobile list-detail navigation preserves context and separates stopped hist
     await page.setViewportSize({ width: 390, height: 844 })
     failOverview = true
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
-    await page.getByText(/資料已過期，最後更新/).waitFor()
+    const failedOverview = page.locator('.overview-freshness[data-state="failed"] [role="alert"]')
+    await failedOverview.waitFor()
+    assert.equal(await failedOverview.textContent(), "資料已過期，最後更新失敗")
     await staleStopDialog.waitFor({ state: "hidden" })
     assert.equal(stopCalls, 0, "a confirmation opened before staleness cannot mutate after the foreground check starts")
     assert.equal(await page.getByRole("button", { name: "停止執行個體" }).isDisabled(), true, "stale overview disables capability-dependent mutations")
     failOverview = false
     await page.getByRole("button", { name: "重試更新" }).click()
-    await page.waitForFunction(() => !document.body.textContent?.includes("資料已過期，最後更新"))
+    await page.locator('.overview-freshness[data-state="fresh"]').waitFor()
     assert.equal(await page.getByRole("button", { name: "停止執行個體" }).isEnabled(), true, "successful refresh silently clears the stale mutation gate")
     await page.getByRole("button", { name: "停止執行個體" }).click()
     await page.getByRole("alertdialog", { name: "停止整個執行個體？" }).getByRole("button", { name: "停止執行個體" }).click()
@@ -974,8 +978,10 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     await page.getByRole("button", { name: "全部", exact: true }).click()
     await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 2)
 
-    const instanceA = page.getByTitle(projectA).locator("..").locator(".instance-row")
-    const instanceB = page.getByTitle(projectB).locator("..").locator(".instance-row")
+    const instanceA = page.locator(".instance-row").filter({ has: page.getByTitle(projectA, { exact: true }) })
+    const instanceB = page.locator(".instance-row").filter({ has: page.getByTitle(projectB, { exact: true }) })
+    assert.equal(await instanceA.count(), 1, "project A identifies exactly one Instance row")
+    assert.equal(await instanceB.count(), 1, "project B identifies exactly one Instance row")
     await instanceA.click()
     await page.locator(".primary-session-card").getByText("尚未綁定主 Session", { exact: true }).waitFor()
     assert.equal(await page.getByRole("button", { name: "進入主 Session" }).isDisabled(), true)

@@ -16,7 +16,7 @@
     "dev:credentials": "npm run build -w @omw/manager && node scripts/isolated-entry.mjs development node apps/manager/dist/src/credential-setup.js",
     "dev:omw": "npm run build && node scripts/isolated-entry.mjs development node packages/launcher/dist/src/manager-cli.js",
     "acceptance:isolated": "npm run build -w @omw/manager && node scripts/isolated-entry.mjs acceptance",
-    "test": "npm run test:release && npm run test -w @omw/manager && npm run test -w @sevenflanks/omw",
+    "test": "npm run test:release && npm run build -w @omw/contracts && npm run build -w @omw/web && npm run test -w @omw/manager && npm run test -w @sevenflanks/omw && npm run test -w @omw/web",
     "test:release": "node --test scripts/release/*.test.mjs",
     "release:verify": "node scripts/release/verify-release.mjs",
     "typecheck": "npm run typecheck -w @omw/contracts && npm run typecheck -w @omw/manager && npm run typecheck -w @sevenflanks/omw && npm run typecheck -w @omw/web"

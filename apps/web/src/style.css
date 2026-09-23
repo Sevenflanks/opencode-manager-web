@@ -66,14 +66,17 @@ h3 { font-size: .95rem; }
 .connectivity-details dd { min-width: 0; overflow: hidden; margin: 4px 0 0; color: #b7c1c5; font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
 .connectivity-details dd code { font-size: .68rem; }
 .connectivity-details > p { color: #7f8b91; font-size: .67rem; }
-.overview-freshness { display: flex; min-height: 36px; align-items: center; gap: 9px; margin-bottom: 12px; border: 1px solid #30383d; padding: 6px 8px 6px 11px; color: #8c989e; background: #121719; font-size: .7rem; }
+.overview-freshness { display: grid; grid-template-columns: 16px minmax(0, 1fr) 88px; min-height: 62px; align-items: center; gap: 9px; margin-bottom: 12px; border: 1px solid #30383d; padding: 6px 8px 6px 11px; color: #8c989e; background: #121719; font-size: .7rem; }
 .overview-freshness > svg { width: 16px; height: 16px; flex: 0 0 16px; }
-.overview-freshness > div { display: grid; min-width: 0; flex: 1; gap: 2px; }
-.overview-freshness strong { color: #e2b36e; font-size: .74rem; }
-.overview-freshness small { overflow-wrap: anywhere; color: #b7a27a; }
+.overview-freshness > div { display: grid; min-width: 0; gap: 2px; }
+.overview-freshness strong, .overview-freshness small, .overview-freshness span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overview-freshness strong { color: #aebcba; font-size: .74rem; }
+.overview-freshness small { color: #a6b4b0; }
 .overview-freshness[data-state="fresh"] { border-color: #2b4235; color: #829a8a; }
-.overview-freshness[data-state="stale"], .overview-freshness[data-state="unavailable"] { border-color: #5f4a2c; color: #e2b36e; background: #1b1711; }
-.overview-freshness button { flex: 0 0 auto; }
+.overview-freshness[data-state="failed"], .overview-freshness[data-state="unavailable"] { border-color: #5f4a2c; color: #e2b36e; background: #1b1711; }
+.overview-freshness[data-state="failed"] strong, .overview-freshness[data-state="unavailable"] strong { color: #e2b36e; }
+.overview-freshness .overview-retry { width: 88px; }
+.overview-freshness .retry-hidden { visibility: hidden; }
 .shortcut-rail, .browser-panel { border: 1px solid #2c3236; background: #111416; padding: 14px; margin-bottom: 12px; }
 .section-heading { margin-bottom: 12px; }
 .section-heading > span { color: #7f8b91; font: .75rem "Cascadia Code", monospace; }
@@ -308,8 +311,7 @@ h3 { font-size: .95rem; }
   .connectivity-actions button { padding-inline: 10px; }
   .connectivity-copy-fallback { grid-template-columns: minmax(0, 1fr); }
   .connectivity-details dl { grid-template-columns: 1fr 1fr; }
-  .overview-freshness { align-items: flex-start; flex-wrap: wrap; }
-  .overview-freshness button { width: 100%; }
+  .overview-freshness { grid-template-columns: 16px minmax(0, 1fr) 88px; }
   .workspace { display: block; }
   .app-root[data-mobile-view="list"] .detail-pane { display: none; }
   .app-root[data-mobile-view="detail"] .connectivity, .app-root[data-mobile-view="detail"] .instance-pane { display: none; }

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "build": "vue-tsc --noEmit && vite build",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@omw/contracts": "0.2.1",
