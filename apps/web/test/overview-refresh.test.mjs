@@ -107,6 +107,110 @@ test("foreground refresh retains the old list, neutral status and stable narrow 
   })
 })
 
+test("returning from a hidden tab waits for the old Manager flight, then verifies a new snapshot once", { skip: !enabled, timeout: 20_000 }, async () => {
+  await withOverviewPage(async ({ page, setInspect, inspectCount }) => {
+    let releaseOld
+    const oldHeld = new Promise((resolve) => { releaseOld = resolve })
+    let oldStarted
+    const oldSent = new Promise((resolve) => { oldStarted = resolve })
+    let releaseNew
+    const newHeld = new Promise((resolve) => { releaseNew = resolve })
+    let newStarted
+    const newSent = new Promise((resolve) => { newStarted = resolve })
+    setInspect(async (call) => {
+      if (call === 2) { oldStarted(); await oldHeld }
+      if (call === 3) { newStarted(); await newHeld }
+    })
+    try {
+      await oldSent // the five-second background poll has reached the actual Manager service
+      await page.evaluate(() => {
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" })
+        document.dispatchEvent(new Event("visibilitychange"))
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" })
+        document.dispatchEvent(new Event("visibilitychange"))
+        window.dispatchEvent(new Event("pageshow"))
+      })
+      await page.locator('.overview-freshness[data-state="refreshing"]').waitFor()
+      releaseOld()
+      await newSent
+      assert.equal(inspectCount(), 3, "only one new snapshot follows the old Manager flight despite duplicate foreground events")
+      assert.equal(await page.locator(".overview-freshness").getAttribute("data-state"), "refreshing", "the old response cannot unlock mutations")
+      releaseNew()
+      await page.locator('.overview-freshness[data-state="fresh"]').waitFor()
+    } finally {
+      releaseOld()
+      releaseNew()
+    }
+  })
+})
+
+test("a second hide while awaiting the old snapshot sends no new request until visible", { skip: !enabled, timeout: 20_000 }, async () => {
+  await withOverviewPage(async ({ page, setInspect, inspectCount }) => {
+    let releaseOld
+    const oldHeld = new Promise((resolve) => { releaseOld = resolve })
+    let oldStarted
+    const oldSent = new Promise((resolve) => { oldStarted = resolve })
+    setInspect(async (call) => { if (call === 2) { oldStarted(); await oldHeld } })
+    try {
+      await oldSent
+      await page.evaluate(() => {
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" })
+        document.dispatchEvent(new Event("visibilitychange"))
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" })
+        document.dispatchEvent(new Event("visibilitychange"))
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" })
+        document.dispatchEvent(new Event("visibilitychange"))
+      })
+      const oldResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/overview")
+      releaseOld()
+      await oldResponse
+      await page.waitForTimeout(100)
+      assert.equal(inspectCount(), 2, "no replacement request is sent while hidden")
+      assert.notEqual(await page.locator(".overview-freshness").getAttribute("data-state"), "fresh", "an old snapshot cannot re-enable mutations while hidden")
+      await page.evaluate(() => {
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" })
+        document.dispatchEvent(new Event("visibilitychange"))
+      })
+      await page.waitForFunction(() => document.querySelector('.overview-freshness')?.getAttribute('data-state') === 'fresh')
+      assert.equal(inspectCount(), 3)
+    } finally {
+      releaseOld()
+    }
+  })
+})
+
+test("a timed-out Manager flight is drained before any retry can mark the overview fresh", { skip: !enabled, timeout: 32_000 }, async () => {
+  await withOverviewPage(async ({ page, setInspect, inspectCount }) => {
+    let releaseOld
+    const oldHeld = new Promise((resolve) => { releaseOld = resolve })
+    let oldStarted
+    const oldSent = new Promise((resolve) => { oldStarted = resolve })
+    let releaseNew
+    const newHeld = new Promise((resolve) => { releaseNew = resolve })
+    let newStarted
+    const newSent = new Promise((resolve) => { newStarted = resolve })
+    setInspect(async (call) => {
+      if (call === 2) { oldStarted(); await oldHeld }
+      if (call === 3) { newStarted(); await newHeld }
+    })
+    try {
+      await oldSent
+      await page.locator('.overview-freshness[data-state="failed"]').waitFor({ timeout: 19_000 })
+      assert.match(await page.locator(".overview-freshness").textContent(), /更新逾時/)
+      await page.getByRole("button", { name: "重試更新" }).click()
+      releaseOld()
+      await newSent
+      assert.equal(inspectCount(), 3, "a completed retry must be a distinct Manager inspection after draining the old one")
+      assert.notEqual(await page.locator(".overview-freshness").getAttribute("data-state"), "fresh")
+      releaseNew()
+      await page.locator('.overview-freshness[data-state="fresh"]').waitFor()
+    } finally {
+      releaseOld()
+      releaseNew()
+    }
+  })
+})
+
 test("initial loading and initial failure have distinct states and a retry recovers", { skip: !enabled, timeout: 15_000 }, async () => {
   let rejectInitial
   const held = new Promise((resolve) => { rejectInitial = resolve })
@@ -246,6 +350,8 @@ test("a hung refresh times out, retains the last successful time, and a retry re
       if (reads === 1) {
         await hung
         await route.fulfill({ json: { ...initial, instances: [] } }).catch(() => undefined)
+      } else if (reads === 2) {
+        await route.fulfill({ json: { ...initial, instances: [] } })
       } else {
         await route.fulfill({ json: initial })
       }
@@ -261,7 +367,7 @@ test("a hung refresh times out, retains the last successful time, and a retry re
       releaseHung()
       await page.waitForTimeout(150)
       assert.equal(await page.locator(`[data-instance-id="${id}"]`).count(), 1)
-      assert.equal(reads, 2)
+      assert.equal(reads, 3, "the first response after a timeout is only a drain, then a new snapshot verifies freshness")
     } finally {
       releaseHung()
     }
@@ -350,8 +456,11 @@ test("a foreground overview that finishes before recheck does not unlock stale m
       releaseMutation()
       await postRefreshSent
       await page.locator('.overview-freshness[data-state="refreshing"]').waitFor()
+      const validated = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/overview")
       releasePostRefresh()
-      await page.locator('.overview-freshness[data-state="fresh"]').waitFor()
+      await validated
+      await page.waitForTimeout(150)
+      assert.equal(await page.locator(".overview-freshness").getAttribute("data-state"), "fresh", "post-operation verification clears stale before the next five-second poll")
       assert.equal(await page.locator(`[data-instance-id="${id}"]`).count(), 1)
       assert.ok(reads >= 2)
     } finally {

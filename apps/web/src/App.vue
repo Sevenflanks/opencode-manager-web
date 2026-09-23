@@ -143,9 +143,14 @@ let inputModality: "pointer" | "keyboard" = "keyboard"
 let restoreFocusAfterStartPanelClose = true
 let revealDetailAfterStartPanelClose = false
 let overviewGeneration = 0
-// 超時只釋放前端 singleflight；Manager 端仍以自身的 mutation invalidation 控制 snapshot。
+// 超時只釋放前端 singleflight；Manager 端可能仍有舊 probe，後續讀取必須先 drain 再驗證。
 const OVERVIEW_WAIT_MS = 15_000
-let overviewRequest: { key: string; result: Promise<boolean>; controller: AbortController } | null = null
+type OverviewRequest = { key: string; result: Promise<boolean>; controller: AbortController; afterMutation: boolean }
+let overviewRequest: OverviewRequest | null = null
+let foregroundObsoleteRequest: OverviewRequest | null = null
+let foregroundRefresh: Promise<boolean> | null = null
+let visibilityEpoch = 0
+let overviewNeedsDrain = false
 let restoringFilteredDetail = false
 let connectivityReadGeneration = 0
 let connectivityMutationGeneration = 0
@@ -438,10 +443,10 @@ function invalidateOverview(reason: "changed" | "mutation" = "mutation"): void {
 function refreshAfterMutation(): Promise<boolean> {
   // Manager 可能合併同一 includeHidden 的 in-flight probe；mutation 完成後不可沿用前一筆前端回應。
   invalidateOverview()
-  return loadOverview(false, "background")
+  return loadOverview(false, "background", true)
 }
 
-function loadOverview(showLoading = true, source: "user" | "background" = "user"): Promise<boolean> {
+function loadOverview(showLoading = true, source: "user" | "background" = "user", afterMutation = false): Promise<boolean> {
   if (source === "background" && document.visibilityState === "hidden") return Promise.resolve(false)
   if (source === "user") beginUserAction()
   if (source === "user") {
@@ -449,18 +454,20 @@ function loadOverview(showLoading = true, source: "user" | "background" = "user"
     overviewError.value = ""
     if (overviewLastSucceededAt.value) overviewStale.value = true
   }
+  if (source === "user" && foregroundObsoleteRequest && !foregroundRefresh) handleForegroundRefresh()
+  if (source === "user" && foregroundRefresh) return foregroundRefresh
   const key = JSON.stringify([query.value, filter.value, includeHidden.value])
   if (overviewRequest?.key === key) return overviewRequest.result
   const generation = ++overviewGeneration
   const controller = new AbortController()
-  const result = fetchOverview(generation, controller, showLoading, source)
-  const request = { key, result, controller }
+  const result = fetchOverview(generation, controller, showLoading, source, afterMutation)
+  const request = { key, result, controller, afterMutation }
   overviewRequest = request
   void result.finally(() => { if (overviewRequest === request) overviewRequest = null })
   return result
 }
 
-async function fetchOverview(generation: number, controller: AbortController, showLoading: boolean, source: "user" | "background"): Promise<boolean> {
+async function fetchOverview(generation: number, controller: AbortController, showLoading: boolean, source: "user" | "background", afterMutation: boolean): Promise<boolean> {
   const requestedQuery = query.value
   const requestedFilter = filter.value
   const requestedIncludeHidden = includeHidden.value
@@ -473,6 +480,13 @@ async function fetchOverview(generation: number, controller: AbortController, sh
   if (showLoading && !overviewLastSucceededAt.value) loading.value = true
   const timeout = window.setTimeout(() => controller.abort(), OVERVIEW_WAIT_MS)
   try {
+    if (overviewNeedsDrain) {
+      // 前一個 HTTP 等待已超時時，Manager 可能仍合併該次 in-flight；先丟棄一次回應，再讀新的 snapshot。
+      await managerApi.overview(requestedQuery, requestedFilter, requestedIncludeHidden, controller.signal)
+      if (generation !== overviewGeneration || (source === "background" && document.visibilityState === "hidden")) return false
+      overviewNeedsDrain = false
+    }
+    if (source === "background" && document.visibilityState === "hidden") return false
     let next = await managerApi.overview(requestedQuery, requestedFilter, requestedIncludeHidden, controller.signal)
     if (generation !== overviewGeneration) return false
     let appliedQueryValue = requestedQuery
@@ -480,6 +494,7 @@ async function fetchOverview(generation: number, controller: AbortController, sh
     // 篩選結果不能當成 Instance 已移除；只有同一 includeHidden 範圍的未篩選成功結果才能確認缺少。
     if (detailRouteIsCurrent() && !next.instances.some((item) => item.id === detailTarget)
       && (requestedQuery.trim() || requestedFilter !== "all")) {
+      if (source === "background" && document.visibilityState === "hidden") return false
       const fallback = await managerApi.overview("", "all", requestedIncludeHidden, controller.signal)
       if (generation !== overviewGeneration) return false
       if (detailRouteIsCurrent() && fallback.instances.some((item) => item.id === detailTarget)) {
@@ -500,8 +515,8 @@ async function fetchOverview(generation: number, controller: AbortController, sh
     appliedQuery.value = appliedQueryValue
     appliedFilter.value = appliedFilterValue
     overviewLastSucceededAt.value = new Date().toISOString()
-    // Mutation 開始前取得的前景 snapshot 不能解除操作防護；操作完成後會再發起驗證刷新。
-    overviewStale.value = Boolean(mutating.value || lifecyclePending.value || switchingSessionId.value)
+    // 操作前啟動的 snapshot 不可解除防護；操作後的驗證即使外層 pending 尚未清除，也可以解除 stale。
+    overviewStale.value = !afterMutation && Boolean(mutating.value || lifecyclePending.value || switchingSessionId.value)
     overviewRefreshing.value = false
     overviewError.value = ""
 
@@ -529,6 +544,7 @@ async function fetchOverview(generation: number, controller: AbortController, sh
     return true
   } catch (cause) {
     if (generation !== overviewGeneration) return false
+    if (controller.signal.aborted) overviewNeedsDrain = true
     overviewError.value = controller.signal.aborted ? "更新逾時，請重試。" : message(cause)
     overviewStale.value = Boolean(overviewLastSucceededAt.value)
     overviewRefreshing.value = false
@@ -665,6 +681,13 @@ async function handleMobileHistoryChange(): Promise<void> {
 
 function handleForegroundRefresh(): void {
   if (document.visibilityState !== "visible") {
+    visibilityEpoch++
+    if (overviewRequest) {
+      // 不 abort：Manager 可能仍合併這筆 inspect。等它完成後，前景才可取得新的 snapshot。
+      foregroundObsoleteRequest = overviewRequest
+      overviewGeneration++
+      overviewRequest = null
+    }
     persistMobileListHistory()
     return
   }
@@ -676,7 +699,31 @@ function handleForegroundRefresh(): void {
     closeConfirmation()
   }
   void loadConnectivity("background")
-  void loadOverview(false, "background")
+  if (foregroundRefresh) return
+  const refresh = (async (): Promise<boolean> => {
+    while (document.visibilityState === "visible") {
+      const epoch = visibilityEpoch
+      const previous = foregroundObsoleteRequest ?? overviewRequest
+      foregroundObsoleteRequest = null
+      if (previous) {
+        if (overviewRequest === previous) {
+          overviewGeneration++
+          overviewRequest = null
+        }
+        const expectedGeneration = overviewGeneration
+        await previous.result
+        if (previous.controller.signal.aborted) overviewNeedsDrain = true
+        if (epoch === visibilityEpoch && expectedGeneration !== overviewGeneration) return false
+      }
+      if (document.visibilityState !== "visible") return false
+      if (epoch !== visibilityEpoch) continue
+      const refreshed = await loadOverview(false, "background", previous?.afterMutation ?? false)
+      if (epoch === visibilityEpoch) return refreshed
+    }
+    return false
+  })()
+  foregroundRefresh = refresh
+  void refresh.finally(() => { if (foregroundRefresh === refresh) foregroundRefresh = null })
 }
 
 function handlePageHide(): void {
