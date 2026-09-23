@@ -57,12 +57,13 @@ OMW 會自動產生 launcher token，並將帳密與 token 透過 Windows curren
 成功後，終端應顯示類似：
 
 ```text
-OMW Manager ready: http://127.0.0.1:4174
+OMW CLI version: 0.2.1
+OMW Manager ready: http://127.0.0.1:4174 (version 0.2.1, started)
 ```
 
 這個 plain Manager 命令只會初始化、重用或在背景啟動 Manager，不會啟動 OpenCode TUI。請用瀏覽器開啟終端實際輸出的 URL。
 
-**完成指標：**終端顯示 `OMW Manager ready: http://127.0.0.1:4174`（port 可能不同），瀏覽器可開啟登入頁。
+**完成指標：**終端顯示 Manager 的實際 runtime version 與 `started`、`reused` 或 `upgraded`（port 可能不同），瀏覽器可開啟登入頁。UI 的 `連線詳細資料` 也會顯示同一個 OMW Manager version。
 
 #### 取消與重試
 
@@ -84,9 +85,10 @@ OMW 初始化已取消，可直接重試。
 
 之後每天可執行同一個 `npx @sevenflanks/omw@latest` 命令。OMW 會以 launcher token 驗證 `127.0.0.1:<port>` 上的 Manager identity：
 
-- 身分是 `omw-manager` 且 protocol version 相符時，重用現有 Manager。
+- 身分是 `omw-manager`、protocol version 相符，且 runtime version 與 CLI 相同或較新時，重用現有 Manager，不會降版。
+- runtime version 較舊，或舊版 identity 尚未提供 version 時，在啟動 lock 內正常關閉舊 Manager，確認 loopback port 已釋放後啟動新版並驗證版本。
 - Manager 不存在時，以背景 process 啟動，並等待 readiness。
-- 同時執行多次時，由初始化與啟動 lock 加上第二次 identity 檢查避免重複初始化或重複 Manager。
+- 同時執行多次時，由初始化與啟動 lock 加上第二次 identity 檢查避免重複初始化、關閉或啟動 Manager。
 - 重用不會重設帳密、不會輪替 launcher token，也不會清空 SQLite。
 
 ### 可選的 global install

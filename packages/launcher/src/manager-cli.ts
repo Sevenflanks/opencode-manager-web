@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
 import { existsSync, realpathSync } from "node:fs"
 import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
@@ -7,11 +7,14 @@ import net from "node:net"
 import path from "node:path"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
+import { promisify } from "node:util"
 import { resolveCredentialHelper, resolveDataDirectory, resolveExecutable, runDpapiAction, runLauncher, safeMessage } from "./cli.js"
 
 const STARTUP_DEADLINE_MS = 10_000
 const INITIALIZATION_DEADLINE_MS = 30_000
 const OWNED_PROCESS_STOP_DEADLINE_MS = 2_000
+const PROCESS_HELPER_MAX_BUFFER = 32 * 1024
+const execFileAsync = promisify(execFile)
 
 export interface LocalCredentials {
   manager: { username: string; password: string }
@@ -34,7 +37,9 @@ export class CredentialSetupRequiredError extends Error {
 
 export interface ManagerCliDependencies {
   ensureCredentials(dataDirectory: string, environment: NodeJS.ProcessEnv): Promise<LocalCredentials>
-  probe(origin: string, token: string): Promise<"omw" | "absent" | "foreign">
+  probe(origin: string, token: string, environment: NodeJS.ProcessEnv): Promise<ManagerProbe>
+  shutdownManager(origin: string, credentials: LocalCredentials): Promise<void>
+  waitForManagerExit(identity: ManagerProcessIdentity, timeoutMs: number, environment: NodeJS.ProcessEnv): Promise<boolean>
   spawnManager(entry: string, options: SpawnOptions): OwnedManagerProcess
   managerEntry(): Promise<string>
   webRoot(): Promise<string>
@@ -46,6 +51,23 @@ export interface ManagerCliDependencies {
   diagnostic(message: string): void
   runOpenCode(argv: string[], environment: NodeJS.ProcessEnv): Promise<number>
   cliVersion(): Promise<string>
+}
+
+export interface ManagerProcessIdentity {
+  pid: number
+  creationTimeTicks: string
+  executable: string
+}
+
+export type ManagerProbe = "absent" | "foreign" | {
+  status: "omw"
+  version?: unknown
+  process?: ManagerProcessIdentity
+}
+
+interface ManagerReadyResult {
+  version: string
+  action: "reused" | "started" | "upgraded"
 }
 
 export interface OwnedManagerProcess {
@@ -75,14 +97,16 @@ export async function runManagerCli(
   }
   const wrapperArguments = argv[0] === "opencode" ? argv.slice(1) : null
   if (argv.length && !wrapperArguments) throw new Error("未知命令；OpenCode TUI 請使用 omw opencode [project] [-s session]。")
-  let ready: { dataDirectory: string; origin: string } | undefined
+  let ready: { dataDirectory: string; origin: string; manager: ManagerReadyResult; cliVersion: string } | undefined
   try {
+    const cliVersion = await dependencies.cliVersion()
+    parseSemVer(cliVersion, "OMW CLI")
     const dataDirectory = resolveDataDirectory(environment)
     const credentials = await dependencies.ensureCredentials(dataDirectory, environment)
     const port = parsePort(environment.OMW_PORT ?? "4174")
     const origin = `http://127.0.0.1:${port}`
-    await ensureManagerReady(dataDirectory, origin, port, credentials, environment, dependencies)
-    ready = { dataDirectory, origin }
+    const manager = await ensureManagerReady(dataDirectory, origin, port, credentials, cliVersion, environment, dependencies)
+    ready = { dataDirectory, origin, manager, cliVersion }
   } catch (cause) {
     if (
       !wrapperArguments
@@ -93,8 +117,8 @@ export async function runManagerCli(
     dependencies.diagnostic(`OMW Manager bootstrap failed; continuing with native OpenCode: ${safeMessage(cause)}`)
   }
   if (wrapperArguments) return await dependencies.runOpenCode(wrapperArguments, environment)
-  dependencies.output(`OMW CLI version: ${await dependencies.cliVersion()}`)
-  dependencies.output(`OMW Manager ready: ${ready!.origin}`)
+  dependencies.output(`OMW CLI version: ${ready!.cliVersion}`)
+  dependencies.output(`OMW Manager ready: ${ready!.origin} (version ${ready!.manager.version}, ${ready!.manager.action})`)
   dependencies.output(`Data directory: ${ready!.dataDirectory}`)
   dependencies.output("OpenCode TUI: omw opencode [project] [-s session]")
   return 0
@@ -124,31 +148,35 @@ async function ensureManagerReady(
   origin: string,
   port: number,
   credentials: LocalCredentials,
+  desiredVersion: string,
   environment: NodeJS.ProcessEnv,
   dependencies: ManagerCliDependencies,
-): Promise<void> {
-  const initial = await dependencies.probe(origin, credentials.launcherToken)
-  if (initial === "omw") return
-  if (initial === "foreign") throw foreignManagerError(port)
+): Promise<ManagerReadyResult> {
+  const initial = await dependencies.probe(origin, credentials.launcherToken, environment)
+  const initialReuse = reusableManager(initial, desiredVersion)
+  if (initialReuse) return initialReuse
 
   await mkdir(dataDirectory, { recursive: true })
   const lockName = processLockName(await realpath(dataDirectory), "manager-start.lock")
-  const deadline = dependencies.now() + STARTUP_DEADLINE_MS
+  // 另一個 CLI 可能正在完整等待舊版退出，再等待新版 readiness；lock waiter 不可比這兩段更早放棄。
+  const lockDeadline = dependencies.now() + INITIALIZATION_DEADLINE_MS
   let lock: net.Server | undefined
   while (!lock) {
     lock = await tryAcquireProcessLock(lockName)
     if (lock) break
-    const status = await dependencies.probe(origin, credentials.launcherToken)
-    if (status === "omw") return
-    if (status === "foreign") throw foreignManagerError(port)
-    if (dependencies.now() >= deadline) throw new Error("另一個 OMW Manager 啟動仍在進行；請稍後重試。")
+    const status = await dependencies.probe(origin, credentials.launcherToken, environment)
+    const reuse = reusableManager(status, desiredVersion)
+    if (reuse) return reuse
+    if (dependencies.now() >= lockDeadline) throw new Error("另一個 OMW Manager 啟動仍在進行；請稍後重試。")
     await dependencies.sleep(100)
   }
 
   let owner: OwnedManagerProcess | undefined
+  let replacementStopped = false
   try {
-    const rechecked = await dependencies.probe(origin, credentials.launcherToken)
-    if (rechecked === "omw") return
+    const rechecked = await dependencies.probe(origin, credentials.launcherToken, environment)
+    const recheckedReuse = reusableManager(rechecked, desiredVersion)
+    if (recheckedReuse) return recheckedReuse
     if (rechecked === "foreign") throw foreignManagerError(port)
 
     const [entry, webRoot, executable] = await Promise.all([
@@ -160,6 +188,18 @@ async function ensureManagerReady(
         environment,
       ),
     ])
+    const replacing = typeof rechecked === "object"
+    if (replacing) {
+      if (!rechecked.process) {
+        throw new Error("舊版 OMW Manager 的 process identity 無法驗證；不會停止或取代該程序。")
+      }
+      // 只在同一 startup lock 內對已驗證的舊版送 graceful shutdown；必須等原 process 完整退出，不可用 port 釋放替代 cleanup 證據。
+      await dependencies.shutdownManager(origin, credentials)
+      if (!await dependencies.waitForManagerExit(rechecked.process, STARTUP_DEADLINE_MS, environment)) {
+        throw new Error("舊版 OMW Manager 未在期限內完成清理並退出；不會啟動新版，也不會強制終止程序。")
+      }
+      replacementStopped = true
+    }
     owner = dependencies.spawnManager(entry, {
       detached: true,
       windowsHide: true,
@@ -173,23 +213,28 @@ async function ensureManagerReady(
         OMW_OPENCODE_EXECUTABLE: executable,
       },
     })
-    while (dependencies.now() < deadline) {
+    const readinessDeadline = dependencies.now() + STARTUP_DEADLINE_MS
+    while (dependencies.now() < readinessDeadline) {
       await dependencies.sleep(100)
-      const status = await dependencies.probe(origin, credentials.launcherToken)
-      if (status === "omw") {
+      const status = await dependencies.probe(origin, credentials.launcherToken, environment)
+      const readyVersion = managerVersion(status)
+      if (readyVersion === desiredVersion) {
         owner.preserve()
         owner = undefined
-        return
+        return { version: desiredVersion, action: replacing ? "upgraded" : "started" }
       }
       if (status === "foreign") throw foreignManagerError(port)
+      if (typeof status === "object") throw managerVersionMismatchError(readyVersion, desiredVersion)
     }
-    const finalStatus = await dependencies.probe(origin, credentials.launcherToken)
-    if (finalStatus === "omw") {
+    const finalStatus = await dependencies.probe(origin, credentials.launcherToken, environment)
+    const finalVersion = managerVersion(finalStatus)
+    if (finalVersion === desiredVersion) {
       owner.preserve()
       owner = undefined
-      return
+      return { version: desiredVersion, action: replacing ? "upgraded" : "started" }
     }
     if (finalStatus === "foreign") throw foreignManagerError(port)
+    if (typeof finalStatus === "object") throw managerVersionMismatchError(finalVersion, desiredVersion)
     throw new Error("OMW Manager 未在期限內完成 readiness；請檢查本機設定後重試。")
   } catch (cause) {
     if (owner) {
@@ -200,10 +245,59 @@ async function ensureManagerReady(
         throw new Error(`${errorMessage(cause)}；本次 Manager process cleanup 失敗：${errorMessage(cleanupCause)}`)
       }
     }
+    if (replacementStopped) {
+      throw new Error(`${errorMessage(cause)}；舊版 Manager 已停止，請再次執行 omw 重試新版啟動。`)
+    }
     throw cause
   } finally {
     await releaseProcessLock(lock)
   }
+}
+
+function managerVersionMismatchError(actual: string | null, desired: string): Error {
+  return new Error(`OMW Manager 啟動後回報 version ${actual ?? "missing"}，預期 ${desired}。`)
+}
+
+function reusableManager(probe: ManagerProbe, desiredVersion: string): ManagerReadyResult | null {
+  const version = managerVersion(probe)
+  if (version === null) return null
+  if (compareSemVer(version, desiredVersion) >= 0) return { version, action: "reused" }
+  return null
+}
+
+function managerVersion(probe: ManagerProbe): string | null {
+  if (typeof probe === "string" || probe.version === undefined) return null
+  if (typeof probe.version !== "string") throw new Error("OMW Manager identity 回報無效 version；基於安全考量不會停止現有 Manager。")
+  parseSemVer(probe.version, "OMW Manager")
+  return probe.version
+}
+
+function compareSemVer(left: string, right: string): number {
+  const a = parseSemVer(left, "OMW Manager")
+  const b = parseSemVer(right, "OMW CLI")
+  for (const key of ["major", "minor", "patch"] as const) {
+    if (a[key] !== b[key]) return a[key] < b[key] ? -1 : 1
+  }
+  if (a.prerelease.length === 0 || b.prerelease.length === 0) return a.prerelease.length === b.prerelease.length ? 0 : a.prerelease.length ? -1 : 1
+  const length = Math.max(a.prerelease.length, b.prerelease.length)
+  for (let index = 0; index < length; index++) {
+    const leftPart = a.prerelease[index]
+    const rightPart = b.prerelease[index]
+    if (leftPart === undefined || rightPart === undefined) return leftPart === rightPart ? 0 : leftPart === undefined ? -1 : 1
+    if (leftPart === rightPart) continue
+    const leftNumber = /^\d+$/.test(leftPart) ? BigInt(leftPart) : null
+    const rightNumber = /^\d+$/.test(rightPart) ? BigInt(rightPart) : null
+    if (leftNumber !== null && rightNumber !== null) return leftNumber < rightNumber ? -1 : 1
+    if (leftNumber !== null || rightNumber !== null) return leftNumber !== null ? -1 : 1
+    return leftPart < rightPart ? -1 : 1
+  }
+  return 0
+}
+
+function parseSemVer(value: string, source: string): { major: bigint; minor: bigint; patch: bigint; prerelease: string[] } {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(value)
+  if (!match) throw new Error(`${source} version 無效：${value}`)
+  return { major: BigInt(match[1]!), minor: BigInt(match[2]!), patch: BigInt(match[3]!), prerelease: match[4]?.split(".") ?? [] }
 }
 
 export async function ensureCredentials(
@@ -320,18 +414,102 @@ function credentialHelper(): string {
   return resolveCredentialHelper()
 }
 
-export async function probeManager(origin: string, token: string): Promise<"omw" | "absent" | "foreign"> {
+export async function probeManager(
+  origin: string,
+  token: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<ManagerProbe> {
   try {
+    const before = await managerListener(origin, environment)
+    if (before.state === "absent") return "absent"
+    if (before.state !== "owned") return "foreign"
     const response = await fetch(`${origin}/api/v1/launcher/identity`, {
       headers: { "x-omw-launcher-token": token },
       redirect: "error",
       signal: AbortSignal.timeout(1_000),
     })
     if (!response.ok) return "foreign"
-    const value = await response.json() as { product?: unknown; protocolVersion?: unknown }
-    return value.product === "omw-manager" && value.protocolVersion === 1 ? "omw" : "foreign"
+    const value = await response.json() as { product?: unknown; protocolVersion?: unknown; version?: unknown }
+    if (value.product !== "omw-manager" || value.protocolVersion !== 1) return "foreign"
+    const after = await managerListener(origin, environment)
+    if (after.state !== "owned" || !sameManagerProcess(before, after)) return "foreign"
+    return {
+      status: "omw",
+      ...(value.version === undefined ? {} : { version: value.version }),
+      process: { pid: after.pid, creationTimeTicks: after.creationTimeTicks, executable: after.executable },
+    }
   } catch {
     return await isLoopbackPortOccupied(origin) ? "foreign" : "absent"
+  }
+}
+
+type ManagerListener = { state: "absent" | "ambiguous" } | ({ state: "owned" } & ManagerProcessIdentity)
+
+async function managerListener(origin: string, environment: NodeJS.ProcessEnv): Promise<ManagerListener> {
+  return await managerProcessHelper<ManagerListener>(["-Action", "Listener", "-Port", new URL(origin).port], environment)
+}
+
+async function waitForManagerExit(
+  identity: ManagerProcessIdentity,
+  timeoutMs: number,
+  environment: NodeJS.ProcessEnv,
+): Promise<boolean> {
+  const result = await managerProcessHelper<{ exited?: unknown }>([
+    "-Action", "WaitForExit",
+    "-ProcessId", String(identity.pid),
+    "-ExpectedCreationTicks", identity.creationTimeTicks,
+    "-ExpectedExecutable", identity.executable,
+    "-TimeoutMilliseconds", String(timeoutMs),
+  ], environment, timeoutMs + 2_000)
+  if (typeof result.exited !== "boolean") throw new Error("Windows process helper 回傳無效資料。")
+  return result.exited
+}
+
+async function managerProcessHelper<T>(
+  arguments_: string[],
+  environment: NodeJS.ProcessEnv,
+  timeoutMs = 12_000,
+): Promise<T> {
+  try {
+    const { stdout } = await execFileAsync(
+      environment.OMW_POWERSHELL_EXECUTABLE ?? "pwsh.exe",
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", resolveProcessHelper(), ...arguments_],
+      { windowsHide: true, timeout: timeoutMs, maxBuffer: PROCESS_HELPER_MAX_BUFFER, encoding: "utf8" },
+    )
+    return JSON.parse(stdout.trim()) as T
+  } catch {
+    throw new Error("Windows process helper 執行失敗。")
+  }
+}
+
+function resolveProcessHelper(moduleDirectory = path.dirname(fileURLToPath(import.meta.url))): string {
+  const helper = [
+    path.resolve(moduleDirectory, "../../../../apps/manager/scripts/process-control.ps1"),
+    path.resolve(moduleDirectory, "../scripts/process-control.ps1"),
+  ].find(existsSync)
+  if (!helper) throw new Error("找不到 OMW process helper。")
+  return helper
+}
+
+function sameManagerProcess(left: ManagerProcessIdentity, right: ManagerProcessIdentity): boolean {
+  return left.pid === right.pid
+    && left.creationTimeTicks === right.creationTimeTicks
+    && left.executable.toLowerCase() === right.executable.toLowerCase()
+}
+
+async function shutdownManager(origin: string, credentials: LocalCredentials): Promise<void> {
+  const authorization = Buffer.from(`${credentials.manager.username}:${credentials.manager.password}`).toString("base64")
+  const response = await fetch(`${origin}/api/v1/manager/shutdown`, {
+    method: "POST",
+    headers: {
+      authorization: `Basic ${authorization}`,
+      origin,
+      "x-omw-csrf": "1",
+    },
+    signal: AbortSignal.timeout(STARTUP_DEADLINE_MS),
+  })
+  if (response.status !== 202) {
+    throw new Error(`舊版 OMW Manager 拒絕正常關閉（HTTP ${response.status}）；不會啟動新版。`)
   }
 }
 
@@ -348,7 +526,7 @@ export function isLoopbackPortOccupied(origin: string): Promise<boolean> {
     }
     socket.once("connect", () => finish(true))
     socket.once("error", () => finish(false))
-    socket.setTimeout(500, () => finish(false))
+    socket.setTimeout(500, () => finish(true))
   })
 }
 
@@ -512,6 +690,8 @@ const defaultCredentialDependencies: CredentialInitializationDependencies = {
 const defaultDependencies: ManagerCliDependencies = {
   ensureCredentials,
   probe: probeManager,
+  shutdownManager,
+  waitForManagerExit,
   spawnManager,
   managerEntry,
   webRoot,

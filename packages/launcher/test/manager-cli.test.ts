@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { spawn, type ChildProcess } from "node:child_process"
 import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises"
+import { createServer as createHttpServer } from "node:http"
 import { tmpdir } from "node:os"
 import net from "node:net"
 import path from "node:path"
@@ -14,12 +15,21 @@ import {
   decodeManagerCredentials,
   ensureCredentials,
   isLoopbackPortOccupied,
+  probeManager,
   readCliVersion,
   runManagerCli,
   type CredentialInitializationDependencies,
   type LocalCredentials,
   type ManagerCliDependencies,
+  type ManagerProbe,
+  type ManagerProcessIdentity,
 } from "../src/manager-cli.js"
+
+const managerProcess: ManagerProcessIdentity = {
+  pid: 4242,
+  creationTimeTicks: "638936640000000000",
+  executable: "C:\\Program Files\\nodejs\\node.exe",
+}
 
 function windowsPeFixture(): Buffer {
   const fixture = Buffer.alloc(68)
@@ -44,7 +54,7 @@ function knownOpenCodeShim(): string {
   ].join("\r\n")
 }
 
-function fixture(statuses: Array<"omw" | "absent" | "foreign">): {
+function fixture(statuses: Array<"omw" | ManagerProbe>): {
   dependencies: ManagerCliDependencies
   spawned: Array<{ entry: string; environment: NodeJS.ProcessEnv }>
   output: string[]
@@ -77,8 +87,12 @@ function fixture(statuses: Array<"omw" | "absent" | "foreign">): {
       },
       probe: async () => {
         events.push("probe")
-        return statuses[Math.min(probeIndex++, statuses.length - 1)] ?? "absent"
+        const status = statuses[Math.min(probeIndex++, statuses.length - 1)] ?? "absent"
+        if (status === "omw") return { status: "omw", version: "0.2.1", process: managerProcess }
+        return typeof status === "object" ? { ...status, process: status.process ?? managerProcess } : status
       },
+      shutdownManager: async () => { events.push("shutdown") },
+      waitForManagerExit: async () => { events.push("wait-exit"); return true },
       spawnManager: (entry, options) => {
         events.push("spawn")
         spawned.push({ entry, environment: options.env ?? {} })
@@ -99,7 +113,7 @@ function fixture(statuses: Array<"omw" | "absent" | "foreign">): {
       output: (message) => { output.push(message) },
       diagnostic: (message) => { diagnostics.push(message) },
       runOpenCode: async () => { events.push("run"); return 0 },
-      cliVersion: async () => "fixture-cli-version",
+      cliVersion: async () => "0.2.1",
     },
   }
 }
@@ -169,10 +183,274 @@ test("bare Manager CLI reuses an exact OMW identity without spawning", async () 
   const { dependencies, spawned, output } = fixture(["omw"])
   assert.equal(await runManagerCli([], { OMW_DATA_DIR: "C:\\fixture\\data" }, dependencies), 0)
   assert.equal(spawned.length, 0)
-  assert.match(output.join("\n"), /OMW CLI version: fixture-cli-version/)
-  assert.match(output.join("\n"), /OMW Manager ready: http:\/\/127\.0\.0\.1:4174/)
+  assert.match(output.join("\n"), /OMW CLI version: 0\.2\.1/)
+  assert.match(output.join("\n"), /OMW Manager ready: http:\/\/127\.0\.0\.1:4174 \(version 0\.2\.1, reused\)/)
   assert.match(output.join("\n"), /OpenCode TUI: omw opencode/)
   assert.doesNotMatch(output.join("\n"), /npx/)
+})
+
+test("Manager CLI reuses a newer semantic Manager version without downgrading", async () => {
+  const { dependencies, spawned, output } = fixture([])
+  dependencies.probe = async () => ({ status: "omw", version: "0.3.0" })
+  assert.equal(await runManagerCli([], { OMW_DATA_DIR: "C:\\fixture\\data" }, dependencies), 0)
+  assert.equal(spawned.length, 0)
+  assert.match(output.join("\n"), /OMW Manager ready: .*\(version 0\.3\.0, reused\)/)
+})
+
+test("Manager CLI treats SemVer build metadata as equal precedence", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-manager-build-metadata-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const { dependencies, spawned, output } = fixture([])
+  dependencies.probe = async () => ({ status: "omw", version: "0.2.1+runtime.5" })
+  assert.equal(await runManagerCli([], { OMW_DATA_DIR: root }, dependencies), 0)
+  assert.equal(spawned.length, 0)
+  assert.match(output.join("\n"), /version 0\.2\.1\+runtime\.5, reused/)
+})
+
+for (const [label, identity] of [
+  ["older", { status: "omw", version: "0.1.9" }],
+  ["legacy", { status: "omw" }],
+] as const) {
+  test(`Manager CLI replaces one ${label} Manager and verifies the new exact version`, async (t) => {
+    const root = await mkdtemp(path.join(tmpdir(), `omw-manager-${label}-`))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const current = { ...identity, process: managerProcess }
+    const { dependencies, spawned, ownerActions, events, output } = fixture([])
+    let shutdown = false
+    dependencies.probe = async () => shutdown && spawned.length
+      ? { status: "omw", version: "0.2.1" }
+      : current
+    dependencies.shutdownManager = async () => { events.push("shutdown"); shutdown = true }
+
+    assert.equal(await runManagerCli([], { OMW_DATA_DIR: root }, dependencies), 0)
+    assert.equal(spawned.length, 1)
+    assert.equal(spawned[0]?.environment.OMW_MANAGER_VERSION, undefined)
+    assert.deepEqual(ownerActions, ["preserve"])
+    assert.equal(events.filter((event) => event === "shutdown").length, 1)
+    assert.match(output.join("\n"), /\(version 0\.2\.1, upgraded\)/)
+  })
+}
+
+test("Manager CLI fails closed on an invalid identity version", async () => {
+  const { dependencies, spawned, events } = fixture([{ status: "omw", version: "not-semver" }])
+  await assert.rejects(runManagerCli([], { OMW_DATA_DIR: "C:\\fixture\\data" }, dependencies), /Manager version 無效/)
+  assert.equal(spawned.length, 0)
+  assert.doesNotMatch(events.join(","), /shutdown/)
+})
+
+test("Manager CLI preflights replacement before stopping the old Manager", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-manager-preflight-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const { dependencies, spawned, events } = fixture([{ status: "omw", version: "0.1.0" }])
+  dependencies.managerEntry = async () => { throw new Error("missing packaged manager") }
+  await assert.rejects(runManagerCli([], { OMW_DATA_DIR: root }, dependencies), /missing packaged manager/)
+  assert.equal(spawned.length, 0)
+  assert.doesNotMatch(events.join(","), /shutdown/)
+})
+
+test("Manager CLI does not spawn when graceful shutdown fails or the verified old process stays alive", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-manager-stop-failure-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const rejected = fixture([{ status: "omw", version: "0.1.0" }])
+  rejected.dependencies.shutdownManager = async () => { throw new Error("shutdown rejected") }
+  await assert.rejects(runManagerCli([], { OMW_DATA_DIR: root }, rejected.dependencies), /shutdown rejected/)
+  assert.equal(rejected.spawned.length, 0)
+
+  const alive = fixture([{ status: "omw", version: "0.1.0" }])
+  alive.dependencies.waitForManagerExit = async () => false
+  await assert.rejects(runManagerCli([], { OMW_DATA_DIR: root }, alive.dependencies), /未在期限內完成清理.*不會啟動新版/)
+  assert.equal(alive.spawned.length, 0)
+})
+
+test("Manager CLI waits for verified old-process exit after the port is already released", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-manager-cleanup-wait-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const current = { status: "omw" as const, version: "0.1.0", process: managerProcess }
+  const { dependencies, spawned, events } = fixture([])
+  let exited = false
+  let releaseExit!: () => void
+  const exit = new Promise<boolean>((resolve) => { releaseExit = () => { exited = true; resolve(true) } })
+  dependencies.probe = async () => spawned.length ? { status: "omw", version: "0.2.1" } : current
+  dependencies.waitForManagerExit = async () => {
+    events.push("wait-exit")
+    return await exit
+  }
+
+  const upgrade = runManagerCli([], { OMW_DATA_DIR: root }, dependencies)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(spawned.length, 0, "port release must not permit spawn before process cleanup exits")
+  assert.equal(exited, false)
+  releaseExit()
+  assert.equal(await upgrade, 0)
+  assert.equal(spawned.length, 1)
+  assert.ok(events.indexOf("wait-exit") < events.indexOf("spawn"))
+})
+
+test("Manager CLI cleans a mismatched new process and reports that rerunning retries", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-manager-mismatch-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const { dependencies, ownerActions } = fixture([
+    { status: "omw", version: "0.1.0" },
+    { status: "omw", version: "0.1.0" },
+    { status: "omw", version: "0.1.5" },
+  ])
+  await assert.rejects(
+    runManagerCli([], { OMW_DATA_DIR: root }, dependencies),
+    /啟動後回報 version 0\.1\.5.*再次執行 omw/,
+  )
+  assert.deepEqual(ownerActions, ["stop"])
+})
+
+test("concurrent Manager upgrades perform one shutdown and one spawn", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-manager-upgrade-concurrent-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const shared = fixture([])
+  let initialProbes = 0
+  let releaseInitialProbes!: () => void
+  const bothInitial = new Promise<void>((resolve) => { releaseInitialProbes = resolve })
+  shared.dependencies.probe = async () => {
+    if (shared.spawned.length) return { status: "omw", version: "0.2.1" }
+    initialProbes++
+    if (initialProbes === 1) await bothInitial
+    else if (initialProbes === 2) releaseInitialProbes()
+    return { status: "omw", version: "0.1.0", process: managerProcess }
+  }
+  shared.dependencies.sleep = async () => { await new Promise<void>((resolve) => setImmediate(resolve)) }
+
+  assert.deepEqual(await Promise.all([
+    runManagerCli([], { OMW_DATA_DIR: root }, shared.dependencies),
+    runManagerCli([], { OMW_DATA_DIR: root }, shared.dependencies),
+  ]), [0, 0])
+  assert.equal(shared.events.filter((event) => event === "shutdown").length, 1)
+  assert.equal(shared.spawned.length, 1)
+})
+
+test("a concurrent lock waiter tolerates transient foreign identity during another CLI handoff", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-manager-transition-concurrent-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const shared = fixture([])
+  let state: "old" | "transition" | "new" = "old"
+  let initialProbes = 0
+  let releaseInitialProbes!: () => void
+  const bothInitial = new Promise<void>((resolve) => { releaseInitialProbes = resolve })
+  shared.dependencies.probe = async () => {
+    if (state === "new") return { status: "omw", version: "0.2.1" }
+    if (state === "transition") return "foreign"
+    initialProbes++
+    if (initialProbes === 1) await bothInitial
+    else if (initialProbes === 2) releaseInitialProbes()
+    return { status: "omw", version: "0.1.0", process: managerProcess }
+  }
+  shared.dependencies.shutdownManager = async () => { shared.events.push("shutdown"); state = "transition" }
+  shared.dependencies.waitForManagerExit = async () => {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    return true
+  }
+  const originalSpawn = shared.dependencies.spawnManager
+  shared.dependencies.spawnManager = (entry, options) => {
+    const owner = originalSpawn(entry, options)
+    state = "new"
+    return owner
+  }
+  shared.dependencies.sleep = async () => { await new Promise<void>((resolve) => setImmediate(resolve)) }
+
+  assert.deepEqual(await Promise.all([
+    runManagerCli([], { OMW_DATA_DIR: root }, shared.dependencies),
+    runManagerCli([], { OMW_DATA_DIR: root }, shared.dependencies),
+  ]), [0, 0])
+  assert.equal(shared.events.filter((event) => event === "shutdown").length, 1)
+  assert.equal(shared.spawned.length, 1)
+})
+
+test("concurrent CLIs coordinate through a real HTTP identity transition", {
+  skip: process.platform !== "win32",
+  timeout: 45_000,
+}, async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "omw-manager-http-transition-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const credentials: LocalCredentials = {
+    manager: { username: "fixture", password: "fixture-password-long-enough" },
+    launcherToken: "fixture-launcher-token-long-enough-for-validation",
+  }
+  let state: "old" | "transition" | "new" = "old"
+  const server = createHttpServer((request, response) => {
+    if (request.url === "/api/v1/launcher/identity" && request.method === "GET") {
+      if (request.headers["x-omw-launcher-token"] !== credentials.launcherToken) {
+        response.writeHead(401).end()
+        return
+      }
+      if (state === "transition") {
+        response.writeHead(503).end()
+        return
+      }
+      response.setHeader("content-type", "application/json")
+      response.end(JSON.stringify({ product: "omw-manager", protocolVersion: 1, version: state === "old" ? "0.1.0" : "0.2.1" }))
+      return
+    }
+    if (request.url === "/api/v1/manager/shutdown" && request.method === "POST") {
+      const authorization = Buffer.from(`${credentials.manager.username}:${credentials.manager.password}`).toString("base64")
+      assert.equal(request.headers.authorization, `Basic ${authorization}`)
+      assert.equal(request.headers.origin, origin)
+      assert.equal(request.headers["x-omw-csrf"], "1")
+      state = "transition"
+      response.writeHead(202, { "content-type": "application/json" }).end('{"stopping":true}')
+      return
+    }
+    response.writeHead(404).end()
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  t.after(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())))
+  const address = server.address()
+  assert.ok(address && typeof address !== "string")
+  const origin = `http://127.0.0.1:${address.port}`
+  const shared = fixture([])
+  shared.dependencies.ensureCredentials = async () => credentials
+  let initialProbes = 0
+  let releaseInitialProbes!: () => void
+  const bothInitial = new Promise<void>((resolve) => { releaseInitialProbes = resolve })
+  let observeTransition!: () => void
+  const transitionObserved = new Promise<void>((resolve) => { observeTransition = resolve })
+  shared.dependencies.probe = async (candidateOrigin, token, environment) => {
+    const result = await probeManager(candidateOrigin, token, environment)
+    if (state === "old" && initialProbes < 2) {
+      initialProbes++
+      if (initialProbes === 1) await bothInitial
+      else releaseInitialProbes()
+    } else if (state === "transition") {
+      observeTransition()
+    }
+    return result
+  }
+  shared.dependencies.shutdownManager = async (candidateOrigin) => {
+    const authorization = Buffer.from(`${credentials.manager.username}:${credentials.manager.password}`).toString("base64")
+    const response = await fetch(`${candidateOrigin}/api/v1/manager/shutdown`, {
+      method: "POST",
+      headers: { authorization: `Basic ${authorization}`, origin: candidateOrigin, "x-omw-csrf": "1" },
+    })
+    assert.equal(response.status, 202)
+  }
+  shared.dependencies.waitForManagerExit = async () => {
+    await transitionObserved
+    return true
+  }
+  const originalSpawn = shared.dependencies.spawnManager
+  shared.dependencies.spawnManager = (entry, options) => {
+    const owner = originalSpawn(entry, options)
+    state = "new"
+    return owner
+  }
+  shared.dependencies.sleep = async () => { await new Promise<void>((resolve) => setImmediate(resolve)) }
+  const environment = { OMW_DATA_DIR: root, OMW_PORT: String(address.port) }
+
+  assert.deepEqual(await Promise.all([
+    runManagerCli([], environment, shared.dependencies),
+    runManagerCli([], environment, shared.dependencies),
+  ]), [0, 0])
+  assert.equal(shared.spawned.length, 1)
 })
 
 test("Manager CLI starts one detached Manager and waits for exact readiness", async (t) => {
@@ -219,7 +497,7 @@ test("CLI version flags print the package version without bootstrapping", async 
   for (const flag of ["--version", "-v"]) {
     const { dependencies, output, events } = fixture(["absent"])
     assert.equal(await runManagerCli([flag], { OMW_DATA_DIR: "C:\\fixture\\data" }, dependencies), 0)
-    assert.deepEqual(output, ["fixture-cli-version"])
+    assert.deepEqual(output, ["0.2.1"])
     assert.deepEqual(events, [])
   }
 })
@@ -264,10 +542,12 @@ test("CLI version reads package metadata from source and published layouts", asy
   }
 })
 
-test("opencode subcommand does not request or print the CLI version", async () => {
+test("opencode subcommand reads the CLI version for Manager matching without printing it", async () => {
   const { dependencies, output } = fixture(["omw"])
-  dependencies.cliVersion = async () => { throw new Error("version should not be read") }
+  let versionReads = 0
+  dependencies.cliVersion = async () => { versionReads++; return "0.2.1" }
   assert.equal(await runManagerCli(["opencode"], { OMW_DATA_DIR: "C:\\fixture\\data" }, dependencies), 0)
+  assert.equal(versionReads, 1)
   assert.deepEqual(output, [])
 })
 
@@ -341,7 +621,7 @@ test("concurrent Manager invocations use one atomic start owner and one spawn", 
   let releaseInitialProbes: (() => void) | undefined
   const bothInitialProbes = new Promise<void>((resolve) => { releaseInitialProbes = resolve })
   first.dependencies.probe = async () => {
-    if (first.spawned.length) return "omw"
+    if (first.spawned.length) return { status: "omw", version: "0.2.1" }
     initialProbes++
     if (initialProbes === 1) await bothInitialProbes
     else if (initialProbes === 2) releaseInitialProbes?.()
@@ -365,7 +645,7 @@ test("a stale legacy manager-start.lock does not block startup or get overwritte
   const legacyLock = path.join(root, "manager-start.lock")
   await writeFile(legacyLock, "stale-owner", "utf8")
   const { dependencies, spawned } = fixture(["absent"])
-  dependencies.probe = async () => spawned.length ? "omw" : "absent"
+  dependencies.probe = async () => spawned.length ? { status: "omw", version: "0.2.1" } : "absent"
   let clock = 0
   dependencies.now = () => { clock += 6_000; return clock }
 
@@ -393,14 +673,14 @@ test("Manager startup lock is released by the OS when its owner exits", async (t
       output: () => {},
       diagnostic: () => {},
       runOpenCode: async () => 0,
-      cliVersion: async () => "fixture-cli-version",
+      cliVersion: async () => "0.2.1",
     })
   `
   const owner = await startLockOwner(script, root)
   try {
     await stopLockOwner(owner)
     const retry = fixture(["absent"])
-    retry.dependencies.probe = async () => retry.spawned.length ? "omw" : "absent"
+    retry.dependencies.probe = async () => retry.spawned.length ? { status: "omw", version: "0.2.1" } : "absent"
     let clock = 0
     retry.dependencies.now = () => { clock += 6_000; return clock }
     assert.equal(await runManagerCli([], { OMW_DATA_DIR: root }, retry.dependencies), 0)

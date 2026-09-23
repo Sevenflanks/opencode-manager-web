@@ -1,10 +1,11 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet('Describe', 'Inspect', 'Stop')][string]$Action,
+    [Parameter(Mandatory)][ValidateSet('Describe', 'Inspect', 'Stop', 'Listener', 'WaitForExit')][string]$Action,
     [int]$ProcessId,
     [string]$ExpectedCreationTicks,
     [string]$ExpectedExecutable,
-    [int]$Port
+    [int]$Port,
+    [ValidateRange(1, 60000)][int]$TimeoutMilliseconds = 10000
 )
 
 Set-StrictMode -Version Latest
@@ -69,6 +70,75 @@ function Test-PortSafeForStop {
 
 $process = $null
 try {
+    if ($Action -eq 'Listener') {
+        if ($Port -lt 1) { throw 'Listener requires Port.' }
+        $owners = @(Get-PortOwners)
+        if ($owners.Count -eq 0) {
+            [Console]::Out.WriteLine('{"state":"absent"}')
+            exit 0
+        }
+        if ($owners.Count -ne 1) {
+            [Console]::Out.WriteLine('{"state":"ambiguous"}')
+            exit 0
+        }
+        try {
+            $process = [Diagnostics.Process]::GetProcessById($owners[0])
+            $identity = Get-Identity $process
+            $finalOwners = @(Get-PortOwners)
+            $finalIdentity = Get-Identity $process
+            $stable = $finalOwners.Count -eq 1 -and
+                $finalOwners[0] -eq $identity.pid -and
+                $identity.creationTimeTicks -eq $finalIdentity.creationTimeTicks -and
+                [string]::Equals($identity.executable, $finalIdentity.executable, [StringComparison]::OrdinalIgnoreCase)
+            if (-not $stable) {
+                [Console]::Out.WriteLine('{"state":"ambiguous"}')
+                exit 0
+            }
+            $result = [ordered]@{ state = 'owned' }
+            foreach ($entry in $finalIdentity.GetEnumerator()) { $result[$entry.Key] = $entry.Value }
+            [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress))
+            exit 0
+        }
+        catch {
+            [Console]::Out.WriteLine('{"state":"ambiguous"}')
+            exit 0
+        }
+    }
+
+    if ($Action -eq 'WaitForExit') {
+        if ($ProcessId -lt 1 -or [string]::IsNullOrWhiteSpace($ExpectedCreationTicks) -or [string]::IsNullOrWhiteSpace($ExpectedExecutable)) {
+            throw 'WaitForExit requires exact process identity.'
+        }
+        try {
+            $process = [Diagnostics.Process]::GetProcessById($ProcessId)
+        }
+        catch {
+            $processNotFound = $_.Exception -is [System.ArgumentException] -or
+                $_.Exception.InnerException -is [System.ArgumentException]
+            if (-not $processNotFound) { throw }
+            [Console]::Out.WriteLine('{"exited":true}')
+            exit 0
+        }
+        try {
+            $identity = Get-Identity $process
+        }
+        catch {
+            if ($process.HasExited) {
+                [Console]::Out.WriteLine('{"exited":true}')
+                exit 0
+            }
+            throw
+        }
+        if (-not (Test-Expected $identity)) {
+            # PID 已被重用時，先前驗證的 exact process 必然已退出；這不授予新 process 任何 Stop authority。
+            [Console]::Out.WriteLine('{"exited":true}')
+            exit 0
+        }
+        $exited = $process.WaitForExit($TimeoutMilliseconds)
+        [Console]::Out.WriteLine((@{ exited = $exited } | ConvertTo-Json -Compress))
+        exit 0
+    }
+
     if ($Action -eq 'Describe') {
         if ([string]::IsNullOrWhiteSpace($ExpectedExecutable)) { throw 'Describe requires ExpectedExecutable.' }
         $process = [Diagnostics.Process]::GetProcessById($ProcessId)

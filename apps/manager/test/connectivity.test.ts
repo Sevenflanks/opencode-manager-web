@@ -47,6 +47,7 @@ test("connectivity API is authority/auth protected and returns only verified saf
   const app = buildApp({
     service: fakeService(),
     connectivity,
+    managerVersion: "0.2.1",
     authority: { hostname: "127.0.0.1", port: MANAGER_PORT },
     allowedOrigins: new Set([`http://127.0.0.1:${MANAGER_PORT}`, publicOrigin]),
     publicOrigin,
@@ -77,7 +78,7 @@ test("connectivity API is authority/auth protected and returns only verified saf
   assert.deepEqual(body, {
     checkedAt: "2026-09-18T12:00:00.000Z",
     mode: "tailnet",
-    manager: { localUrl: `http://127.0.0.1:${MANAGER_PORT}`, publicUrl: publicOrigin },
+    manager: { localUrl: `http://127.0.0.1:${MANAGER_PORT}`, publicUrl: publicOrigin, version: "0.2.1" },
     tailscale: { state: "connected", dnsName: HOST, version: "1.90.2" },
     serve: {
       state: "verified",

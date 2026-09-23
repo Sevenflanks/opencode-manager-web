@@ -120,10 +120,20 @@ test("Manager restart reconciles two real OpenCode processes and refuses stale i
 
   try {
     const first = await startInstance(app, project)
+    const firstRecord = repository.getInstance(first.id)
+    assert.ok(firstRecord)
+    safeRecords.push(firstRecord)
     const second = await startInstance(app, project)
+    const secondRecord = repository.getInstance(second.id)
+    assert.ok(secondRecord)
+    safeRecords.push(secondRecord)
     assert.notEqual(first.id, second.id)
-    safeRecords = [repository.getInstance(first.id), repository.getInstance(second.id)].filter((record): record is InstanceRecord => record !== null)
     assert.equal(safeRecords.length, 2)
+    const session = await runtime.createSession(safeRecords[0]!)
+    const bound = await service.selectPrimarySession(first.id, session.id)
+    assert.equal(bound.sessionId, session.id)
+    assert.equal(repository.getPrimarySession(first.id)?.sessionId, session.id)
+    assert.equal(repository.getPrimarySession(second.id), null)
 
     await app.close()
     repository.close()
@@ -135,11 +145,16 @@ test("Manager restart reconciles two real OpenCode processes and refuses stale i
     await service.reconcile()
     app = buildApp({ service, authority, allowedOrigins: new Set([mutationHeaders.origin]) })
     assert.deepEqual(repository.listInstances().map((item) => item.state).sort(), ["ready", "ready"])
+    assert.equal(await portReachable(safeRecords[0]!.port), true)
+    assert.equal(await portReachable(safeRecords[1]!.port), true)
+    assert.equal((await runtime.sessions(safeRecords[0]!)).some((item) => item.id === session.id), true)
 
     const reconciled = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
     assert.equal(reconciled.statusCode, 200)
     assert.equal(reconciled.json().instances.length, 2)
     assert.equal(reconciled.json().instances.every((item: { stopAllowed: boolean }) => item.stopAllowed), true, reconciled.body)
+    assert.equal(reconciled.json().instances.find((item: { id: string }) => item.id === first.id)?.primarySession?.sessionId, session.id)
+    assert.equal(reconciled.json().instances.find((item: { id: string }) => item.id === second.id)?.primarySession, null)
 
     const stoppedFirst = await app.inject({ method: "POST", url: `/api/v1/instances/${first.id}/stop`, headers: mutationHeaders })
     assert.equal(stoppedFirst.statusCode, 200)

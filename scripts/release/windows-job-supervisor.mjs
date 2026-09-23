@@ -33,6 +33,8 @@ export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs
   let resultEvent = null
   let closedEvent = null
   let terminal = null
+  let resolveStarted
+  const started = new Promise((resolve) => { resolveStarted = resolve })
   supervisor.stderr.setEncoding("utf8")
   supervisor.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-64 * 1024) })
   supervisor.stdin.on("error", () => {
@@ -76,9 +78,12 @@ export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs
         resolve(event)
       } else if (event.event === "closed") {
         closedEvent = event
+      } else if (event.event === "started") {
+        resolveStarted(event)
       }
     })
     terminalPromise.then((outcome) => {
+      resolveStarted(null)
       if (resultReceived) return
       clearTimeout(deadline)
       if (outcome.kind === "error") {
@@ -90,6 +95,7 @@ export async function startWindowsJob(command, args, { cwd, env, root, timeoutMs
   })
 
   return {
+    started,
     result,
     async output() {
       return {

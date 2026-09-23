@@ -75,10 +75,10 @@ test("detail header keeps long project title and state badge on one line", { ski
     state,
     endpoint: `http://127.0.0.1:${45_100 + index}`,
     port: 45_100 + index,
-    pid: null,
-    creationTimeUtc: null,
-    creationTimeTicks: null,
-    executable: null,
+    pid: state === "ready" ? 48001 : null,
+    creationTimeUtc: state === "ready" ? "2026-09-17T00:00:00.000Z" : null,
+    creationTimeTicks: state === "ready" ? "638936640000000001" : null,
+    executable: state === "ready" ? "C:\\tools\\opencode.exe" : null,
     launchedAt: new Date(Date.now() + index).toISOString(),
     healthVersion: null,
     stoppedAt: state === "stopped" ? new Date().toISOString() : null,
@@ -1838,7 +1838,7 @@ test("connectivity UI reports, copies, shares, and degrades safely", { skip: !en
   const online: ConnectivityInfo = {
     checkedAt: "2026-09-18T08:30:00.000Z",
     mode: "tailnet",
-    manager: { localUrl: `http://127.0.0.1:${port}`, publicUrl },
+    manager: { localUrl: `http://127.0.0.1:${port}`, publicUrl, version: "0.2.1-runtime" },
     tailscale: { state: "connected", dnsName: "omw-node.example.ts.net", version: "1.88.2" },
     serve: { state: "verified", managerMapped: true, mappedInstancePorts: 2, expectedInstancePorts: 2, funnel: "disabled" },
     registration: { state: "verified", trigger: "startup", diagnostic: null },
@@ -1957,7 +1957,7 @@ test("connectivity UI reports, copies, shares, and degrades safely", { skip: !en
     assert.equal(await page.getByRole("textbox", { name: "手動複製遠端入口" }).count(), 0, "AbortError is a cancellation, not a share failure")
 
     await page.locator(".connectivity-details summary").click()
-    assert.match(await page.locator(".connectivity-details").textContent() ?? "", /1\.88\.2.*v24\.8\.0.*吻合.*2 \/ 2/s)
+    assert.match(await page.locator(".connectivity-details").textContent() ?? "", /0\.2\.1-runtime.*1\.88\.2.*v24\.8\.0.*吻合.*2 \/ 2/s)
     for (const width of [390, 360]) {
       await page.setViewportSize({ width, height: 844 })
       const layout = await page.locator(".connectivity").evaluate((section) => ({
