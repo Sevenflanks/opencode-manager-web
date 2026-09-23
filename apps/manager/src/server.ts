@@ -1,5 +1,6 @@
 import path from "node:path"
 import process from "node:process"
+import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { buildApp } from "./app.js"
 import { SeparateRequestAuthenticator, type StoredCredentials } from "./auth.js"
@@ -14,6 +15,7 @@ import { ManagerService } from "./service.js"
 
 const host = "127.0.0.1"
 const port = parsePort(process.env.OMW_PORT ?? "4174")
+const managerVersion = await readManagerPackageVersion()
 const dataDirectory = readDataDirectory(process.env)
 const remoteProfileStore = new RemoteProfileStore(dataDirectory)
 const remoteAccess = await startupRemoteAccess(process.env, port, remoteProfileStore)
@@ -58,6 +60,7 @@ const app = buildApp({
   webRoot,
   ...(remoteAccess ? { publicOrigin: remoteAccess.publicManagerOrigin } : {}),
   credentialController,
+  managerVersion,
   shutdownManager: () => { void app.close() },
   remoteAccess: connectivity,
   remoteAuthenticator: authenticator,
@@ -81,6 +84,23 @@ function parsePort(value: string): number {
   const parsed = Number(value)
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) throw new Error("OMW_PORT 必須是 1 到 65535 的整數。")
   return parsed
+}
+
+async function readManagerPackageVersion(): Promise<string> {
+  let directory = path.dirname(fileURLToPath(import.meta.url))
+  while (true) {
+    const packageFile = path.join(directory, "package.json")
+    try {
+      const metadata = JSON.parse(await readFile(packageFile, "utf8")) as { version?: unknown }
+      if (typeof metadata.version !== "string" || metadata.version.length === 0) throw new Error("OMW package version 無效。")
+      return metadata.version
+    } catch (cause) {
+      if (!(cause instanceof Error) || !("code" in cause) || cause.code !== "ENOENT") throw cause
+    }
+    const parent = path.dirname(directory)
+    if (parent === directory) throw new Error("找不到 OMW package metadata。")
+    directory = parent
+  }
 }
 
 function readAllowedOrigins(managerPort: number, publicOrigin?: string): Set<string> {

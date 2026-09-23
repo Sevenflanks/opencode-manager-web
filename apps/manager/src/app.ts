@@ -30,6 +30,7 @@ export function buildApp(options: {
   launcherAuthenticator?: RequestAuthenticator
   credentialController?: CredentialController
   shutdownManager?: () => void
+  managerVersion?: string
   connectivity?: { get(): Promise<ConnectivityInfo>; register(trigger: "manual"): Promise<ConnectivityInfo> }
   webRoot?: string
 }): FastifyInstance {
@@ -40,6 +41,7 @@ export function buildApp(options: {
     ajv: { customOptions: { removeAdditional: false } },
   })
   const expectedAuthority = trustedAuthority(options.authority)
+  const managerVersion = options.managerVersion
   trustedOriginSet(expectedAuthority, options.allowedOrigins, options.remoteAccess?.config?.publicManagerOrigin ?? options.publicOrigin)
 
   // onClose 會等待 HTTP 請求完成；必須先阻止仍在等待 discovery/save 的 enable 繼續寫 Serve。
@@ -113,14 +115,16 @@ export function buildApp(options: {
   })
 
   app.get("/api/v1/connectivity", async () => {
-    return options.connectivity
+    const info = options.connectivity
       ? await options.connectivity.get()
       : fallbackConnectivity(options.authority.port, options.publicOrigin)
+    return withManagerVersion(info, managerVersion)
   })
 
   app.post("/api/v1/connectivity/register", async () => {
     if (!options.connectivity) throw new ManagerError("REMOTE_REGISTRATION_UNAVAILABLE", "目前無法自動註冊 Tailscale。", 503)
-    return await options.connectivity.register("manual")
+    const info = await options.connectivity.register("manual")
+    return withManagerVersion(info, managerVersion)
   })
 
   app.post("/api/v1/connectivity/enable", {
@@ -130,7 +134,8 @@ export function buildApp(options: {
     } },
   }, async () => {
     if (!options.remoteAccess) throw new ManagerError("REMOTE_ENABLE_UNAVAILABLE", "目前無法啟用遠端存取。", 503)
-    return options.remoteAccess.enable()
+    const info = await options.remoteAccess.enable()
+    return withManagerVersion(info, managerVersion)
   })
 
   app.patch<{ Body: { currentPassword: string; username: string; password: string } }>("/api/v1/settings/credentials", {
@@ -251,7 +256,11 @@ export function buildApp(options: {
   }, async (request) => await options.service.selectPrimarySession(request.params.id, request.body.sessionId))
 
   if (options.launcherAuthenticator) {
-    app.get("/api/v1/launcher/identity", async () => ({ product: "omw-manager", protocolVersion: 1 }))
+    app.get("/api/v1/launcher/identity", async () => ({
+      product: "omw-manager",
+      protocolVersion: 1,
+      ...(managerVersion === undefined ? {} : { version: managerVersion }),
+    }))
     app.post<{ Body: LauncherReservationRequest }>("/api/v1/launcher/reservations", {
       schema: {
         body: {
@@ -291,6 +300,10 @@ export function buildApp(options: {
   })
 
   return app
+}
+
+function withManagerVersion(info: ConnectivityInfo, version?: string): ConnectivityInfo {
+  return version === undefined ? info : { ...info, manager: { ...info.manager, version } }
 }
 
 function fallbackConnectivity(managerPort: number, publicOrigin?: string): ConnectivityInfo {

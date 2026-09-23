@@ -126,7 +126,7 @@ export interface ConnectivityInfo {
   remoteAccess?: "available" | "enabled" | "disabled"
   checkedAt: string
   mode: "loopback" | "tailnet"
-  manager: { localUrl: string; publicUrl: string | null }
+  manager: { localUrl: string; publicUrl: string | null; version?: string }
   tailscale: {
     state: "connected" | "offline" | "needs-login" | "unavailable" | "unknown"
     dnsName: string | null

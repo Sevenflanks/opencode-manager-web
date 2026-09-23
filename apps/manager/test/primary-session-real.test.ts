@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { execFile } from "node:child_process"
 import { randomInt, randomUUID } from "node:crypto"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import http from "node:http"
@@ -6,6 +7,7 @@ import net from "node:net"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
+import { promisify } from "node:util"
 import { prepareIsolatedEnvironment } from "../src/isolation.js"
 import { ManagerRepository, type InstanceRecord } from "../src/repository.js"
 import {
@@ -18,6 +20,7 @@ import { ManagerService } from "../src/service.js"
 
 const enabled = process.env.OMW_REAL_OPENCODE_TEST === "1"
 const WAIT_MS = 15_000
+const execFileAsync = promisify(execFile)
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -88,6 +91,9 @@ test("real OpenCode SSE pins each instance's first native activity without UI po
   const configFile = path.join(config, "opencode.json")
   await writeFile(configFile, `${JSON.stringify(mockConfig(provider.port), null, 2)}\n`, "utf8")
   const isolation = await prepareIsolatedEnvironment({ mode: "test", root: sandbox, configFile, sourceEnvironment: process.env })
+  const { stdout: versionOutput } = await execFileAsync(executable, ["--version"], { env: isolation.environment, timeout: 10_000 })
+  const expectedVersion = versionOutput.trim()
+  assert.match(expectedVersion, /^\d+\.\d+\.\d+$/, "the selected OpenCode executable must report a version")
   const [portMin, portMax] = await freeAdjacentPorts()
   const runtime = new RecordingOpenCodeRuntime({
     executable,
@@ -102,23 +108,22 @@ test("real OpenCode SSE pins each instance's first native activity without UI po
 
   try {
     const first = await service.start(project)
+    const firstRecord = requiredRecord(repository, first.id)
+    assert.ok(firstRecord.pid)
+    owned.push({ id: first.id, pid: firstRecord.pid, port: firstRecord.port })
     const second = await service.start(project)
-    assert.equal(first.healthVersion, "1.18.31")
-    assert.equal(second.healthVersion, "1.18.31")
+    const secondRecord = requiredRecord(repository, second.id)
+    assert.ok(secondRecord.pid)
+    owned.push({ id: second.id, pid: secondRecord.pid, port: secondRecord.port })
+    assert.equal(first.healthVersion, expectedVersion)
+    assert.equal(second.healthVersion, expectedVersion)
     assert.equal(first.primarySession, null)
     assert.equal(second.primarySession, null)
-    for (const id of [first.id, second.id]) {
-      const record = repository.getInstance(id)
-      assert.ok(record?.pid)
-      owned.push({ id, pid: record.pid, port: record.port })
-    }
 
     await waitFor("both Manager SSE observers to connect", () =>
       [first.id, second.id].every((id) => runtime.handled.some((item) =>
         item.instanceId === id && item.event.type === "activity" && item.event.source === "snapshot")))
 
-    const firstRecord = requiredRecord(repository, first.id)
-    const secondRecord = requiredRecord(repository, second.id)
     assert.deepEqual(await nativeSessions(firstRecord), [])
     assert.deepEqual(await nativeSessions(secondRecord), [])
 
@@ -192,8 +197,12 @@ test("real OpenCode SSE pins each instance's first native activity without UI po
       if (await portReachable(instance.port)) cleanupErrors.push(`instance port ${instance.port} remains reachable`)
     }
     if (await portReachable(provider.port)) cleanupErrors.push(`provider port ${provider.port} remains reachable`)
+    try {
+      await rm(sandbox, { recursive: true, force: true })
+    } catch (error) {
+      cleanupErrors.push(`sandbox: ${safeMessage(error)}`)
+    }
     t.diagnostic(JSON.stringify({ cleanup: { instances: owned, providerPort: provider.port, errors: cleanupErrors } }))
-    await rm(sandbox, { recursive: true, force: true })
   }
 
   if (testError) throw testError

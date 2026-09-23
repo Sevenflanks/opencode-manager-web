@@ -330,6 +330,7 @@ async function fixture(t: test.TestContext, access?: {
   portPool?: { min: number; max: number }
   credentialController?: CredentialController
   shutdownManager?: () => void
+  managerVersion?: string
   verifyRemoteUrl?: (port: number) => Promise<void>
 }) {
   const root = await mkdtemp(path.join(tmpdir(), "omw-api-"))
@@ -354,6 +355,7 @@ async function fixture(t: test.TestContext, access?: {
     } : {}),
     ...(access?.credentialController ? { credentialController: access.credentialController } : {}),
     ...(access?.shutdownManager ? { shutdownManager: access.shutdownManager } : {}),
+    ...(access?.managerVersion ? { managerVersion: access.managerVersion } : {}),
     webRoot: root,
   })
   t.after(async () => {
@@ -499,12 +501,14 @@ test("manager shutdown endpoint schedules only Manager shutdown", async (t) => {
   assert.equal(runtime.stopCount, 0)
 })
 
-test("launcher identity requires the launcher token and has an exact product marker", async (t) => {
+test("launcher identity requires the launcher token and reports the captured runtime version", async (t) => {
   const credentials: StoredCredentials = {
     manager: { username: "omw-user", password: "manager-test-password" },
     launcherToken: "launcher-test-token-that-is-not-browser-auth",
   }
-  const { app } = await fixture(t, { launcherCredentials: credentials })
+  let startupVersion = "0.2.1"
+  const { app } = await fixture(t, { launcherCredentials: credentials, managerVersion: startupVersion })
+  startupVersion = "9.9.9"
   const denied = await app.inject({ method: "GET", url: "/api/v1/launcher/identity", headers: readHeaders })
   assert.equal(denied.statusCode, 401)
   const accepted = await app.inject({
@@ -513,6 +517,20 @@ test("launcher identity requires the launcher token and has an exact product mar
     headers: { ...readHeaders, "x-omw-launcher-token": credentials.launcherToken },
   })
   assert.equal(accepted.statusCode, 200)
+  assert.deepEqual(accepted.json(), { product: "omw-manager", protocolVersion: 1, version: "0.2.1" })
+})
+
+test("launcher identity remains compatible with a legacy Manager that has no version field", async (t) => {
+  const credentials: StoredCredentials = {
+    manager: { username: "omw-user", password: "manager-test-password" },
+    launcherToken: "launcher-test-token-that-is-not-browser-auth",
+  }
+  const { app } = await fixture(t, { launcherCredentials: credentials })
+  const accepted = await app.inject({
+    method: "GET",
+    url: "/api/v1/launcher/identity",
+    headers: { ...readHeaders, "x-omw-launcher-token": credentials.launcherToken },
+  })
   assert.deepEqual(accepted.json(), { product: "omw-manager", protocolVersion: 1 })
 })
 

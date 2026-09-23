@@ -31,7 +31,7 @@ npx @sevenflanks/omw@latest
 2. 依提示建立 OMW 使用者名稱與至少 16 個字元的密碼。
 3. 開啟終端顯示的 URL。
 
-終端先顯示 `OMW CLI version: <package version>`，再顯示 `OMW Manager ready: http://127.0.0.1:4174`（port 可能不同），且瀏覽器可開啟登入頁，即代表 Manager 已就緒。這個 plain Manager 命令只會初始化、啟動或重用 Manager，不會啟動 OpenCode TUI。
+終端先顯示 `OMW CLI version: <package version>`，再顯示 `OMW Manager ready: http://127.0.0.1:4174 (version <runtime version>, <started|reused|upgraded>)`（port 可能不同），且瀏覽器可開啟登入頁，即代表 Manager 已就緒。再次執行新版 CLI 時，OMW 會正常關閉並接替較舊或尚未回報版本的 Manager；相同或較新版則直接重用，不會降版。這個 plain Manager 命令不會啟動 OpenCode TUI。
 
 只查詢已安裝的 OMW CLI 版本、不啟動 Manager，可使用單一版本旗標：
 

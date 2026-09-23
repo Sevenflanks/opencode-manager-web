@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { randomBytes } from "node:crypto"
-import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -27,12 +27,17 @@ test("packed production consumer starts omw with its runtime contracts", {
   }
   let launchAttempted = false
   let launchJob
+  let legacyJob
+  let legacyResultPromise
+  let legacyClosed = false
   let origin = ""
+  let expectedIdentity
+  let cleanupIdentity
 
   t.after(async () => {
     let cleanupError
     try {
-      if (launchAttempted) await stopOwnedManager(origin, root, credentials)
+      if (launchAttempted && cleanupIdentity) await stopOwnedManager(origin, root, credentials, cleanupIdentity)
     } catch (error) {
       cleanupError = error
     }
@@ -43,6 +48,15 @@ test("packed production consumer starts omw with its runtime contracts", {
       } else if (closed) {
         assert.equal(closed.jobEmpty, true, `retaining ${root} because the current-run Windows Job did not become empty`)
         assert.equal(closed.graceful, true, `retaining ${root} because official shutdown did not drain the current-run Windows Job`)
+      }
+    } catch (error) {
+      cleanupError ??= error
+    }
+    try {
+      if (legacyJob && !legacyClosed) {
+        const closed = await legacyJob.close()
+        await legacyResultPromise
+        assert.equal(closed.jobEmpty, true, `retaining ${root} because the legacy fixture Job did not become empty`)
       }
     } catch (error) {
       cleanupError ??= error
@@ -88,6 +102,9 @@ test("packed production consumer starts omw with its runtime contracts", {
   await writeFile(executable, windowsPeFixture())
 
   const packageRoot = path.join(consumer, "node_modules", "@sevenflanks", "omw")
+  const packageMetadata = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"))
+  assert.equal(typeof packageMetadata.version, "string")
+  expectedIdentity = { product: "omw-manager", protocolVersion: 1, version: packageMetadata.version }
   const powershell = context.environment.OMW_POWERSHELL_EXECUTABLE ?? "pwsh.exe"
   const credentialScript = path.join(packageRoot, "dist", "scripts", "credential-store.ps1")
   const protectCommand = `$reader = [IO.StringReader]::new($env:OMW_PACKAGE_TEST_CREDENTIALS); try { [Console]::SetIn($reader); & '${credentialScript.replaceAll("'", "''")}' -Action Protect } finally { $reader.Dispose() }`
@@ -107,7 +124,44 @@ test("packed production consumer starts omw with its runtime contracts", {
   })
   await writeFile(path.join(context.paths.omwData, "credentials.dpapi"), protectedCredentials.stdout, "utf8")
 
+  const cleanupMarker = path.join(root, "legacy-cleanup-complete.txt")
+  const legacyArgs = [
+    path.join(repositoryRoot, "scripts", "release", "legacy-manager-fixture.mjs"),
+    packageRoot,
+    context.paths.omwData,
+    String(port),
+    powershell,
+    cleanupMarker,
+  ]
+  legacyJob = await startWindowsJob(process.execPath, legacyArgs, {
+    cwd: consumer,
+    env: {
+      ...context.environment,
+      OMW_DATA_DIR: context.paths.omwData,
+      OMW_POWERSHELL_EXECUTABLE: powershell,
+      OMW_REMOTE_ACCESS: "0",
+    },
+    root: path.join(root, "legacy-job"),
+    timeoutMs: 60_000,
+  })
+  legacyResultPromise = legacyJob.result.then(
+    (event) => ({ event }),
+    (error) => ({ error }),
+  )
+  assert.ok(await legacyJob.started, "legacy Manager fixture did not start")
   launchAttempted = true
+  cleanupIdentity = { product: "omw-manager", protocolVersion: 1 }
+  const legacyIdentity = await waitForReadyIdentity(origin, credentials, 10_000)
+  if (legacyIdentity === null) {
+    const output = await legacyJob.output()
+    const completed = await Promise.race([
+      legacyResultPromise,
+      new Promise((resolve) => setTimeout(() => resolve(null), 50)),
+    ])
+    assert.fail(`legacy Manager fixture did not become ready (port occupied: ${await portOccupied(origin)}, completed: ${JSON.stringify(completed)})\nstdout:\n${output.stdout}\nstderr:\n${output.stderr}`)
+  }
+  assert.deepEqual(legacyIdentity, cleanupIdentity)
+
   const launchArgs = [npmCli, "run", "smoke", "--silent"]
   launchJob = await startWindowsJob(process.execPath, launchArgs, {
     cwd: consumer,
@@ -118,9 +172,10 @@ test("packed production consumer starts omw with its runtime contracts", {
       OMW_PORT: String(port),
       OMW_POWERSHELL_EXECUTABLE: powershell,
       OMW_REMOTE_ACCESS: "0",
+      OMW_MANAGER_VERSION: "9.9.9",
     },
     root: path.join(root, "launcher-job"),
-    timeoutMs: 20_000,
+    timeoutMs: 40_000,
   })
   const launchResult = await launchJob.result
   if (launchResult.timedOut) {
@@ -130,12 +185,41 @@ test("packed production consumer starts omw with its runtime contracts", {
   const result = processResult(process.execPath, launchArgs, launchResult, launchOutput)
   assert.equal(result.code, 0, commandFailure(result))
   assert.equal(result.timedOut, false, commandFailure(result))
+  assert.ok(result.stdout.includes(`(version ${packageMetadata.version}, upgraded)`), commandFailure(result))
+
+  const legacyOutcome = await legacyResultPromise
+  if (legacyOutcome.error) throw legacyOutcome.error
+  const legacyResult = legacyOutcome.event
+  const legacyOutput = await legacyJob.output()
+  assert.equal(legacyResult.timedOut, false, commandFailure(processResult(process.execPath, legacyArgs, legacyResult, legacyOutput)))
+  assert.equal(legacyResult.exitCode, 0, commandFailure(processResult(process.execPath, legacyArgs, legacyResult, legacyOutput)))
+  assert.equal(await readFile(cleanupMarker, "utf8"), "closed\n", "new Manager started before legacy onClose cleanup completed")
+  const legacyClose = await legacyJob.close()
+  legacyClosed = true
+  assert.equal(legacyClose.graceful, true)
+  assert.equal(legacyClose.jobEmpty, true)
 
   const identity = await fetchIdentity(origin, credentials)
-  assert.deepEqual(identity, { product: "omw-manager", protocolVersion: 1 })
+  assert.deepEqual(identity, expectedIdentity)
+  cleanupIdentity = expectedIdentity
+  const { probeManager } = await import(pathToFileURL(path.join(packageRoot, "dist", "src", "manager-cli.js")).href)
+  const newManager = await probeManager(origin, credentials.launcherToken, {
+    ...context.environment,
+    OMW_POWERSHELL_EXECUTABLE: powershell,
+  })
+  assert.equal(newManager.status, "omw")
+  assert.ok(newManager.process?.creationTimeTicks, "new Manager process identity was not captured")
+  const managerStartMs = (BigInt(newManager.process.creationTimeTicks) - 621355968000000000n) / 10000n
+  const cleanupCompletedMs = BigInt(Math.floor((await stat(cleanupMarker)).mtimeMs))
+  assert.ok(managerStartMs >= cleanupCompletedMs, "new Manager process started before legacy onClose cleanup completed")
+
+  const overview = await fetchOverview(origin, credentials)
+  const legacyInstance = overview.instances.find((instance) => instance.id === "legacy-instance")
+  assert.ok(legacyInstance, "new Manager reconcile removed the legacy Instance")
+  assert.equal(legacyInstance.primarySession?.sessionId, "legacy-primary")
 })
 
-async function stopOwnedManager(origin, root, credentials) {
+async function stopOwnedManager(origin, root, credentials, expectedIdentity) {
   const identity = await waitForIdentity(origin, credentials, 2_000)
   if (identity === null) {
     assert.equal(
@@ -145,7 +229,7 @@ async function stopOwnedManager(origin, root, credentials) {
     )
     return
   }
-  assert.deepEqual(identity, { product: "omw-manager", protocolVersion: 1 })
+  assert.deepEqual(identity, expectedIdentity)
   const authorization = Buffer.from(`${credentials.manager.username}:${credentials.manager.password}`).toString("base64")
   const response = await fetch(`${origin}/api/v1/manager/shutdown`, {
     method: "POST",
@@ -187,6 +271,26 @@ async function fetchIdentity(origin, credentials) {
   } catch {
     return null
   }
+}
+
+async function waitForReadyIdentity(origin, credentials, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const identity = await fetchIdentity(origin, credentials)
+    if (identity !== null) return identity
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  return null
+}
+
+async function fetchOverview(origin, credentials) {
+  const authorization = Buffer.from(`${credentials.manager.username}:${credentials.manager.password}`).toString("base64")
+  const response = await fetch(`${origin}/api/v1/overview`, {
+    headers: { authorization: `Basic ${authorization}` },
+    signal: AbortSignal.timeout(2_000),
+  })
+  assert.equal(response.status, 200)
+  return response.json()
 }
 
 function availablePort() {

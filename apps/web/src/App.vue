@@ -1580,6 +1580,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
         <summary>連線詳細資料</summary>
         <dl>
           <div><dt>Local endpoint</dt><dd><code>{{ localUrl }}</code></dd></div>
+          <div><dt>OMW Manager version</dt><dd><code>{{ connectivity?.manager.version ?? '未知' }}</code></dd></div>
           <div><dt>Tailscale version</dt><dd><code>{{ connectivity?.tailscale.version ?? '未知' }}</code></dd></div>
           <div><dt>Node version</dt><dd><code>{{ connectivity?.nodeVersion ?? '未知' }}</code></dd></div>
           <div><dt>Serve manager match</dt><dd>{{ managerMappingLabel(connectivity?.serve.managerMapped) }}</dd></div>
