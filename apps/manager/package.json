@@ -1,7 +1,7 @@
 {
   "name": "@omw/manager",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "prebuild": "npm run build -w @omw/contracts",
@@ -13,7 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@omw/contracts": "0.3.0",
+    "@omw/contracts": "0.4.0",
     "fastify": "^5.6.0"
   },
   "devDependencies": {
