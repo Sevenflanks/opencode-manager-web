@@ -990,7 +990,11 @@ async function openWithPopup(
     referrerPolicy.content = "no-referrer"
     popup.document.head.append(referrerPolicy)
     popup.document.title = "連線中…"
-    renderSessionWaiting(popup.document, instance, expectedSessionId)
+    if (expectedSessionId && expectedSessionId === instance.primarySession?.sessionId) {
+      renderSessionWaiting(popup.document, instance, expectedSessionId)
+    } else {
+      popup.document.body.textContent = "正在連線到 OpenCode Web…"
+    }
 
     const response = await request()
     const sessionMatches = expectedSessionId === undefined

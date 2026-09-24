@@ -1259,7 +1259,8 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     await page.getByRole("alertdialog", { name: "建立 New Session？" }).getByRole("button", { name: "建立並開啟" }).click()
     const newSessionPopup = await newSessionPopupPromise
     await newSessionPopup.getByText("正在連線到 OpenCode Web…", { exact: true }).waitFor()
-    assert.equal(await newSessionPopup.locator(".waiting-session").textContent(), "尚未取得", "New Session must not show the previous primary Session as its destination")
+    assert.equal(await newSessionPopup.locator("body").textContent(), "正在連線到 OpenCode Web…", "New Session keeps its plain-text waiting page")
+    assert.equal(await newSessionPopup.locator(".waiting").count(), 0, "New Session does not render the primary Session waiting layout")
     assert.equal(await newSessionPopup.evaluate(() => window.opener), null)
     assert.equal(await newSessionPopup.locator('meta[name="referrer"]').getAttribute("content"), "no-referrer")
     await newSessionPopup.waitForURL(`${instanceBRecord.endpoint}/opened/created-1?session=created-1`)
