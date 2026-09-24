@@ -18,6 +18,9 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 .shell { width: min(1480px, 100%); margin: 0 auto; padding: 20px; }
 .topbar, .section-heading, .detail-head, .current-directory, .detail-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .topbar { min-height: 72px; border-bottom: 1px solid #2c3236; margin-bottom: 16px; }
+.topbar-brand { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; }
+.topbar-title { display: grid; width: fit-content; min-width: 0; justify-items: start; }
+.version-chip { justify-self: end; margin-top: 2px; border: 1px solid #354047; border-radius: 999px; padding: 2px 7px; color: #8c989e; background: #121719; font: .62rem/1.35 "Cascadia Code", monospace; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
 .manager-stopped { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; border: 1px solid #765b2f; padding: 14px; color: #f0c77f; background: #211a12; }
 .manager-stopped > svg { width: 20px; flex: 0 0 20px; }

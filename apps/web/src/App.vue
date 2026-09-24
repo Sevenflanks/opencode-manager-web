@@ -1499,9 +1499,12 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
   <div class="app-root" :data-mobile-view="mobileDetailOpen ? 'detail' : 'list'">
   <div class="shell" :inert="startPanelBlocking || undefined">
     <header class="topbar">
-      <div>
+      <div class="topbar-brand">
         <p class="eyebrow">WINDOWS · CONNECTIVITY CONSOLE</p>
-        <h1>OpenCode Manager</h1>
+        <div class="topbar-title">
+          <h1>OMW Manager</h1>
+          <small v-if="connectivity?.manager.version" class="version-chip">{{ connectivity.manager.version }}</small>
+        </div>
       </div>
       <div class="topbar-actions">
         <Button variant="success" data-dialog-focus-fallback @click="openStartPanel"><PlusIcon />啟動執行個體</Button>
@@ -1565,7 +1568,6 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
         <summary>連線詳細資料</summary>
         <dl>
           <div><dt>Local endpoint</dt><dd><code>{{ localUrl }}</code></dd></div>
-          <div><dt>OMW Manager version</dt><dd><code>{{ connectivity?.manager.version ?? '未知' }}</code></dd></div>
           <div><dt>Tailscale version</dt><dd><code>{{ connectivity?.tailscale.version ?? '未知' }}</code></dd></div>
           <div><dt>Node version</dt><dd><code>{{ connectivity?.nodeVersion ?? '未知' }}</code></dd></div>
           <div><dt>Serve manager match</dt><dd>{{ managerMappingLabel(connectivity?.serve.managerMapped) }}</dd></div>

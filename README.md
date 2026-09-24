@@ -50,6 +50,8 @@ npx @sevenflanks/omw@latest
 
 OMW 的日常 credentials、SQLite 與其他持久資料位於 `%LOCALAPPDATA%\OMW`。Repository development 必須改用[隔離的開發入口](docs/development.md#quick-start)，不要讓開發環境讀寫日常資料。
 
+Manager 啟停診斷寫入資料目錄的 `logs/manager-lifecycle.jsonl`（最多約 128 KiB）與前一份 `manager-lifecycle.jsonl.1`。每行 JSON 記錄啟動時間、PID/PPID、Node/Manager 版本與 port、ready、API 要求關閉、close 完成、exit code、啟動失敗階段，以及未捕捉例外或未處理 rejection 的安全錯誤類別/程式行號；不記錄錯誤訊息、請求內容或原始 stdout/stderr。查明無聲退出時先比對同一 PID 的最後幾筆：若只有 `start` 或 `ready` 而沒有 `exit`，可能是強制終止、native fatal crash 或斷電，無法只憑此檔案斷定原因。診斷寫入失敗也不會中斷 Manager；launcher 背景程序維持既有的 stdout/stderr 處理方式。
+
 ## Remote Access
 
 1. 在 OMW 主機與要訪問的電腦或手機自行安裝 Tailscale，登入同一個 Tailnet，並確認 Tailnet policy 允許裝置存取這台主機。
