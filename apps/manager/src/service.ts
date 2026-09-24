@@ -269,9 +269,25 @@ export class ManagerService {
     if (!hasExactIdentity(record)) {
       throw new ManagerError("PROCESS_IDENTITY_INCOMPLETE", "Instance 缺少可安全核對的 process identity。", 409)
     }
-    // Stop adapter 必須以 exact identity 核對並在 helper 內原子確認 port owner；
-    // 額外 HTTP/Inspect probe 會與 Stop 產生 TOCTOU，且 listener 消失仍須可停止原程序。
-    const result = await this.runtimeFor(record).stop(record)
+    // Manager 先核對 fresh process/port ownership，避免只信任 adapter 的樂觀 Stop 回報。
+    // 這不是原子保證：adapter Stop 仍須在 helper 內再次核對 identity/port owner，防止 TOCTOU。
+    let identity: InspectResult
+    const runtime = this.runtimeFor(record)
+    try {
+      identity = await runtime.inspect(record)
+    } catch {
+      throw new ManagerError("INSTANCE_IDENTITY_CHECK_FAILED", "拒絕停止：無法核對 process identity。", 409)
+    }
+    if (identity.processState === "not-found" && !identity.portOwnedByOther) {
+      // 已消失的 process 只經由既有 recheck 的再次核對與 port-free 規則釋放 allocation。
+      const rechecked = await this.recheckUnlocked(id)
+      if (rechecked.state === "stopped") return rechecked
+    }
+    if (identity.processState === "unknown" || identity.processState === "not-found" || !identity.running || !identity.matched || identity.portOwnedByOther) {
+      throw new ManagerError("PROCESS_IDENTITY_MISMATCH", "拒絕停止：process identity 無法安全核對。", 409)
+    }
+    // listener 消失時 portOwnerMatched 可為 false；只要 port 未由他人佔用仍可停止 matching root。
+    const result = await runtime.stop(record)
     if (!result.stopped) {
       throw new ManagerError("PROCESS_IDENTITY_MISMATCH", "拒絕停止：process identity 無法安全核對。", 409)
     }
@@ -563,7 +579,7 @@ export class ManagerService {
       return await this.present(record)
     }
 
-    if (identity.processState === "not-found") {
+    if (identity.processState === "not-found" && !identity.portOwnedByOther) {
       if (await loopbackPortAvailable(record.port)) {
         record.state = "stopped"
         record.stoppedAt = new Date().toISOString()

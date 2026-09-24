@@ -51,7 +51,7 @@ export interface RuntimePort {
   cleanupLaunch(instanceId: string): Promise<StopResult>
   readiness(instance: LaunchResult | InstanceRecord): Promise<{ version: string; directory: string }>
   inspect(instance: InstanceRecord | LaunchResult): Promise<InspectResult>
-  // Stop 的充分證據由 OMW process-control 核對；失聯不可解讀成已停止。
+  // Manager 先 fresh inspect 篩掉不安全的 Stop；adapter helper 還須原子核對 identity/port owner，不能靠 preflight 消除 TOCTOU。
   stop(instance: InstanceRecord): Promise<StopResult>
   sessions(instance: InstanceRecord): Promise<SessionMetadata[]>
   children(instance: InstanceRecord, sessionId: string): Promise<SessionMetadata[]>

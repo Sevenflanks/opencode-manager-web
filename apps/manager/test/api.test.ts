@@ -1353,10 +1353,13 @@ test("overlapping overview requests share a bounded probe round while another AP
   }
   runtime.inspectCalls = 0
   runtime.maxActiveInspects = 0
-  runtime.inspectDelayMs = 250
+  // 只攔住 overview 發起的 inspect；Stop 自己的 fresh inspect 不應加入 overview in-flight round。
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  t.after(() => runtime.releaseInspect?.())
 
   const firstOverview = app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
-  await waitFor(() => runtime.activeInspects > 0, 500)
+  await waitFor(() => runtime.deferredInspectStarted, 500)
+  await waitFor(() => runtime.inspectCalls === 6 && runtime.activeInspects === 1, 500)
   const secondOverview = app.inject({ method: "GET", url: "/api/v1/overview?filter=active", headers: readHeaders })
   const browse = await Promise.race([
     app.inject({ method: "GET", url: `/api/v1/directories?path=${encodeURIComponent(project)}`, headers: readHeaders }),
@@ -1369,10 +1372,11 @@ test("overlapping overview requests share a bounded probe round while another AP
 
   assert.equal(browse.statusCode, 200)
   assert.equal(stopped.statusCode, 200)
+  runtime.releaseInspect?.()
   const overviews = await Promise.all([firstOverview, secondOverview])
   assert.equal(overviews[0].statusCode, 200)
   assert.equal(overviews[1].statusCode, 200)
-  assert.equal(runtime.inspectCalls, 6)
+  assert.equal(runtime.inspectCalls, 7, "six shared overview probes plus an independent fresh Stop inspect")
   assert.ok(runtime.maxActiveInspects <= 4, `expected at most 4 concurrent probes, saw ${runtime.maxActiveInspects}`)
 })
 
@@ -2085,12 +2089,108 @@ test("shutdown invalidates a deferred activity identity check before repository 
 })
 
 test("Stop refuses an identity mismatch without terminating the process", async (t) => {
-  const { app, project, runtime } = await fixture(t)
+  const { app, project, repository, runtime } = await fixture(t)
   const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
   runtime.identityMatches = false
   const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${started.json().id}/stop`, headers: mutationHeaders })
   assert.equal(stopped.statusCode, 409)
   assert.equal(stopped.json().error.code, "PROCESS_IDENTITY_MISMATCH")
+  assert.equal(runtime.stopCount, 0)
+  assert.equal(repository.getInstance(started.json().id)?.state, "ready")
+  assert.notEqual(repository.getAllocationForInstance(started.json().id), null)
+})
+
+test("Stop rejects a foreign port owner even when the adapter optimistically reports stopped", async (t) => {
+  const { app, project, repository, runtime } = await fixture(t)
+  const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+  const id = started.json().id as string
+  runtime.portOwnerMatched = false
+  runtime.portOwnedByOther = true
+  const inspectCalls = runtime.inspectCalls
+
+  const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/stop`, headers: mutationHeaders })
+
+  assert.equal(stopped.statusCode, 409)
+  assert.equal(stopped.json().error.code, "PROCESS_IDENTITY_MISMATCH")
+  assert.ok(runtime.inspectCalls > inspectCalls, "Stop requires a fresh inspection")
+  assert.equal(runtime.stopCount, 0, "the optimistic adapter cannot grant Stop authority")
+  assert.equal(repository.getInstance(id)?.state, "ready")
+  assert.notEqual(repository.getAllocationForInstance(id), null)
+})
+
+test("Stop rejects unknown and failed identity probes without trusting optimistic adapters", async (t) => {
+  for (const probe of ["unknown", "throw"] as const) {
+    const { app, project, repository, runtime } = await fixture(t)
+    const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+    const id = started.json().id as string
+    if (probe === "unknown") runtime.processState = "unknown"
+    else runtime.inspectError = new Error("private inspect failure detail")
+
+    const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/stop`, headers: mutationHeaders })
+
+    assert.equal(stopped.statusCode, 409)
+    assert.doesNotMatch(stopped.body, /private inspect failure detail/)
+    assert.equal(runtime.stopCount, 0)
+    assert.equal(repository.getInstance(id)?.state, "ready")
+    assert.notEqual(repository.getAllocationForInstance(id), null)
+  }
+})
+
+test("Stop reconciles a missing process only after a second missing probe and a free port", async (t) => {
+  const { app, project, repository, runtime } = await fixture(t)
+  const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+  const id = started.json().id as string
+  runtime.processState = "not-found"
+  const inspectCalls = runtime.inspectCalls
+
+  const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/stop`, headers: mutationHeaders })
+
+  assert.equal(stopped.statusCode, 200)
+  assert.equal(stopped.json().state, "stopped")
+  assert.equal(runtime.inspectCalls, inspectCalls + 2)
+  assert.equal(runtime.stopCount, 0)
+  assert.equal(repository.getAllocationForInstance(id), null)
+})
+
+test("Stop refuses to release a missing process when its second probe reports another port owner", async (t) => {
+  const { app, project, repository, runtime } = await fixture(t)
+  const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+  const id = started.json().id as string
+  runtime.processState = "not-found"
+  const inspect = runtime.inspect.bind(runtime)
+  const initialInspects = runtime.inspectCalls
+  runtime.inspect = async (record) => {
+    const result = await inspect(record)
+    return runtime.inspectCalls === initialInspects + 2 ? { ...result, portOwnedByOther: true } : result
+  }
+
+  const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/stop`, headers: mutationHeaders })
+
+  assert.equal(stopped.statusCode, 409)
+  assert.equal(runtime.stopCount, 0)
+  assert.notEqual(repository.getInstance(id)?.state, "stopped")
+  assert.notEqual(repository.getAllocationForInstance(id), null)
+})
+
+test("Stop keeps a missing process quarantined when its port is occupied", async (t) => {
+  const port = await freePort()
+  const { app, project, repository, runtime } = await fixture(t, { portPool: { min: port, max: port } })
+  const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+  const id = started.json().id as string
+  const listener = net.createServer()
+  await new Promise<void>((resolve, reject) => {
+    listener.once("error", reject)
+    listener.listen(port, "127.0.0.1", resolve)
+  })
+  t.after(() => new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())))
+  runtime.processState = "not-found"
+
+  const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/stop`, headers: mutationHeaders })
+
+  assert.equal(stopped.statusCode, 409)
+  assert.equal(runtime.stopCount, 0)
+  assert.notEqual(repository.getInstance(id)?.state, "stopped")
+  assert.notEqual(repository.getAllocationForInstance(id), null)
 })
 
 test("an identity-matched owned process remains stoppable after its listener disappears", async (t) => {
@@ -2102,6 +2202,10 @@ test("an identity-matched owned process remains stoppable after its listener dis
   assert.equal(overview.json().instances[0].stopAllowed, true)
   assert.equal(runtime.portOwnedByOther, false)
   assert.equal(started.statusCode, 201)
+  const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${started.json().id}/stop`, headers: mutationHeaders })
+  assert.equal(stopped.statusCode, 200)
+  assert.equal(stopped.json().state, "stopped")
+  assert.equal(runtime.stopCount, 1)
 })
 
 test("one failed identity probe stays unreachable without blocking reconciliation or overview", async (t) => {

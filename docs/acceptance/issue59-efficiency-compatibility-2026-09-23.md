@@ -76,3 +76,8 @@ node scripts/benchmark-manager-workflow.mjs 6
 ```
 
 新增 regression 原串行版本 red（`Error: Condition was not met within 500 ms`），改後 green；builder、shim 1/1、相關 regression 135/135、後測兩組各六輪 assertion 均通過。`isolated-entry.mjs` 留存的 fresh isolation roots 由 owner-verified cleanup 管理，本報告不將其自行刪除。
+# 內部 review 後的 Stop policy 補強
+
+Manager 在 Stop 前另做 fresh inspect，拒絕 unknown、identity mismatch 與 foreign port owner，不再只信任 adapter 樂觀回報。這項 preflight 不取代 helper 執行端的即時核對；matching root 的 listener 消失仍可 Stop，舊有只有 boolean 欄位的 inspect 回應仍依其 identity 證據判斷。只有確認 process 消失且 port 空閒的 recheck 才能釋放 allocation。
+
+修正後重新 build Manager，API 71/71、runtime contract 與 Windows process cleanup 25/25、兩項 Chrome Stop 流程 2/2、real-manager 與 Chrome real Manager safe Stop 合計 3/3 全數通過，均無 skip。另逐檔執行 real-process、Manager OS lifetime 各 1/1 通過。較早將實機測試併跑曾逾時，逐檔複驗成功；不將該次逾時列為通過。未重跑無關 full suite，沿用前述仍有效的驗證。Stop 不在六步 benchmark workload 中，本次修正不改變其量測路徑。
