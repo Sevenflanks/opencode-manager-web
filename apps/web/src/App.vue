@@ -232,6 +232,18 @@ const { todos: primaryTodos, loading: todosLoading, loaded: todosLoaded, stale: 
 const todoCompletedCount = computed(() => primaryTodos.value.filter((todo) => todo.status === "completed").length)
 const todoActiveCount = computed(() => primaryTodos.value.filter((todo) => todo.status !== "cancelled").length)
 const todoCancelledCount = computed(() => primaryTodos.value.filter((todo) => todo.status === "cancelled").length)
+const todoMeasuredContent = ref<HTMLElement | null>(null)
+watch(todoMeasuredContent, (content, _, onCleanup) => {
+  if (!content) return
+  const container = content.parentElement
+  if (!container) return
+  // 量測實際內容而非猜測列數；長文字換行或 viewport 改變時仍可重新銜接高度。
+  const observer = new ResizeObserver(() => {
+    container.style.height = `${Math.ceil(content.getBoundingClientRect().height)}px`
+  })
+  observer.observe(content)
+  onCleanup(() => observer.disconnect())
+}, { flush: "post" })
 const todoStatusLabels: Record<SessionTodo["status"], string> = {
   pending: "待處理", in_progress: "執行中", completed: "已完成", cancelled: "已取消",
 }
@@ -1778,22 +1790,26 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
                 已完成 {{ todoCompletedCount }} / {{ todoActiveCount }} · 已取消 {{ todoCancelledCount }}
               </span>
             </div>
-            <p v-if="!selected.primarySession" class="primary-todos-note">尚未綁定主 Session，沒有可讀取的待辦事項。</p>
-            <p v-else-if="todosLoading && !todosLoaded" class="primary-todos-note" role="status">正在載入主 Session 待辦事項…</p>
-            <p v-else-if="todosError" class="primary-todos-error" role="alert">讀取失敗：{{ todosError }}<span v-if="todosStale">（下列為上次讀取結果，已過期）</span></p>
-            <p v-if="selected.primarySession && todosLoaded && primaryTodos.length === 0 && !todosError" class="primary-todos-note">此主 Session 目前沒有待辦事項。</p>
-            <ol v-if="selected.primarySession && todosLoaded && primaryTodos.length" class="primary-todos-timeline" :class="{ 'is-stale': todosStale }">
-              <li v-for="(todo, index) in primaryTodos" :key="`${todo.content}:${index}`" :data-status="todo.status">
-                <span class="primary-todo-step" role="img" :aria-label="todoStatusLabels[todo.status]" :title="todoStatusLabels[todo.status]">
-                  <CheckIcon v-if="todo.status === 'completed'" />
-                  <span v-else-if="todo.status === 'in_progress'" class="primary-todo-bars" aria-hidden="true"><i /><i /><i /></span>
-                  <CircleIcon v-else-if="todo.status === 'pending'" />
-                  <CircleSlash2Icon v-else />
-                </span>
-                <p>{{ todo.content }}</p>
-              </li>
-            </ol>
-            <p v-if="selected.primarySession && !todosLoaded && !todosLoading && !todosError" class="primary-todos-note">尚未取得待辦事項。</p>
+            <div class="primary-todos-content">
+              <div ref="todoMeasuredContent">
+                <p v-if="!selected.primarySession" class="primary-todos-note">尚未綁定主 Session，沒有可讀取的待辦事項。</p>
+                <p v-else-if="todosLoading && !todosLoaded" class="primary-todos-note" role="status">正在載入主 Session 待辦事項…</p>
+                <p v-else-if="todosError" class="primary-todos-error" role="alert">讀取失敗：{{ todosError }}<span v-if="todosStale">（下列為上次讀取結果，已過期）</span></p>
+                <p v-if="selected.primarySession && todosLoaded && primaryTodos.length === 0 && !todosError" class="primary-todos-note">此主 Session 目前沒有待辦事項。</p>
+                <ol v-if="selected.primarySession && todosLoaded && primaryTodos.length" class="primary-todos-timeline" :class="{ 'is-stale': todosStale }">
+                  <li v-for="(todo, index) in primaryTodos" :key="`${todo.content}:${index}`" :data-status="todo.status">
+                    <span class="primary-todo-step" role="img" :aria-label="todoStatusLabels[todo.status]" :title="todoStatusLabels[todo.status]">
+                      <CheckIcon v-if="todo.status === 'completed'" />
+                      <span v-else-if="todo.status === 'in_progress'" class="primary-todo-bars" aria-hidden="true"><i /><i /><i /></span>
+                      <CircleIcon v-else-if="todo.status === 'pending'" />
+                      <CircleSlash2Icon v-else />
+                    </span>
+                    <p>{{ todo.content }}</p>
+                  </li>
+                </ol>
+                <p v-if="selected.primarySession && !todosLoaded && !todosLoading && !todosError" class="primary-todos-note">尚未取得待辦事項。</p>
+              </div>
+            </div>
           </section>
           <p v-if="statusCategory(selected) === 'attention'" class="status-attention primary-session-attention"><AlertTriangleIcon />{{ attentionSummary(selected) }}</p>
           <p v-else-if="selected.state === 'ready' && selected.primarySummary.scope === 'unknown'" class="inline-error primary-session-attention"><AlertTriangleIcon />無法確認主 Session 工作範圍。</p>

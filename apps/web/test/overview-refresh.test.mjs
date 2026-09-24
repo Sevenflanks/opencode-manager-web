@@ -372,6 +372,7 @@ test("switching mobile detail reads only the newly selected primary todos and cl
       assert.deepEqual(todoRequests, [id, secondId], "opening B must not briefly read A again")
       assert.equal(await page.getByText("A 的待辦", { exact: true }).count(), 0, "switching targets clears A before B responds")
       assert.equal(await page.getByRole("status").filter({ hasText: "正在載入主 Session 待辦事項" }).count(), 1)
+      assert.ok((await page.getByRole("region", { name: "主 Session 待辦事項" }).boundingBox()).height >= 90, "the new target retains layout space without showing the old Todo")
       releaseSecond()
       await page.getByText("B 的待辦", { exact: true }).waitFor()
     } finally {
@@ -388,6 +389,147 @@ test("switching mobile detail reads only the newly selected primary todos and cl
       await route.fulfill({ response, json: overview })
     })
   })
+})
+
+test("primary Session Todo reserves readable space while loading and when empty on phone and desktop", { skip: !enabled, timeout: 15_000 }, async () => {
+  for (const width of [390, 1440]) {
+    let releaseTodo
+    const held = new Promise((resolve) => { releaseTodo = resolve })
+    await withOverviewPage(async ({ page, id }) => {
+      try {
+        if (width === 390) await page.locator(`.instance-row[data-instance-id="${id}"]`).click()
+        const loading = page.getByRole("status").filter({ hasText: "正在載入主 Session 待辦事項" })
+        await loading.waitFor()
+        const panel = page.getByRole("region", { name: "主 Session 待辦事項" })
+        const loadingHeight = await panel.evaluate((element) => element.getBoundingClientRect().height)
+        assert.ok(loadingHeight >= (width === 390 ? 90 : 100), `${width}px loading reserves space: ${loadingHeight}px`)
+        releaseTodo()
+        await page.getByText("此主 Session 目前沒有待辦事項。", { exact: true }).waitFor()
+        const emptyHeight = await panel.evaluate((element) => element.getBoundingClientRect().height)
+        assert.ok(emptyHeight >= (width === 390 ? 90 : 100), `${width}px empty reserves space: ${emptyHeight}px`)
+      } finally {
+        releaseTodo()
+      }
+    }, async (page) => {
+      await page.setViewportSize({ width, height: 844 })
+      await page.route("**/api/v1/overview?**", async (route) => {
+        const response = await route.fetch()
+        const overview = await response.json()
+        overview.instances[0].primarySession = { sessionId: "session-a", title: "A", source: "manual", boundAt: "2026-09-24T00:00:00.000Z" }
+        await route.fulfill({ response, json: overview })
+      })
+      await page.route("**/api/v1/instances/*/primary-todos", async (route) => {
+        await held
+        const instanceId = new URL(route.request().url()).pathname.split("/").at(-2)
+        await route.fulfill({ json: { instanceId, sessionId: "session-a", todos: [] } }).catch(() => undefined)
+      })
+    })
+  }
+})
+
+test("primary Session Todo follows wrapped rows, refresh changes and errors without hiding actions", { skip: !enabled, timeout: 45_000 }, async () => {
+  const longTodos = Array.from({ length: 6 }, (_, index) => ({
+    content: `待辦 ${index + 1}：${"這段內容要換行才能完整閱讀。".repeat(8)}`,
+    status: "pending", priority: "high",
+  }))
+  for (const width of [390, 1440]) {
+    let reads = 0
+    await withOverviewPage(async ({ page, id }) => {
+      if (width === 390) await page.locator(`.instance-row[data-instance-id="${id}"]`).click()
+      const panel = page.getByRole("region", { name: "主 Session 待辦事項" })
+      const content = panel.locator(".primary-todos-content")
+      const action = page.getByRole("button", { name: "New Session" })
+      const measured = async () => content.evaluate((element) => ({
+        height: element.getBoundingClientRect().height,
+        needed: element.firstElementChild.getBoundingClientRect().height,
+        transition: getComputedStyle(element).transitionDuration,
+        overflow: getComputedStyle(element).overflowY,
+      }))
+      const readable = async (expectedWidth) => {
+        await page.waitForFunction((expectedWidth) => {
+          if (window.innerWidth !== expectedWidth) return false
+          const element = document.querySelector(".primary-todos-content")
+          if (!element) return false
+          const needed = element.firstElementChild.getBoundingClientRect().height
+          return Math.abs(parseFloat(element.style.height) - Math.ceil(needed)) <= 1 && element.getBoundingClientRect().height + 1 >= needed
+        }, expectedWidth)
+        const { height, needed, overflow } = await measured()
+        assert.ok(height + 1 >= needed, `${width}px content fits: ${height}px >= ${needed}px`)
+        assert.equal(overflow, "clip", "the measured container clips only while its height catches up; settled content remains fully readable")
+        const last = await panel.locator(".primary-todos-timeline li").last().boundingBox()
+        if (last) assert.ok((await action.boundingBox()).y >= last.y + last.height - 1, "actions follow the last row")
+      }
+
+      if (width === 1440) {
+        await panel.getByRole("alert").filter({ hasText: "讀取失敗" }).waitFor()
+        assert.ok((await panel.boundingBox()).height >= 100, "initial error reserves space")
+        const errorMargin = await content.locator(":scope > div").evaluate((inner) => {
+          const first = inner.firstElementChild
+          return { gap: first.getBoundingClientRect().top - inner.getBoundingClientRect().top, margin: parseFloat(getComputedStyle(first).marginTop) }
+        })
+        assert.ok(errorMargin.gap >= errorMargin.margin - 1, "error margin is included inside the measured box instead of shifting the panel")
+      } else {
+        await page.getByText("此主 Session 目前沒有待辦事項。", { exact: true }).waitFor()
+      }
+      assert.equal((await measured()).transition, "0.18s")
+      await page.waitForFunction(() => document.querySelectorAll(".primary-todos-timeline li").length === 6, null, { timeout: 8_000 })
+      const listMargin = await content.locator(":scope > div").evaluate((inner) => {
+        const first = inner.firstElementChild
+        return { gap: first.getBoundingClientRect().top - inner.getBoundingClientRect().top, margin: parseFloat(getComputedStyle(first).marginTop) }
+      })
+      assert.ok(listMargin.gap >= listMargin.margin - 1, "list margin participates in the observed content height")
+      await readable(width)
+      const wideHeight = (await measured()).needed
+      const narrowWidth = width === 390 ? 320 : 900
+      await page.setViewportSize({ width: narrowWidth, height: 844 })
+      const transitionFrame = await page.waitForFunction((prior) => {
+        const element = document.querySelector(".primary-todos-content")
+        const target = parseFloat(element.style.height)
+        if (element.firstElementChild.getBoundingClientRect().height <= prior || target - element.getBoundingClientRect().height <= 24) return false
+        const action = document.querySelector(".primary-actions")
+        return { overflow: getComputedStyle(element).overflowY, excess: element.firstElementChild.getBoundingClientRect().bottom - action.getBoundingClientRect().top }
+      }, wideHeight)
+      const { overflow: animatedOverflow, excess } = await transitionFrame.jsonValue()
+      assert.ok(excess > 10, "during the resize animation, long rows would otherwise cover the actions")
+      assert.equal(animatedOverflow, "clip", "only the transitioning content box clips rows before its target height catches up")
+      await readable(narrowWidth)
+      const narrowHeight = (await measured()).needed
+      await page.setViewportSize({ width, height: 844 })
+      await page.waitForFunction((prior) => parseFloat(document.querySelector(".primary-todos-content").style.height) < prior, narrowHeight)
+      await page.setViewportSize({ width: narrowWidth, height: 844 })
+      await readable(narrowWidth) // a new width retargets any height transition still in progress
+
+      await page.emulateMedia({ reducedMotion: "reduce" })
+      assert.equal((await measured()).transition, "0s", "reduced motion turns off size transitions")
+      await panel.getByRole("alert").filter({ hasText: "讀取失敗" }).waitFor({ timeout: 8_000 })
+      assert.equal(await panel.getByText("（下列為上次讀取結果，已過期）").count(), 1)
+      assert.equal(await panel.locator(".primary-todos-timeline li").count(), 6, "failed refresh retains the old rows")
+      await readable(narrowWidth)
+      await page.getByText("此主 Session 目前沒有待辦事項。", { exact: true }).waitFor({ timeout: 8_000 })
+      assert.ok((await panel.boundingBox()).height >= (width === 390 ? 90 : 100), "empty refresh keeps base height")
+      await action.click()
+      await page.getByText("建立 New Session？").waitFor()
+      await page.getByRole("button", { name: "取消" }).click()
+    }, async (page) => {
+      await page.setViewportSize({ width, height: 844 })
+      await page.route("**/api/v1/overview?**", async (route) => {
+        const response = await route.fetch()
+        const overview = await response.json()
+        overview.instances[0].state = "ready"
+        overview.instances[0].primarySession = { sessionId: "session-a", title: "A", source: "manual", boundAt: "2026-09-24T00:00:00.000Z" }
+        await route.fulfill({ response, json: overview })
+      })
+      await page.route("**/api/v1/instances/*/primary-todos", async (route) => {
+        reads++
+        if ((width === 1440 && reads === 1) || reads === 3) {
+          await route.fulfill({ status: 503, json: { error: "暫時無法讀取" } })
+          return
+        }
+        const instanceId = new URL(route.request().url()).pathname.split("/").at(-2)
+        await route.fulfill({ json: { instanceId, sessionId: "session-a", todos: reads === 2 ? longTodos : [] } })
+      })
+    })
+  }
 })
 
 test("a hung refresh times out, retains the last successful time, and a retry recovers", { skip: !enabled, timeout: 35_000 }, async () => {

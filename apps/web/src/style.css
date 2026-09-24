@@ -204,6 +204,9 @@ h3 { font-size: .95rem; }
 .primary-todos-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
 .primary-todos-head h3 { color: #d9e3e4; font-size: .8rem; }
 .primary-todos-count { color: #a5bfc0; font-size: .7rem; }
+/* 過渡時不讓未到位的列蓋住操作區；首項 margin 留在實際量測的 inner 內。 */
+.primary-todos-content { min-height: 80px; overflow: clip; transition: height 180ms cubic-bezier(.23, 1, .32, 1); }
+.primary-todos-content > div { display: flow-root; }
 .primary-todos-note { padding-top: 9px; color: #879399; font-size: .74rem; }
 .primary-todos-error { margin-top: 9px; color: #ffaaa0; font-size: .74rem; overflow-wrap: anywhere; }
 .primary-todos-error span { display: block; color: #e8bd87; }
@@ -347,6 +350,7 @@ h3 { font-size: .95rem; }
   .instance-meta { grid-column: 2; justify-self: start; max-width: 100%; }
   .instance-meta b { border-radius: 8px; white-space: normal; overflow-wrap: anywhere; }
   .detail-pane { padding: 14px 12px; }
+  .primary-todos-content { min-height: 50px; }
   .mobile-back { display: inline-flex; min-height: 44px; margin: -4px 0 12px -8px; }
   .detail-head { flex-direction: column; align-items: stretch; gap: 12px; }
   .detail-head-controls { width: 100%; flex-direction: row; align-items: center; justify-content: space-between; }
@@ -383,6 +387,7 @@ h3 { font-size: .95rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .primary-todos-content { transition: none !important; }
   .primary-todo-bars i { animation: none; }
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
   .ui-button { transform: none !important; }
