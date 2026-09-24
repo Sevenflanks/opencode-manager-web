@@ -17,6 +17,7 @@ import type {
   RuntimeActivityEvent,
   RuntimeActivityObserver,
   RuntimePort,
+  RuntimeCapabilities,
   RuntimeSummary,
 } from "../src/runtime.js"
 
@@ -28,6 +29,7 @@ const mutationHeaders = {
 const readHeaders = { host: "127.0.0.1:4174" }
 
 class FakeRuntime implements RuntimePort {
+  agentFamily = "opencode"
   launchCount = 0
   launchError: Error | null = null
   identityMatches = true
@@ -69,6 +71,8 @@ class FakeRuntime implements RuntimePort {
   createSessionError: Error | null = null
   failCreatedSessionUrl = false
   remoteUrlError: string | null = null
+  declaredCapabilities: RuntimeCapabilities | null = null
+  capabilities() { return this.declaredCapabilities ?? {} }
   activityBusySessions = new Map<string, string[]>()
   activityError: Error | null = null
   activityGate: Promise<void> | null = null
@@ -332,6 +336,7 @@ async function fixture(t: test.TestContext, access?: {
   shutdownManager?: () => void
   managerVersion?: string
   verifyRemoteUrl?: (port: number) => Promise<void>
+  runtimeForInstance?: (instance: InstanceRecord, primary: FakeRuntime) => RuntimePort
 }) {
   const root = await mkdtemp(path.join(tmpdir(), "omw-api-"))
   const project = path.join(root, "project")
@@ -340,7 +345,9 @@ async function fixture(t: test.TestContext, access?: {
   await writeFile(path.join(root, "index.html"), "<!doctype html><title>OMW</title>", "utf8")
   const repository = new ManagerRepository(path.join(root, "omw.sqlite"))
   const runtime = new FakeRuntime()
-  const service = new ManagerService(repository, runtime, access?.portPool ?? await dynamicPortPool(), access?.verifyRemoteUrl)
+  const service = new ManagerService(repository, access?.runtimeForInstance
+    ? (instance) => access.runtimeForInstance!(instance, runtime)
+    : runtime, access?.portPool ?? await dynamicPortPool(), access?.verifyRemoteUrl)
   const app = buildApp({
     service,
     authority: { hostname: "127.0.0.1", port: 4174 },
@@ -378,6 +385,154 @@ async function startLocalTui(
   await waitFor(() => runtime.observers.has(reservation.reservationId), 500)
   return reservation.reservationId
 }
+
+test("unsupported and temporarily unavailable runtime capabilities do not invoke Session operations or advertise a URL", async (t) => {
+  const { app, project, runtime, service } = await fixture(t)
+  const instance = await service.start(project)
+  runtime.agentFamily = "limited-fixture"
+  runtime.declaredCapabilities = {
+    sessions: { state: "unsupported" },
+    sessionCreation: { state: "unavailable", reason: "Agent 目前唯讀" },
+    nativeWeb: { state: "unsupported" },
+    activity: { state: "unavailable", reason: "活動來源暫時離線" },
+  }
+
+  const overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.equal(overview.statusCode, 200)
+  const displayed = overview.json().instances.find((candidate: { id: string }) => candidate.id === instance.id)
+  assert.deepEqual(displayed.capabilities.pendingQuestions, { state: "unsupported" })
+  assert.equal(displayed.capabilities.sessionCreation.reason, "Agent 目前唯讀")
+  assert.equal(displayed.summary.busySessions, null)
+  assert.equal(displayed.primarySummary.busySessions, null)
+  assert.equal(displayed.remoteUrlUnavailableReason, "Runtime 不支援原生 Web URL。")
+
+  const roots = await app.inject({ method: "GET", url: `/api/v1/instances/${instance.id}/sessions`, headers: readHeaders })
+  const create = await app.inject({ method: "POST", url: `/api/v1/instances/${instance.id}/sessions`, headers: mutationHeaders })
+  const open = await app.inject({ method: "POST", url: `/api/v1/instances/${instance.id}/open-url`, headers: mutationHeaders, payload: {} })
+  assert.equal(roots.statusCode, 501)
+  assert.equal(create.statusCode, 503)
+  assert.equal(create.json().error.details.reason, "Agent 目前唯讀")
+  assert.equal(open.statusCode, 501)
+  assert.equal(runtime.sessionCalls, 0)
+  assert.equal(runtime.createSessionCalls, 0)
+  assert.equal(runtime.openUrlCalls, 0)
+  assert.equal(runtime.summaryCalls, 1) // start() initial presentation; no unsupported summary probe in overview.
+})
+
+test("partial capabilities preserve busy and Session scope while distinguishing unavailable, unknown and zero", async (t) => {
+  const { app, project, runtime, service } = await fixture(t)
+  const instance = await service.start(project)
+  await service.selectPrimarySession(instance.id, "root")
+  runtime.agentFamily = "limited-fixture"
+  runtime.declaredCapabilities = {
+    sessions: { state: "supported" }, activity: { state: "supported" },
+    pendingQuestions: { state: "unavailable", reason: "問題來源離線" },
+    pendingPermissions: { state: "supported" }, nativeWeb: { state: "unsupported" },
+  }
+  const signals: RuntimeSummary = {
+    activity: "busy", busySessions: 1, pendingQuestions: 0, pendingPermissions: 0, error: null,
+    sessions: [{ id: "root", title: "仍可讀的主工作" }], sessionsKnown: true,
+    sessionStatuses: [{ sessionId: "root", type: "busy" }],
+    questionRequests: [], permissionRequests: [],
+  }
+  runtime.summaries.set(project, signals)
+  const read = async () => (await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })).json().instances[0]
+  let displayed = await read()
+  assert.equal(displayed.state, "ready")
+  assert.equal(displayed.summary.busySessions, 1)
+  assert.equal(displayed.primarySummary.activity, "busy")
+  assert.equal(displayed.primarySummary.busySessions, 1)
+  assert.equal(displayed.primarySummary.pendingQuestions, null)
+  assert.equal(displayed.primarySummary.pendingPermissions, 0)
+  assert.equal(displayed.capabilities.pendingQuestions.reason, "問題來源離線")
+  assert.equal(displayed.sessions[0].title, "仍可讀的主工作")
+  const roots = await app.inject({ method: "GET", url: `/api/v1/instances/${instance.id}/sessions`, headers: readHeaders })
+  assert.equal(roots.statusCode, 200)
+
+  runtime.summaries.set(project, { ...signals, pendingPermissions: null, permissionRequests: null, error: "request failed" })
+  displayed = await read()
+  assert.equal(displayed.capabilities.pendingPermissions.state, "supported")
+  assert.equal(displayed.primarySummary.pendingPermissions, null)
+  assert.equal(displayed.summary.error, "INSTANCE_SUMMARY_PARTIAL")
+  assert.equal(displayed.primarySummary.activity, "busy")
+})
+
+test("unsupported or unavailable activity never starts observation, and Session capability guards resume before launch", async (t) => {
+  const { app, project, runtime, service, repository } = await fixture(t)
+  runtime.agentFamily = "limited-fixture"
+  runtime.declaredCapabilities = {
+    sessions: { state: "supported" }, nativeWeb: { state: "supported" }, activity: { state: "unsupported" },
+  }
+  const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+  assert.equal(started.statusCode, 201)
+  const id = started.json().id as string
+  assert.equal(runtime.observers.size, 0)
+  assert.equal(runtime.activityCalls, 0)
+  await service.selectPrimarySession(id, "root")
+  await service.stop(id)
+  const allocationCount = repository.listInstances().length
+  for (const capability of [{ state: "unsupported" } as const, { state: "unavailable", reason: "metadata 離線" } as const]) {
+    runtime.declaredCapabilities.sessions = capability
+    const response = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/resume`, headers: mutationHeaders })
+    assert.equal(response.statusCode, capability.state === "unsupported" ? 501 : 503)
+    if (capability.state === "unavailable") assert.equal(response.json().error.details.reason, "metadata 離線")
+    assert.equal(runtime.launchCount, 1)
+    assert.equal(repository.listInstances().length, allocationCount)
+  }
+  runtime.declaredCapabilities.sessions = { state: "supported" }
+  runtime.declaredCapabilities.activity = { state: "unavailable", reason: "stream 離線" }
+  await service.start(project)
+  assert.equal(runtime.observers.size, 0)
+  assert.equal(runtime.activityCalls, 0)
+  runtime.declaredCapabilities.sessions = { state: "unsupported" }
+  runtime.declaredCapabilities.activity = { state: "supported" }
+  await service.start(project)
+  assert.equal(runtime.observers.size, 0)
+  assert.equal(runtime.activityCalls, 0)
+})
+
+test("two Instances in one Project dispatch lifecycle and overview to their own runtime", async (t) => {
+  const secondary = new FakeRuntime()
+  secondary.agentFamily = "limited-fixture"
+  secondary.declaredCapabilities = {
+    sessions: { state: "supported" },
+    sessionCreation: { state: "supported" },
+    activity: { state: "supported" },
+    pendingQuestions: { state: "supported" },
+    pendingPermissions: { state: "supported" },
+    nativeWeb: { state: "unsupported" },
+  }
+  let firstId: string | null = null
+  const { service, project, runtime, app } = await fixture(t, {
+    runtimeForInstance: (instance, primary) => firstId === null || instance.id === firstId ? primary : secondary,
+  })
+  const first = await service.start(project)
+  firstId = first.id
+  const second = await service.start(project)
+
+  const overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  const entries = overview.json().instances as Array<{ id: string; agentFamily: string; capabilities?: RuntimeCapabilities }>
+  assert.equal(entries.find((entry) => entry.id === first.id)?.capabilities, undefined)
+  assert.deepEqual(entries.find((entry) => entry.id === second.id)?.capabilities, secondary.declaredCapabilities)
+  assert.equal(entries.find((entry) => entry.id === first.id)?.agentFamily, "opencode")
+  assert.equal(entries.find((entry) => entry.id === second.id)?.agentFamily, "limited-fixture")
+  assert.equal(secondary.inspectCalls, 3)
+  assert.equal(secondary.summaryCalls, 2)
+  assert.equal(runtime.launchCount, 1)
+  assert.equal(secondary.launchCount, 1)
+
+  secondary.declaredCapabilities = { ...secondary.declaredCapabilities, nativeWeb: { state: "supported" } }
+  await service.selectPrimarySession(second.id, "root")
+  // 之後的 selector 改變也不可把已啟動 Instance 的 Stop 或 Resume 送到另一個 runtime。
+  firstId = null
+  await service.stop(second.id)
+  assert.equal(secondary.stopCount, 1)
+  assert.equal(runtime.stopCount, 0)
+  const resumed = await service.resume(second.id)
+  assert.equal(resumed.agentFamily, "limited-fixture")
+  assert.equal(secondary.launchCount, 2)
+  assert.equal(runtime.launchCount, 1)
+})
 
 test("remote entry requires OMW Basic auth and never trusts forwarded authority", async (t) => {
   const credentials: StoredCredentials = {
@@ -815,6 +970,58 @@ test("each Start creates a new Instance and overview exposes independent summary
   })
 })
 
+test("overview verifies remote during a blocked summary and waits for both before returning", async (t) => {
+  let remoteCalls = 0
+  let releaseRemote!: () => void
+  const remoteGate = new Promise<void>((resolve) => { releaseRemote = resolve })
+  const { app, project, runtime, service } = await fixture(t, {
+    verifyRemoteUrl: async () => {
+      remoteCalls++
+      if (remoteCalls === 1) {
+        await remoteGate
+        throw new Error("remote mapping unavailable")
+      }
+      if (remoteCalls === 2) throw new Error("remote mapping unavailable before summary completes")
+    },
+  })
+  t.after(() => { runtime.releaseSummary?.(); releaseRemote() })
+  const started = await service.start(project)
+  runtime.summaryStarted = false
+  runtime.blockSummary()
+  let settled = false
+  const response = app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+    .finally(() => { settled = true })
+  await waitFor(() => runtime.summaryStarted, 500)
+  await waitFor(() => remoteCalls === 1, 500)
+  assert.equal(settled, false, "remote can start while summary is blocked without returning an incomplete snapshot")
+
+  runtime.releaseSummary?.()
+  assert.equal(settled, false, "completed summary cannot bypass pending remote verification")
+  releaseRemote()
+  const verified = await response
+  assert.equal(verified.statusCode, 200)
+  assert.equal(verified.json().instances[0].id, started.id)
+  assert.equal(verified.json().instances[0].summary.activity, "busy")
+  assert.equal(verified.json().instances[0].remoteUrlUnavailableReason, "Tailscale Serve 映射尚未通過驗證。")
+
+  runtime.summaryStarted = false
+  runtime.blockSummary()
+  let failedSettled = false
+  const failedEarly = app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+    .finally(() => { failedSettled = true })
+  await waitFor(() => runtime.summaryStarted && remoteCalls === 2, 500)
+  assert.equal(failedSettled, false, "early remote rejection cannot bypass the blocked summary")
+  runtime.releaseSummary?.()
+  assert.equal((await failedEarly).json().instances[0].remoteUrlUnavailableReason, "Tailscale Serve 映射尚未通過驗證。")
+
+  runtime.identityMatches = false
+  const unverified = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.equal(unverified.statusCode, 200)
+  assert.equal(unverified.json().instances[0].state, "unreachable")
+  assert.equal(unverified.json().instances[0].error, "INSTANCE_IDENTITY_UNVERIFIED")
+  assert.equal(remoteCalls, 3, "identity failure retains the fresh remote verification path")
+})
+
 test("primary summary scopes all signals to the bound root hierarchy and drives attention filtering", async (t) => {
   const { app, project, runtime } = await fixture(t)
   const sessions = [
@@ -1146,10 +1353,13 @@ test("overlapping overview requests share a bounded probe round while another AP
   }
   runtime.inspectCalls = 0
   runtime.maxActiveInspects = 0
-  runtime.inspectDelayMs = 250
+  // 只攔住 overview 發起的 inspect；Stop 自己的 fresh inspect 不應加入 overview in-flight round。
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  t.after(() => runtime.releaseInspect?.())
 
   const firstOverview = app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
-  await waitFor(() => runtime.activeInspects > 0, 500)
+  await waitFor(() => runtime.deferredInspectStarted, 500)
+  await waitFor(() => runtime.inspectCalls === 6 && runtime.activeInspects === 1, 500)
   const secondOverview = app.inject({ method: "GET", url: "/api/v1/overview?filter=active", headers: readHeaders })
   const browse = await Promise.race([
     app.inject({ method: "GET", url: `/api/v1/directories?path=${encodeURIComponent(project)}`, headers: readHeaders }),
@@ -1162,10 +1372,11 @@ test("overlapping overview requests share a bounded probe round while another AP
 
   assert.equal(browse.statusCode, 200)
   assert.equal(stopped.statusCode, 200)
+  runtime.releaseInspect?.()
   const overviews = await Promise.all([firstOverview, secondOverview])
   assert.equal(overviews[0].statusCode, 200)
   assert.equal(overviews[1].statusCode, 200)
-  assert.equal(runtime.inspectCalls, 6)
+  assert.equal(runtime.inspectCalls, 7, "six shared overview probes plus an independent fresh Stop inspect")
   assert.ok(runtime.maxActiveInspects <= 4, `expected at most 4 concurrent probes, saw ${runtime.maxActiveInspects}`)
 })
 
@@ -1878,12 +2089,108 @@ test("shutdown invalidates a deferred activity identity check before repository 
 })
 
 test("Stop refuses an identity mismatch without terminating the process", async (t) => {
-  const { app, project, runtime } = await fixture(t)
+  const { app, project, repository, runtime } = await fixture(t)
   const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
   runtime.identityMatches = false
   const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${started.json().id}/stop`, headers: mutationHeaders })
   assert.equal(stopped.statusCode, 409)
   assert.equal(stopped.json().error.code, "PROCESS_IDENTITY_MISMATCH")
+  assert.equal(runtime.stopCount, 0)
+  assert.equal(repository.getInstance(started.json().id)?.state, "ready")
+  assert.notEqual(repository.getAllocationForInstance(started.json().id), null)
+})
+
+test("Stop rejects a foreign port owner even when the adapter optimistically reports stopped", async (t) => {
+  const { app, project, repository, runtime } = await fixture(t)
+  const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+  const id = started.json().id as string
+  runtime.portOwnerMatched = false
+  runtime.portOwnedByOther = true
+  const inspectCalls = runtime.inspectCalls
+
+  const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/stop`, headers: mutationHeaders })
+
+  assert.equal(stopped.statusCode, 409)
+  assert.equal(stopped.json().error.code, "PROCESS_IDENTITY_MISMATCH")
+  assert.ok(runtime.inspectCalls > inspectCalls, "Stop requires a fresh inspection")
+  assert.equal(runtime.stopCount, 0, "the optimistic adapter cannot grant Stop authority")
+  assert.equal(repository.getInstance(id)?.state, "ready")
+  assert.notEqual(repository.getAllocationForInstance(id), null)
+})
+
+test("Stop rejects unknown and failed identity probes without trusting optimistic adapters", async (t) => {
+  for (const probe of ["unknown", "throw"] as const) {
+    const { app, project, repository, runtime } = await fixture(t)
+    const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+    const id = started.json().id as string
+    if (probe === "unknown") runtime.processState = "unknown"
+    else runtime.inspectError = new Error("private inspect failure detail")
+
+    const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/stop`, headers: mutationHeaders })
+
+    assert.equal(stopped.statusCode, 409)
+    assert.doesNotMatch(stopped.body, /private inspect failure detail/)
+    assert.equal(runtime.stopCount, 0)
+    assert.equal(repository.getInstance(id)?.state, "ready")
+    assert.notEqual(repository.getAllocationForInstance(id), null)
+  }
+})
+
+test("Stop reconciles a missing process only after a second missing probe and a free port", async (t) => {
+  const { app, project, repository, runtime } = await fixture(t)
+  const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+  const id = started.json().id as string
+  runtime.processState = "not-found"
+  const inspectCalls = runtime.inspectCalls
+
+  const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/stop`, headers: mutationHeaders })
+
+  assert.equal(stopped.statusCode, 200)
+  assert.equal(stopped.json().state, "stopped")
+  assert.equal(runtime.inspectCalls, inspectCalls + 2)
+  assert.equal(runtime.stopCount, 0)
+  assert.equal(repository.getAllocationForInstance(id), null)
+})
+
+test("Stop refuses to release a missing process when its second probe reports another port owner", async (t) => {
+  const { app, project, repository, runtime } = await fixture(t)
+  const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+  const id = started.json().id as string
+  runtime.processState = "not-found"
+  const inspect = runtime.inspect.bind(runtime)
+  const initialInspects = runtime.inspectCalls
+  runtime.inspect = async (record) => {
+    const result = await inspect(record)
+    return runtime.inspectCalls === initialInspects + 2 ? { ...result, portOwnedByOther: true } : result
+  }
+
+  const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/stop`, headers: mutationHeaders })
+
+  assert.equal(stopped.statusCode, 409)
+  assert.equal(runtime.stopCount, 0)
+  assert.notEqual(repository.getInstance(id)?.state, "stopped")
+  assert.notEqual(repository.getAllocationForInstance(id), null)
+})
+
+test("Stop keeps a missing process quarantined when its port is occupied", async (t) => {
+  const port = await freePort()
+  const { app, project, repository, runtime } = await fixture(t, { portPool: { min: port, max: port } })
+  const started = await app.inject({ method: "POST", url: "/api/v1/instances", headers: mutationHeaders, payload: { directory: project } })
+  const id = started.json().id as string
+  const listener = net.createServer()
+  await new Promise<void>((resolve, reject) => {
+    listener.once("error", reject)
+    listener.listen(port, "127.0.0.1", resolve)
+  })
+  t.after(() => new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())))
+  runtime.processState = "not-found"
+
+  const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${id}/stop`, headers: mutationHeaders })
+
+  assert.equal(stopped.statusCode, 409)
+  assert.equal(runtime.stopCount, 0)
+  assert.notEqual(repository.getInstance(id)?.state, "stopped")
+  assert.notEqual(repository.getAllocationForInstance(id), null)
 })
 
 test("an identity-matched owned process remains stoppable after its listener disappears", async (t) => {
@@ -1895,6 +2202,10 @@ test("an identity-matched owned process remains stoppable after its listener dis
   assert.equal(overview.json().instances[0].stopAllowed, true)
   assert.equal(runtime.portOwnedByOther, false)
   assert.equal(started.statusCode, 201)
+  const stopped = await app.inject({ method: "POST", url: `/api/v1/instances/${started.json().id}/stop`, headers: mutationHeaders })
+  assert.equal(stopped.statusCode, 200)
+  assert.equal(stopped.json().state, "stopped")
+  assert.equal(runtime.stopCount, 1)
 })
 
 test("one failed identity probe stays unreachable without blocking reconciliation or overview", async (t) => {
