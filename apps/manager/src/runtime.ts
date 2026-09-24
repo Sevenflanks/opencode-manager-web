@@ -1,4 +1,4 @@
-import type { AgentCapabilities, InstanceSummary, SessionMetadata } from "@omw/contracts"
+import type { AgentCapabilities, InstanceSummary, SessionMetadata, SessionTodo } from "@omw/contracts"
 import type { InstanceRecord } from "./repository.js"
 
 // 保留既有 import contract；Agent 協定與啟動細節只存在 adapter namespace。
@@ -55,6 +55,7 @@ export interface RuntimePort {
   stop(instance: InstanceRecord): Promise<StopResult>
   sessions(instance: InstanceRecord): Promise<SessionMetadata[]>
   children(instance: InstanceRecord, sessionId: string): Promise<SessionMetadata[]>
+  todos?(instance: InstanceRecord, sessionId: string): Promise<SessionTodo[]>
   // 聚合只探測 adapter 支援且目前可用的訊號；缺少任一訊號不可遮蔽其他訊號。
   summary(instance: InstanceRecord): Promise<RuntimeSummary>
   activity?(instance: InstanceRecord): Promise<RuntimeActivityEvidence>

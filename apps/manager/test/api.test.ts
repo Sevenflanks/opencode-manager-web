@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import test from "node:test"
+import type { SessionTodo } from "@omw/contracts"
 import { buildApp } from "../src/app.js"
 import { SeparateRequestAuthenticator, type StoredCredentials } from "../src/auth.js"
 import { CredentialController } from "../src/credential-controller.js"
@@ -64,6 +65,8 @@ class FakeRuntime implements RuntimePort {
   summaryStarted = false
   sessionCalls = 0
   childrenCalls = 0
+  todoCalls: Array<{ instanceId: string; sessionId: string }> = []
+  todoError: Error | null = null
   openUrlCalls = 0
   activityCalls = 0
   createSessionCalls = 0
@@ -181,6 +184,12 @@ class FakeRuntime implements RuntimePort {
   async children(_instance: unknown, sessionId: string) {
     this.childrenCalls++
     return sessionId === "root" ? [{ id: "child", title: "子工作", parentID: "root" }] : []
+  }
+
+  async todos(instance: InstanceRecord, sessionId: string): Promise<SessionTodo[]> {
+    this.todoCalls.push({ instanceId: instance.id, sessionId })
+    if (this.todoError) throw this.todoError
+    return [{ content: "確認需求", status: "completed" as const, priority: "high" as const }]
   }
 
   async summary(instance: InstanceRecord) {
@@ -374,6 +383,49 @@ async function fixture(t: test.TestContext, access?: {
   })
   return { root, project, childDirectory, repository, runtime, service, app }
 }
+
+test("todo endpoint reads only the Instance-bound primary root, reports unbound, and fails closed on unavailable runtime", async (t) => {
+  const { project, runtime, service, app } = await fixture(t)
+  runtime.sessionMetadata.set(project, [
+    { id: "root", title: "主工作" },
+    { id: "other", title: "其他工作" },
+    { id: "child", title: "子工作", parentID: "root" },
+  ])
+  const first = await service.start(project)
+  const second = await service.start(project)
+  const url = (id: string) => `/api/v1/instances/${id}/primary-todos`
+  const unbound = await app.inject({ method: "GET", url: url(first.id), headers: readHeaders })
+  assert.equal(unbound.statusCode, 200)
+  assert.deepEqual(unbound.json(), { instanceId: first.id, sessionId: null, todos: [] })
+  assert.deepEqual(runtime.todoCalls, [])
+
+  await service.selectPrimarySession(first.id, "root")
+  await service.selectPrimarySession(second.id, "other")
+  const bound = await app.inject({ method: "GET", url: url(first.id), headers: readHeaders })
+  assert.equal(bound.statusCode, 200)
+  assert.deepEqual(bound.json(), { instanceId: first.id, sessionId: "root", todos: [{ content: "確認需求", status: "completed", priority: "high" }] })
+  assert.deepEqual(runtime.todoCalls, [{ instanceId: first.id, sessionId: "root" }])
+
+  runtime.todoError = new Error("OpenCode response invalid")
+  const failed = await app.inject({ method: "GET", url: url(first.id), headers: readHeaders })
+  assert.equal(failed.statusCode, 502)
+  assert.equal(failed.json().error.code, "SESSION_TODOS_UNAVAILABLE")
+  assert.equal(runtime.todoCalls.length, 2)
+  const unknown = await app.inject({ method: "GET", url: url("missing"), headers: readHeaders })
+  assert.equal(unknown.statusCode, 404)
+
+  let releaseTodo: (() => void) | undefined
+  runtime.todos = async () => await new Promise<SessionTodo[]>((resolve) => {
+    releaseTodo = () => resolve([{ content: "過期結果", status: "completed", priority: "low" }])
+  })
+  const pending = app.inject({ method: "GET", url: url(first.id), headers: readHeaders })
+  await waitFor(() => Boolean(releaseTodo), 500)
+  await service.selectPrimarySession(first.id, "other")
+  releaseTodo?.()
+  const changed = await pending
+  assert.equal(changed.statusCode, 409)
+  assert.equal(changed.json().error.code, "SESSION_BINDING_CHANGED")
+})
 
 async function startLocalTui(
   service: ManagerService,

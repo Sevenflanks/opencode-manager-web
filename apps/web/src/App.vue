@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { primarySessionDisposition } from "@omw/contracts"
-import type { ConnectivityInfo, DirectoryListing, DirectoryShortcut, ManagedInstance, OpenUrlResponse, OverviewFilter, SessionMetadata, SessionRootsResponse } from "@omw/contracts"
+import type { ConnectivityInfo, DirectoryListing, DirectoryShortcut, ManagedInstance, OpenUrlResponse, OverviewFilter, SessionMetadata, SessionRootsResponse, SessionTodo } from "@omw/contracts"
 import {
   ActivityIcon,
   AlertTriangleIcon,
+  CheckIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
+  CircleIcon,
+  CircleSlash2Icon,
   CircleStopIcon,
   CopyIcon,
   EyeIcon,
@@ -29,6 +32,7 @@ import {
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { ApiError, managerApi } from "@/api"
 import { createOverviewRefresh } from "@/overview-refresh"
+import { createSessionTodoRefresh } from "@/session-todo-refresh"
 import { renderSessionWaiting } from "@/session-waiting"
 import SessionTreeNode from "@/components/SessionTreeNode.vue"
 import { Button } from "@/components/ui/button"
@@ -223,6 +227,21 @@ const {
 } = refresh
 
 const selected = computed(() => overview.value.instances.find((instance) => instance.id === selectedId.value) ?? null)
+const todoRefresh = createSessionTodoRefresh({ read: (id) => managerApi.primaryTodos(id) })
+const { todos: primaryTodos, loading: todosLoading, loaded: todosLoaded, stale: todosStale, error: todosError } = todoRefresh
+const todoCompletedCount = computed(() => primaryTodos.value.filter((todo) => todo.status === "completed").length)
+const todoActiveCount = computed(() => primaryTodos.value.filter((todo) => todo.status !== "cancelled").length)
+const todoCancelledCount = computed(() => primaryTodos.value.filter((todo) => todo.status === "cancelled").length)
+const todoStatusLabels: Record<SessionTodo["status"], string> = {
+  pending: "待處理", in_progress: "執行中", completed: "已完成", cancelled: "已取消",
+}
+function syncPrimaryTodos(): void {
+  const instance = selected.value
+  const sessionId = instance?.primarySession?.sessionId
+  todoRefresh.focus(instance && sessionId && document.visibilityState === "visible"
+    && (!isMobileViewport() || mobileDetailOpen.value) ? { instanceId: instance.id, sessionId } : null)
+}
+watch(() => [selected.value?.id, selected.value?.primarySession?.sessionId, mobileDetailOpen.value], syncPrimaryTodos, { immediate: true, flush: "sync" })
 const sessionPageCount = computed(() => Math.max(1, Math.ceil(sessions.value.roots.length / SESSION_PAGE_SIZE)))
 const sortedSessionRoots = computed(() => [...sessions.value.roots].sort(compareSessionMetadata))
 const visibleSessionRoots = computed(() => sortedSessionRoots.value.slice(
@@ -370,6 +389,7 @@ onBeforeUnmount(() => {
   mobileBreakpoint?.removeEventListener("change", handleMobileBreakpointChange)
   if (startPanelBlocking.value) document.body.style.overflow = previousBodyOverflow
   refresh.dispose()
+  todoRefresh.dispose()
   connectivityReadGeneration++
   connectivityMutationGeneration++
   sessionsGeneration++
@@ -499,10 +519,12 @@ async function choose(instance: ManagedInstance): Promise<void> {
   if (isMobileViewport()) {
     listScrollPosition = window.scrollY
     returnToInstanceId = instance.id
+  }
+  selectedId.value = instance.id
+  if (isMobileViewport()) {
     mobileDetailOpen.value = true
     pushMobileHistory(instance.id)
   }
-  selectedId.value = instance.id
   sessionPage.value = 1
   lifecycleError.value = ""
   if (isMobileViewport()) void revealSelectedDetail()
@@ -620,6 +642,7 @@ async function handleMobileHistoryChange(): Promise<void> {
 
 function handleForegroundRefresh(): void {
   refresh.foreground()
+  syncPrimaryTodos()
   if (document.visibilityState !== "visible") { persistMobileListHistory(); return }
   connectivityStale.value = connectivity.value !== null
   if (overviewStale.value && confirmation.value?.requiresFreshOverview) {
@@ -658,6 +681,7 @@ function handleMobileBreakpointChange(event: MediaQueryListEvent): void {
     void loadSessions()
   }
   if (event.matches && !mobileHistoryView()) replaceMobileHistory("list")
+  syncPrimaryTodos()
   void nextTick(() => {
     const active = document.activeElement as HTMLElement | null
     if (!active || active.getClientRects().length > 0) return
@@ -1747,6 +1771,30 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
             </template>
             <strong v-else>尚未綁定主 Session</strong>
           </div>
+          <section class="primary-todos" aria-label="主 Session 待辦事項" :aria-busy="todosLoading">
+            <div class="primary-todos-head">
+              <h3>主 Session 待辦事項</h3>
+              <span v-if="todosLoaded" class="primary-todos-count" :aria-label="`已完成 ${todoCompletedCount} 項，未取消總計 ${todoActiveCount} 項；已取消 ${todoCancelledCount} 項`">
+                已完成 {{ todoCompletedCount }} / {{ todoActiveCount }} · 已取消 {{ todoCancelledCount }}
+              </span>
+            </div>
+            <p v-if="!selected.primarySession" class="primary-todos-note">尚未綁定主 Session，沒有可讀取的待辦事項。</p>
+            <p v-else-if="todosLoading && !todosLoaded" class="primary-todos-note" role="status">正在載入主 Session 待辦事項…</p>
+            <p v-else-if="todosError" class="primary-todos-error" role="alert">讀取失敗：{{ todosError }}<span v-if="todosStale">（下列為上次讀取結果，已過期）</span></p>
+            <p v-if="selected.primarySession && todosLoaded && primaryTodos.length === 0 && !todosError" class="primary-todos-note">此主 Session 目前沒有待辦事項。</p>
+            <ol v-if="selected.primarySession && todosLoaded && primaryTodos.length" class="primary-todos-timeline" :class="{ 'is-stale': todosStale }">
+              <li v-for="(todo, index) in primaryTodos" :key="`${todo.content}:${index}`" :data-status="todo.status">
+                <span class="primary-todo-step" role="img" :aria-label="todoStatusLabels[todo.status]" :title="todoStatusLabels[todo.status]">
+                  <CheckIcon v-if="todo.status === 'completed'" />
+                  <span v-else-if="todo.status === 'in_progress'" class="primary-todo-bars" aria-hidden="true"><i /><i /><i /></span>
+                  <CircleIcon v-else-if="todo.status === 'pending'" />
+                  <CircleSlash2Icon v-else />
+                </span>
+                <p>{{ todo.content }}</p>
+              </li>
+            </ol>
+            <p v-if="selected.primarySession && !todosLoaded && !todosLoading && !todosError" class="primary-todos-note">尚未取得待辦事項。</p>
+          </section>
           <p v-if="statusCategory(selected) === 'attention'" class="status-attention primary-session-attention"><AlertTriangleIcon />{{ attentionSummary(selected) }}</p>
           <p v-else-if="selected.state === 'ready' && selected.primarySummary.scope === 'unknown'" class="inline-error primary-session-attention"><AlertTriangleIcon />無法確認主 Session 工作範圍。</p>
           <div class="detail-actions primary-actions">

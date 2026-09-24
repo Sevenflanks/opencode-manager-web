@@ -35,6 +35,18 @@ export interface SessionMetadata {
   updatedAt?: number
 }
 
+export interface SessionTodo {
+  content: string
+  status: "pending" | "in_progress" | "completed" | "cancelled"
+  priority: "high" | "medium" | "low"
+}
+
+export interface PrimaryTodosResponse {
+  instanceId: string
+  sessionId: string | null
+  todos: SessionTodo[]
+}
+
 export interface InstanceSummary {
   activity: ActivityState
   busySessions: number | null

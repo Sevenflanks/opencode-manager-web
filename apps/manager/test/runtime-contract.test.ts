@@ -7,6 +7,34 @@ import test from "node:test"
 import { managedServerEnvironment, OpenCodeRuntime, runProcessHelper } from "../src/runtime.js"
 import type { InstanceRecord } from "../src/repository.js"
 
+test("OpenCode todo reads the directory-scoped root endpoint and rejects malformed or unavailable responses", async (t) => {
+  const directory = "C:\\workspace\\todo"
+  const requests: string[] = []
+  const responses: unknown[] = [
+    [{ content: "核對", status: "in_progress", priority: "medium" }],
+    { error: "unavailable" },
+    [{ content: "核對", status: "future", priority: "high" }],
+  ]
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(url.pathname)
+    assert.equal(url.searchParams.get("directory"), directory)
+    response.setHeader("content-type", "application/json")
+    if (requests.length === 2) response.statusCode = 503
+    response.end(JSON.stringify(responses.shift()))
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())))
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  const runtime = new OpenCodeRuntime({ executable: process.execPath, dataDirectory: directory })
+  const instance = record(directory, address.port)
+  assert.deepEqual(await runtime.todos(instance, "ses_root"), [{ content: "核對", status: "in_progress", priority: "medium" }])
+  await assert.rejects(runtime.todos(instance, "ses_root"), /HTTP 503/)
+  await assert.rejects(runtime.todos(instance, "ses_root"), /todo entry 1 無效/)
+  assert.deepEqual(requests, Array(3).fill("/session/ses_root/todo"))
+})
+
 test("summary keeps successful endpoint signals when one endpoint fails", async (t) => {
   const directory = "C:\\workspace\\專案"
   const server = createServer((request, response) => {

@@ -226,6 +226,10 @@ export function buildApp(options: {
     return await options.service.sessionRoots(request.params.id)
   })
 
+  app.get<{ Params: { id: string } }>("/api/v1/instances/:id/primary-todos", async (request) => {
+    return await options.service.primaryTodos(request.params.id)
+  })
+
   app.post<{ Params: { id: string } }>("/api/v1/instances/:id/sessions", async (request, reply) => {
     return reply.code(201).send(await options.service.createSession(request.params.id))
   })
