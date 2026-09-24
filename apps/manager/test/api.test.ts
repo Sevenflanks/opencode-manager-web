@@ -417,15 +417,20 @@ test("Local TUI initial registration waits for its exact process listener then o
 })
 
 test("Local TUI without a listener times out instead of polling indefinitely and can still be rechecked", async (t) => {
-  const { project, repository, runtime, service } = await fixture(t)
+  const { app, project, repository, runtime, service } = await fixture(t)
   runtime.portOwnerMatched = false
   const clientInvocationId = "10000000-0000-4000-8000-000000000066"
   const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
   await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5066 })
   await waitFor(() => repository.getInstance(reservation.reservationId)?.state === "unreachable", 16_000)
   assert.equal(repository.getInstance(reservation.reservationId)?.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")
-  const callsAtTimeout = runtime.inspectCalls
   runtime.portOwnerMatched = true
+  const overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.equal(overview.statusCode, 200)
+  const displayed = overview.json().instances.find((instance: { id: string }) => instance.id === reservation.reservationId)
+  assert.equal(displayed.summary.error, null)
+  assert.equal(displayed.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")
+  const callsAtTimeout = runtime.inspectCalls
   await new Promise<void>((resolve) => setTimeout(resolve, 300))
   assert.equal(runtime.inspectCalls, callsAtTimeout)
   assert.equal(runtime.observers.has(reservation.reservationId), false)
