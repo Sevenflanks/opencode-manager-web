@@ -519,10 +519,12 @@ async function choose(instance: ManagedInstance): Promise<void> {
   if (isMobileViewport()) {
     listScrollPosition = window.scrollY
     returnToInstanceId = instance.id
+  }
+  selectedId.value = instance.id
+  if (isMobileViewport()) {
     mobileDetailOpen.value = true
     pushMobileHistory(instance.id)
   }
-  selectedId.value = instance.id
   sessionPage.value = 1
   lifecycleError.value = ""
   if (isMobileViewport()) void revealSelectedDetail()

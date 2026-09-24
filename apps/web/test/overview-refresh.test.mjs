@@ -338,6 +338,58 @@ test("query, filter and includeHidden changes reject out-of-order responses", { 
   })
 })
 
+test("switching mobile detail reads only the newly selected primary todos and clears the previous todos immediately", { skip: !enabled, timeout: 15_000 }, async () => {
+  const secondId = randomUUID()
+  let releaseSecond
+  const secondHeld = new Promise((resolve) => { releaseSecond = resolve })
+  let secondStarted
+  const secondSent = new Promise((resolve) => { secondStarted = resolve })
+  await withOverviewPage(async ({ page, id }) => {
+    const todoRequests = []
+    await page.route("**/api/v1/instances/*/primary-todos", async (route) => {
+      const instanceId = new URL(route.request().url()).pathname.split("/").at(-2)
+      todoRequests.push(instanceId)
+      if (instanceId === secondId) {
+        secondStarted()
+        await secondHeld
+      }
+      await route.fulfill({ json: {
+        instanceId,
+        sessionId: instanceId === id ? "session-a" : "session-b",
+        todos: [{ content: instanceId === id ? "A 的待辦" : "B 的待辦", status: "pending", priority: "high" }],
+      } })
+    })
+    try {
+      await page.locator(`.instance-row[data-instance-id="${id}"]`).click()
+      await page.getByText("A 的待辦", { exact: true }).waitFor()
+      assert.deepEqual(todoRequests, [id])
+
+      await page.getByRole("button", { name: "返回列表" }).click()
+      await page.locator(".mobile-back").waitFor({ state: "hidden" })
+      await page.locator(`.instance-row[data-instance-id="${secondId}"]`).click()
+      await secondSent
+
+      assert.deepEqual(todoRequests, [id, secondId], "opening B must not briefly read A again")
+      assert.equal(await page.getByText("A 的待辦", { exact: true }).count(), 0, "switching targets clears A before B responds")
+      assert.equal(await page.getByRole("status").filter({ hasText: "正在載入主 Session 待辦事項" }).count(), 1)
+      releaseSecond()
+      await page.getByText("B 的待辦", { exact: true }).waitFor()
+    } finally {
+      releaseSecond()
+    }
+  }, async (page) => {
+    await page.route("**/api/v1/overview?**", async (route) => {
+      const response = await route.fetch()
+      const overview = await response.json()
+      overview.instances = [
+        { ...overview.instances[0], primarySession: { sessionId: "session-a", title: "A", source: "manual", boundAt: "2026-09-24T00:00:00.000Z" } },
+        { ...overview.instances[0], id: secondId, projectName: "second-fixture", projectDirectory: "C:\\second-fixture", primarySession: { sessionId: "session-b", title: "B", source: "manual", boundAt: "2026-09-24T00:00:00.000Z" } },
+      ]
+      await route.fulfill({ response, json: overview })
+    })
+  })
+})
+
 test("a hung refresh times out, retains the last successful time, and a retry recovers", { skip: !enabled, timeout: 35_000 }, async () => {
   await withOverviewPage(async ({ page, origin, id }) => {
     const initial = await (await fetch(`${origin}/api/v1/overview?q=&filter=all`)).json()
