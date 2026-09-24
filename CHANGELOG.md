@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.4.0...v0.4.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **web:** 將版本號移至標題右側 ([#71](https://github.com/Sevenflanks/opencode-manager-web/issues/71)) ([d3b0737](https://github.com/Sevenflanks/opencode-manager-web/commit/d3b0737727b91e7c178753231545530a04f47b19))
+* **web:** 穩定主 Session 待辦載入與更新時的高度 ([#74](https://github.com/Sevenflanks/opencode-manager-web/issues/74)) ([d9fc983](https://github.com/Sevenflanks/opencode-manager-web/commit/d9fc9831b083362c2b33ec9766f9972dbe6abfae))
+
 ## [0.4.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.3.0...v0.4.0) (2026-09-24)
 
 
