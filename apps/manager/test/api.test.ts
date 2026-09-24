@@ -490,6 +490,52 @@ test("finalize and recheck supersede a pending Local TUI registration inspection
   assert.equal(runtime.observers.has(second.reservationId), false)
 })
 
+test("direct recheck probe failure does not strand a cancelled Local TUI registration", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  t.after(() => runtime.releaseInspect?.())
+  const clientInvocationId = "10000000-0000-4000-8000-000000000078"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5078 })
+  await waitFor(() => runtime.deferredInspectStarted, 500)
+  runtime.processState = "not-found"
+  const probe = t.mock.method(net, "createServer", () => { throw new Error("fixture recheck probe failure") })
+  try {
+    await assert.rejects(service.recheck(reservation.reservationId), /fixture recheck probe failure/)
+  } finally {
+    probe.mock.restore()
+  }
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
+  assert.equal(repository.getInstance(reservation.reservationId)?.error, "INSTANCE_IDENTITY_CHECK_FAILED")
+  assert.ok(repository.getAllocationForInstance(reservation.reservationId))
+  runtime.releaseInspect?.()
+  await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  assert.equal(runtime.observers.has(reservation.reservationId), false)
+})
+
+test("finalize probe failure does not strand a cancelled Local TUI registration", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  t.after(() => runtime.releaseInspect?.())
+  const clientInvocationId = "10000000-0000-4000-8000-000000000079"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5079 })
+  await waitFor(() => runtime.deferredInspectStarted, 500)
+  const probe = t.mock.method(net, "createServer", () => { throw new Error("fixture finalize probe failure") })
+  try {
+    await assert.rejects(service.finalizeLocal(reservation.reservationId, { clientInvocationId, pid: 5079 }),
+      /fixture finalize probe failure/)
+  } finally {
+    probe.mock.restore()
+  }
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
+  assert.equal(repository.getInstance(reservation.reservationId)?.error, "INSTANCE_IDENTITY_CHECK_FAILED")
+  assert.ok(repository.getAllocationForInstance(reservation.reservationId))
+  runtime.releaseInspect?.()
+  await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  assert.equal(runtime.observers.has(reservation.reservationId), false)
+})
+
 test("stop tracking during pending Local TUI registration cannot later revive it", async (t) => {
   const { project, repository, runtime, service } = await fixture(t)
   runtime.portOwnerMatched = false

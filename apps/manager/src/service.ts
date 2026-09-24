@@ -257,8 +257,16 @@ export class ManagerService {
       return { instanceId: reservationId, state: "stopped" }
     }
     if (record.pid !== input.pid) throw new ManagerError("PROCESS_IDENTITY_MISMATCH", "Finalize PID 與已登錄 Local TUI 不符。", 409)
+    const interrupted = this.localVerifications.has(record.id)
     this.cancelLocalVerification(record.id)
-    if (await loopbackPortAvailable(record.port)) {
+    let portAvailable: boolean
+    try {
+      portAvailable = await loopbackPortAvailable(record.port)
+    } catch (error) {
+      this.failInterruptedLocalVerification(record.id, record, interrupted)
+      throw error
+    }
+    if (portAvailable) {
       record.state = "stopped"
       record.stoppedAt = new Date().toISOString()
       record.error = null
@@ -318,8 +326,17 @@ export class ManagerService {
   }
 
   async recheck(id: string): Promise<ManagedInstance> {
+    const interrupted = this.localVerifications.has(id)
+    const registration = interrupted ? this.repository.getInstance(id) : null
     this.cancelLocalVerification(id)
-    return await this.withInstanceMutation(id, async () => await this.recheckUnlocked(id))
+    return await this.withInstanceMutation(id, async () => {
+      try {
+        return await this.recheckUnlocked(id)
+      } catch (error) {
+        this.failInterruptedLocalVerification(id, registration, interrupted)
+        throw error
+      }
+    })
   }
 
   async setTrackingHidden(id: string, hidden: boolean): Promise<ManagedInstance> {
@@ -331,14 +348,7 @@ export class ManagerService {
         try {
           await this.recheckUnlocked(id)
         } catch (error) {
-          // recheck 在首次持久化前也可能失敗；取消註冊後不可因此留下永久 starting。
-          const current = interruptedRegistration ? this.repository.getInstance(id) : null
-          if (current?.state === "starting" && sameInstanceIdentity(current, record)) {
-            current.state = "unreachable"
-            current.error = "INSTANCE_IDENTITY_CHECK_FAILED"
-            this.repository.saveInstance(current)
-            this.invalidateOverviewSnapshots()
-          }
+          this.failInterruptedLocalVerification(id, record, interruptedRegistration)
           throw error
         }
         record = this.requireInstance(id)
@@ -750,6 +760,17 @@ export class ManagerService {
     this.localVerifications.delete(id)
     clearTimeout(verification.timer)
     verification.controller.abort()
+  }
+
+  private failInterruptedLocalVerification(id: string, registration: InstanceRecord | null, interrupted: boolean): void {
+    if (!interrupted || !registration || this.shuttingDown) return
+    const current = this.repository.getInstance(id)
+    // recheck 或 port probe 可能在寫入前失敗；取消初次驗證後不能留下無人處理的 starting。
+    if (current?.state !== "starting" || !sameInstanceIdentity(current, registration)) return
+    current.state = "unreachable"
+    current.error = "INSTANCE_IDENTITY_CHECK_FAILED"
+    this.repository.saveInstance(current)
+    this.invalidateOverviewSnapshots()
   }
 
   private localVerificationCurrent(id: string, record: InstanceRecord, verification: LocalVerification): boolean {
