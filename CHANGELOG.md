@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.4.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.3.0...v0.4.0) (2026-09-24)
+
+
+### Features
+
+* 優化主 Session 轉導等待畫面 ([7eaba0b](https://github.com/Sevenflanks/opencode-manager-web/commit/7eaba0bb88a3ccb77829f1febf31cfc892202875))
+* 優化主 Session 轉導等待畫面為安靜入口 ([a15b340](https://github.com/Sevenflanks/opencode-manager-web/commit/a15b3403abcc8d9c4e3be84841b059085a6044d7))
+* 顯示目前關注主 Session 的待辦清單與進度 ([c62855d](https://github.com/Sevenflanks/opencode-manager-web/commit/c62855df67d1bd51669323a6f2e64848ca975aff))
+* 顯示目前關注主 Session 的待辦清單與進度 ([3e7a6ee](https://github.com/Sevenflanks/opencode-manager-web/commit/3e7a6ee290b6c4406c74718d53b5ccb6fd69db1d))
+
+
+### Bug Fixes
+
+* 保留 Local TUI 驗證逾時的對外診斷 ([ab34540](https://github.com/Sevenflanks/opencode-manager-web/commit/ab3454050611231da329de27c5c8011dfd1daf3e))
+* 修正 Local TUI 首次啟動驗證競態 ([7c94391](https://github.com/Sevenflanks/opencode-manager-web/commit/7c94391b9e066a5b4f72430e22116b63f3c7feed))
+* 修正确認對話框事件綁定避免首屏渲染中斷 ([83540d5](https://github.com/Sevenflanks/opencode-manager-web/commit/83540d5097e45c1e4ad12e8a8a4d5dfd313dcdeb))
+* 僅在進入主 Session 時顯示安靜入口 ([3d8102f](https://github.com/Sevenflanks/opencode-manager-web/commit/3d8102f4efcfc44825b94e4f699a2b85ac8f3834))
+* 切換手機詳情時只查新目標的待辦 ([3159600](https://github.com/Sevenflanks/opencode-manager-web/commit/3159600501d3d8ac84c91b2ec7750a744b1d21ed))
+* 在 Manager Stop 前保留共用身分拒絕政策 ([650f5b2](https://github.com/Sevenflanks/opencode-manager-web/commit/650f5b2b1213b4ffa3a4787dcb84ac9d2cd024e5))
+* 將 OMW 版本移至標題右下方 chip ([a9e20d5](https://github.com/Sevenflanks/opencode-manager-web/commit/a9e20d5b7531a119e39a2c386ed1bc7816bed8b3))
+* 將 OMW 版本移至標題右下方 chip ([a171d2a](https://github.com/Sevenflanks/opencode-manager-web/commit/a171d2a93d9c8e2dbde8d6e2b11219100e462027))
+* 有界重試 Local TUI 首次 listener 驗證 ([919b109](https://github.com/Sevenflanks/opencode-manager-web/commit/919b1099bde2ade1a01f1d69e16938702fbefd12)), closes [#65](https://github.com/Sevenflanks/opencode-manager-web/issues/65)
+* 補上 Manager 啟停與異常退出診斷 ([e6b7023](https://github.com/Sevenflanks/opencode-manager-web/commit/e6b7023baefe5bae4108d6677cca43ddca8be91e))
+* 補上 Manager 啟停與異常退出診斷 ([8a790b5](https://github.com/Sevenflanks/opencode-manager-web/commit/8a790b506f1bec3a28910b417136dd3024b5a3ad))
+* 避免取消初次驗證後的探測例外留下 starting ([5bdafc4](https://github.com/Sevenflanks/opencode-manager-web/commit/5bdafc40aff6d00c344fcaa7f0cb5f01f0281ecd))
+
+
+### Code Refactoring
+
+* 保留 OpenCode 能力並建立 Agent adapter 與刷新協調 ([38e09b2](https://github.com/Sevenflanks/opencode-manager-web/commit/38e09b2811e7299a77b0d19f87410d60f1218059))
+* 抽離 overview 刷新協調並保留資料新鮮度防護 ([dced9fe](https://github.com/Sevenflanks/opencode-manager-web/commit/dced9feb995a5d6f04c8488c6c60cece7c73f3d6))
+* 集中 OpenCode adapter 並隔離 Instance overview 責任 ([15f3130](https://github.com/Sevenflanks/opencode-manager-web/commit/15f3130ea719e34f6bc86d16a6cde2f7424fa698))
+
 ## [0.3.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.2.1...v0.3.0) (2026-09-23)
 
 
