@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { existsSync, realpathSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
-import type { SessionMetadata } from "@omw/contracts"
+import type { SessionMetadata, SessionTodo } from "@omw/contracts"
 import type { InstanceRecord } from "../../repository.js"
 import { ManagerError } from "../../errors.js"
 import { runProcessHelper } from "../../process-control.js"
@@ -192,6 +192,23 @@ export class OpenCodeRuntime implements RuntimePort {
       routed(`/session/${encodeURIComponent(sessionId)}/children`, instance.projectDirectory),
     )
     return parseSessions(value, instance.projectDirectory).filter((session) => session.parentID === sessionId)
+  }
+
+  async todos(instance: InstanceRecord, sessionId: string): Promise<SessionTodo[]> {
+    const value = await requestJson(
+      checkedEndpoint(instance.endpoint, instance.port),
+      routed(`/session/${encodeURIComponent(sessionId)}/todo`, instance.projectDirectory),
+    )
+    if (!Array.isArray(value)) throw new Error("OpenCode todo response 不是 array")
+    return value.map((entry, index) => {
+      if (!isObject(entry) || typeof entry.content !== "string" || !entry.content.trim()
+        || !["pending", "in_progress", "completed", "cancelled"].includes(entry.status as string)
+        || !["high", "medium", "low"].includes(entry.priority as string)) {
+        // 無效資料不能呈現成空清單；未知狀態也不能誤計入完成數。
+        throw new Error(`OpenCode todo entry ${index + 1} 無效`)
+      }
+      return { content: entry.content, status: entry.status, priority: entry.priority } as SessionTodo
+    })
   }
 
   async activity(instance: InstanceRecord): Promise<RuntimeActivityEvidence> {

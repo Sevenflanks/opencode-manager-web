@@ -16,6 +16,7 @@ import type {
   OverviewFilter,
   OverviewResponse,
   PrimarySession,
+  PrimaryTodosResponse,
   SessionChildrenResponse,
   SessionMetadata,
   SessionRootsResponse,
@@ -440,6 +441,30 @@ export class ManagerService {
     const children = dedupeSessions(await this.runtimeFor(record).children(record, sessionId))
       .filter((session) => session.parentID === sessionId)
     return { parentID: sessionId, children, loadedDirectChildren: children.length }
+  }
+
+  async primaryTodos(id: string): Promise<PrimaryTodosResponse> {
+    const record = this.requireInstance(id)
+    const primary = this.repository.getPrimarySession(id)
+    if (!primary) return { instanceId: id, sessionId: null, todos: [] }
+    this.requireCapability(record, "sessions")
+    const runtime = this.runtimeFor(record)
+    if (!runtime.todos) throw new ManagerError("AGENT_CAPABILITY_UNSUPPORTED", "Runtime 不支援 Session todo。", 501)
+    await this.requireFreshEndpointIdentity(record)
+    // 只用 Instance 綁定的 root ID；不接受外部 session ID，也不以共用 Project 歷史推斷歸屬。
+    if (this.repository.getPrimarySession(id)?.sessionId !== primary.sessionId) {
+      throw new ManagerError("SESSION_BINDING_CHANGED", "主要 Session 綁定已變更，請重新載入。", 409)
+    }
+    let todos
+    try {
+      todos = await runtime.todos(record, primary.sessionId)
+    } catch {
+      throw new ManagerError("SESSION_TODOS_UNAVAILABLE", "目前無法讀取主 Session todo。", 502)
+    }
+    if (this.repository.getPrimarySession(id)?.sessionId !== primary.sessionId) {
+      throw new ManagerError("SESSION_BINDING_CHANGED", "主要 Session 綁定已變更，請重新載入。", 409)
+    }
+    return { instanceId: id, sessionId: primary.sessionId, todos }
   }
 
   async openUrl(id: string, sessionId?: string): Promise<OpenUrlResponse> {

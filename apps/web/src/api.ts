@@ -8,6 +8,7 @@ import type {
   OverviewResponse,
   SessionChildrenResponse,
   SessionRootsResponse,
+  PrimaryTodosResponse,
 } from "@omw/contracts"
 
 export class ApiError extends Error {
@@ -106,6 +107,9 @@ export const managerApi = {
   },
   sessions(id: string) {
     return request<SessionRootsResponse>(`/api/v1/instances/${encodeURIComponent(id)}/sessions`)
+  },
+  primaryTodos(id: string) {
+    return request<PrimaryTodosResponse>(`/api/v1/instances/${encodeURIComponent(id)}/primary-todos`)
   },
   createSession(id: string) {
     return request<OpenUrlResponse>(`/api/v1/instances/${encodeURIComponent(id)}/sessions`, { method: "POST" })
