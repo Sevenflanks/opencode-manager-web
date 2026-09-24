@@ -9,7 +9,7 @@ import {
   AlertDialogRoot,
   AlertDialogTitle,
 } from "reka-ui"
-import { nextTick, onBeforeUnmount, ref, watch } from "vue"
+import { nextTick } from "vue"
 import { Button } from "@/components/ui/button"
 
 type ConfirmationTone = "positive" | "caution" | "danger"
@@ -38,7 +38,6 @@ const emit = defineEmits<{
   "after-leave": []
 }>()
 let focusRestoreQueued = false
-const contentElement = ref<HTMLElement | null>(null)
 
 function isSafeFocusTarget(target: HTMLElement | null): target is HTMLElement {
   return Boolean(
@@ -78,18 +77,6 @@ function handlePresenceAfterLeave(): void {
 function handleAnimationEnd(event: Event): void {
   if (event.target === event.currentTarget && (event.currentTarget as HTMLElement).dataset.state === "closed") finishLeave()
 }
-
-watch(contentElement, (element, previous) => {
-  previous?.removeEventListener("after-leave", handlePresenceAfterLeave)
-  previous?.removeEventListener("animationend", handleAnimationEnd)
-  element?.addEventListener("after-leave", handlePresenceAfterLeave)
-  element?.addEventListener("animationend", handleAnimationEnd)
-}, { flush: "post" })
-
-onBeforeUnmount(() => {
-  contentElement.value?.removeEventListener("after-leave", handlePresenceAfterLeave)
-  contentElement.value?.removeEventListener("animationend", handleAnimationEnd)
-})
 </script>
 
 <template>
@@ -97,10 +84,11 @@ onBeforeUnmount(() => {
     <AlertDialogPortal>
       <AlertDialogOverlay class="confirmation-overlay" :data-motion="motion" />
       <AlertDialogContent
-        ref="contentElement"
         class="confirmation-content"
         :data-motion="motion"
         @close-auto-focus="restoreFocus"
+        @after-leave="handlePresenceAfterLeave"
+        @animationend="handleAnimationEnd"
       >
         <AlertDialogTitle class="confirmation-title">{{ title }}</AlertDialogTitle>
         <AlertDialogDescription class="confirmation-description">{{ description }}</AlertDialogDescription>

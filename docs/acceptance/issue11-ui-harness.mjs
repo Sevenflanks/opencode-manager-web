@@ -7,7 +7,7 @@ import { chromium } from "playwright-core"
 
 const worktree = path.resolve(import.meta.dirname, "../..")
 const webRoot = path.join(worktree, "apps/web/dist")
-const imageRoot = path.join(worktree, "docs/images")
+const imageRoot = process.env.OMW_UI_SCREENSHOT_DIR ?? path.join(worktree, "docs/images")
 const executablePath = process.env.OMW_BROWSER_EXECUTABLE
 if (!executablePath) {
   throw new Error("OMW_BROWSER_EXECUTABLE must be set to an installed browser executable path")
@@ -35,6 +35,15 @@ const instance = {
     pendingPermissions: 0,
     error: null,
   },
+  primarySummary: {
+    scope: "known",
+    activity: "reported-non-busy",
+    busySessions: 0,
+    retrySessions: 0,
+    pendingQuestions: 0,
+    pendingPermissions: 0,
+    error: null,
+  },
   sessions: [{ id: "ses-issue11-root", title: "Fixture planning session" }],
   primarySession: {
     sessionId: "ses-issue11-root",
@@ -49,7 +58,7 @@ const instance = {
 const connectivity = {
   checkedAt: "2026-09-20T01:00:00.000Z",
   mode: "loopback",
-  manager: { localUrl: "http://127.0.0.1:4174", publicUrl: null },
+  manager: { localUrl: "http://127.0.0.1:4174", publicUrl: null, version: "0.3.0" },
   tailscale: { state: "unavailable", dnsName: null, version: null },
   serve: {
     state: "not-configured",
@@ -58,6 +67,7 @@ const connectivity = {
     expectedInstancePorts: 1,
     funnel: "disabled",
   },
+  registration: { state: "not-configured", trigger: null, diagnostic: null },
   nodeVersion: process.version,
 }
 
@@ -131,6 +141,76 @@ async function closeStaticServer(server) {
   }), 3_000, "static server close")
 }
 
+async function runVersionChipAcceptance(page) {
+  const screenshotDir = process.env.OMW_VERSION_CHIP_SCREENSHOT_DIR
+  assert.ok(screenshotDir, "OMW_VERSION_CHIP_SCREENSHOT_DIR is required for version chip acceptance")
+  await mkdir(screenshotDir, { recursive: true })
+  const title = page.locator(".topbar h1")
+  const chip = page.locator(".topbar .version-chip")
+  const details = page.locator(".connectivity-details")
+  if (await title.count() === 0) {
+    await page.screenshot({ path: path.join(screenshotDir, "issue60-blocked-desktop.png") })
+    await page.setViewportSize({ width: 320, height: 720 })
+    await page.screenshot({ path: path.join(screenshotDir, "issue60-blocked-mobile-320.png") })
+    connectivity.manager.version = null
+    await page.reload({ waitUntil: "networkidle" })
+    await page.screenshot({ path: path.join(screenshotDir, "issue60-blocked-no-version-mobile-320.png") })
+    assert.fail("OMW Manager heading was not rendered; cannot verify version chip in browser")
+  }
+  assert.equal(await title.textContent(), "OMW Manager")
+  assert.equal(await chip.textContent(), "0.3.0")
+  await details.locator("summary").click()
+  assert.equal(await details.getByText("OMW Manager version").count(), 0)
+
+  const viewports = [
+    { width: 1440, height: 900, name: "desktop" },
+    { width: 390, height: 844, name: "mobile-390" },
+    { width: 320, height: 720, name: "mobile-320" },
+  ]
+  const geometry = []
+  for (const viewport of viewports) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    const measured = await page.evaluate(() => {
+      const rect = (selector) => {
+        const node = document.querySelector(selector)
+        assertNode(node, selector)
+        const { left, right, top, bottom } = node.getBoundingClientRect()
+        return { left, right, top, bottom }
+      }
+      function assertNode(node, selector) {
+        if (!node) throw new Error(`missing ${selector}`)
+      }
+      const chipNode = document.querySelector(".version-chip")
+      assertNode(chipNode, ".version-chip")
+      return {
+        title: rect(".topbar h1"), chip: rect(".version-chip"), actions: rect(".topbar-actions"),
+        clientWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        chipFontSize: parseFloat(getComputedStyle(chipNode).fontSize),
+        titleFontSize: parseFloat(getComputedStyle(document.querySelector(".topbar h1")).fontSize),
+      }
+    })
+    assert.ok(measured.chip.top >= measured.title.bottom, `${viewport.name}: chip overlaps title`)
+    assert.ok(Math.abs(measured.chip.right - measured.title.right) <= 2, `${viewport.name}: chip is not at the title's lower right`)
+    assert.ok(measured.chip.bottom <= measured.actions.top || measured.chip.right <= measured.actions.left || measured.actions.right <= measured.chip.left,
+      `${viewport.name}: chip overlaps actions`)
+    assert.ok(measured.chipFontSize < measured.titleFontSize, `${viewport.name}: chip text is not smaller than title`)
+    assert.ok(measured.scrollWidth <= measured.clientWidth, `${viewport.name}: horizontal overflow`)
+    geometry.push({ name: viewport.name, ...measured })
+    await page.screenshot({ path: path.join(screenshotDir, `issue60-version-chip-${viewport.name}.png`) })
+  }
+
+  connectivity.manager.version = null
+  await page.reload({ waitUntil: "networkidle" })
+  await page.locator(".instance-row").waitFor()
+  assert.equal(await title.textContent(), "OMW Manager")
+  assert.equal(await chip.count(), 0, "no version must not show a chip")
+  await details.locator("summary").click()
+  assert.equal(await details.getByText("OMW Manager version").count(), 0)
+  await page.screenshot({ path: path.join(screenshotDir, "issue60-version-chip-no-version-mobile-320.png") })
+  return { versionChip: "0.3.0", noVersionChip: true, geometry }
+}
+
 async function runUiAcceptance(page, origin, calls) {
   const missingRoutes = []
   await page.route("**/api/v1/**", async (route) => {
@@ -181,7 +261,29 @@ async function runUiAcceptance(page, origin, calls) {
     })
   })
 
+  const chipConsoleErrors = []
+  if (process.env.OMW_VERSION_CHIP_ONLY === "1") {
+    let pageConsoleErrorLogged = false
+    page.on("pageerror", (error) => {
+      chipConsoleErrors.push(error.message)
+      console.error("chip acceptance page error:", error)
+    })
+    page.on("console", (message) => {
+      if (message.type() !== "error") return
+      chipConsoleErrors.push(message.text())
+      if (!pageConsoleErrorLogged) {
+        pageConsoleErrorLogged = true
+        console.error("chip acceptance first console error:", message.text())
+      }
+    })
+  }
   await page.goto(origin, { waitUntil: "networkidle" })
+  if (process.env.OMW_VERSION_CHIP_ONLY === "1") {
+    const result = await runVersionChipAcceptance(page)
+    assert.deepEqual(chipConsoleErrors, [], "browser runtime/console errors during version chip acceptance")
+    assert.deepEqual(missingRoutes, [], "unmocked routes during version chip acceptance")
+    return result
+  }
   await page.locator(".instance-row").waitFor()
 
   await page.locator(".topbar").getByRole("button", { name: "啟動執行個體" }).click()
@@ -245,11 +347,17 @@ async function runUiAcceptance(page, origin, calls) {
 
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.getByRole("button", { name: "OMW 設定" }).click()
-  await page.getByRole("dialog", { name: "OMW 設定" }).getByRole("button", { name: "停止 OMW" }).click()
+  const stopButton = page.getByRole("dialog", { name: "OMW 設定" }).getByRole("button", { name: "停止 OMW" })
+  await stopButton.click()
   const confirmation = page.getByRole("alertdialog", { name: "停止 OMW Manager？" })
   await confirmation.waitFor()
   assert.match(await confirmation.textContent() ?? "", /OpenCode TUI.*Sessions.*Project/s)
   await page.screenshot({ path: path.join(imageRoot, "issue11-stop-manager-confirmation-desktop.png") })
+  await confirmation.getByRole("button", { name: "取消" }).click()
+  await confirmation.waitFor({ state: "hidden" })
+  await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "停止 OMW")
+  await stopButton.click()
+  await confirmation.waitFor()
   const shutdownResponse = page.waitForResponse((response) => {
     const url = new URL(response.url())
     return response.request().method() === "POST" && url.pathname === "/api/v1/manager/shutdown"
