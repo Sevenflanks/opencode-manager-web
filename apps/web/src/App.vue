@@ -29,6 +29,7 @@ import {
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { ApiError, managerApi } from "@/api"
 import { createOverviewRefresh } from "@/overview-refresh"
+import { renderSessionWaiting } from "@/session-waiting"
 import SessionTreeNode from "@/components/SessionTreeNode.vue"
 import { Button } from "@/components/ui/button"
 import ConfirmationDialog from "@/components/ui/dialog/ConfirmationDialog.vue"
@@ -989,7 +990,11 @@ async function openWithPopup(
     referrerPolicy.content = "no-referrer"
     popup.document.head.append(referrerPolicy)
     popup.document.title = "連線中…"
-    popup.document.body.textContent = "正在連線到 OpenCode Web…"
+    if (expectedSessionId && expectedSessionId === instance.primarySession?.sessionId) {
+      renderSessionWaiting(popup.document, instance, expectedSessionId)
+    } else {
+      popup.document.body.textContent = "正在連線到 OpenCode Web…"
+    }
 
     const response = await request()
     const sessionMatches = expectedSessionId === undefined

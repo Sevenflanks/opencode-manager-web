@@ -39,6 +39,97 @@ test("browser process environment excludes host credential variables", () => {
   }
 })
 
+test("primary Session popup shows a safe, responsive waiting page until navigation", { skip: !enabled, timeout: 45_000 }, async () => {
+  const executablePath = process.env.OMW_BROWSER_EXECUTABLE
+  assert.ok(executablePath, "OMW_BROWSER_EXECUTABLE is required")
+  const sandbox = await mkdtemp(path.join(tmpdir(), "omw-browser-waiting-"))
+  await Promise.all([
+    mkdir(path.join(sandbox, "browser-profile", "AppData", "Roaming"), { recursive: true }),
+    mkdir(path.join(sandbox, "browser-profile", "AppData", "Local"), { recursive: true }),
+    mkdir(path.join(sandbox, "browser-profile", "Temp"), { recursive: true }),
+  ])
+  const repository = new ManagerRepository(":memory:")
+  const service = new ManagerService(repository, new BrowserRuntime())
+  const port = await freePort()
+  const origin = `http://127.0.0.1:${port}`
+  const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist")
+  const app = buildApp({ service, authority: { hostname: "127.0.0.1", port }, allowedOrigins: new Set([origin]), webRoot })
+  const literalTitle = '<img src=x onerror="window.__injected = true">'
+  const instance = fakeManagedInstance({
+    id: "inst-waiting",
+    projectDirectory: "C:\\fixture\\project",
+    projectName: "Project <script>literal</script>",
+    primarySession: { sessionId: "ses-waiting", title: literalTitle, source: "manual", boundAt: "2026-09-22T00:00:00.000Z" },
+  })
+  let browser: Browser | undefined
+  try {
+    await app.listen({ host: "127.0.0.1", port })
+    browser = await chromium.launch({ executablePath, headless: true, env: createBrowserEnvironment(sandbox) })
+    const context = await browser.newContext({ viewport: { width: 320, height: 640 }, reducedMotion: "reduce" })
+    const page = await context.newPage()
+    let currentInstance = instance
+    await page.route("**/api/v1/overview?*", (route) => route.fulfill({ json: { shortcuts: [], instances: [currentInstance] } }))
+    await context.route("**/opened/**", (route) => route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Destination</title>" }))
+    await page.goto(origin)
+    await page.locator('.instance-row[data-instance-id="inst-waiting"]').click()
+    await page.getByRole("button", { name: "進入主 Session" }).waitFor()
+
+    let releaseOpenUrl = () => {}
+    const gate = new Promise<void>((resolve) => { releaseOpenUrl = resolve })
+    let observed = () => {}
+    const requestObserved = new Promise<void>((resolve) => { observed = resolve })
+    await page.route("**/api/v1/instances/*/open-url", async (route) => {
+      observed()
+      await gate
+      await route.fulfill({ json: { url: `${origin}/opened/primary`, instanceId: instance.id, sessionId: "ses-waiting" } })
+    })
+    const popupPromise = page.waitForEvent("popup")
+    await page.getByRole("button", { name: "進入主 Session" }).click()
+    const popup = await popupPromise
+    await requestObserved
+    await popup.getByRole("heading", { name: "正在為你開啟工作階段" }).waitFor()
+    assert.equal(await popup.locator(".waiting-session").textContent(), literalTitle)
+    assert.equal(await popup.locator(".waiting-instance").textContent(), "Instance inst-waiting")
+    assert.equal(await popup.locator(".waiting-project").textContent(), "Project <script>literal</script>")
+    assert.equal(await popup.locator("img, script, .prototype-bar").count(), 0, "destination labels stay literal and no prototype controls ship")
+    assert.equal(await popup.evaluate(() => Reflect.get(window, "__injected")), undefined)
+    assert.equal(await popup.evaluate(() => window.opener), null)
+    assert.equal(await popup.locator('meta[name="referrer"]').getAttribute("content"), "no-referrer")
+    assert.equal(await popup.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "320px popup does not overflow")
+    assert.equal(await popup.locator(".waiting-signal i").first().evaluate((dot) => getComputedStyle(dot).animationName), "none")
+    releaseOpenUrl()
+    await popup.waitForURL(`${origin}/opened/primary`)
+    await popup.close()
+    await page.unroute("**/api/v1/instances/*/open-url")
+
+    currentInstance = fakeManagedInstance({ ...instance, projectName: "", primarySession: { ...instance.primarySession!, title: "" } })
+    await page.reload()
+    const instanceRow = page.locator('.instance-row[data-instance-id="inst-waiting"]')
+    if (await instanceRow.isVisible()) await instanceRow.click()
+    await page.getByRole("button", { name: "進入主 Session" }).waitFor()
+    let releaseFailure = () => {}
+    const failureGate = new Promise<void>((resolve) => { releaseFailure = resolve })
+    await page.route("**/api/v1/instances/*/open-url", async (route) => {
+      await failureGate
+      await route.fulfill({ status: 503, json: { error: { code: "OPEN_FAILED", message: "waiting failure fixture" } } })
+    })
+    const fallbackPromise = page.waitForEvent("popup")
+    await page.getByRole("button", { name: "進入主 Session" }).click()
+    const fallback = await fallbackPromise
+    await fallback.getByRole("heading", { name: "正在為你開啟工作階段" }).waitFor()
+    assert.equal(await fallback.locator(".waiting-session").textContent(), "ses-waiting", "a missing title falls back to the known Session ID")
+    assert.equal(await fallback.locator(".waiting-project").textContent(), "尚未取得")
+    releaseFailure()
+    await page.getByText("waiting failure fixture", { exact: true }).waitFor()
+    assert.equal(fallback.isClosed(), true, "failure closes the owned waiting popup")
+  } finally {
+    await browser?.close()
+    await app.close()
+    repository.close()
+    await rm(sandbox, { recursive: true, force: true })
+  }
+})
+
 test("detail header keeps long project title and state badge on one line", { skip: !enabled, timeout: 45_000 }, async () => {
   const executablePath = process.env.OMW_BROWSER_EXECUTABLE
   assert.ok(executablePath, "OMW_BROWSER_EXECUTABLE is required")
@@ -1168,6 +1259,8 @@ test("mobile UI covers Shortcut, browsing, filters, scoped Session trees, and St
     await page.getByRole("alertdialog", { name: "建立 New Session？" }).getByRole("button", { name: "建立並開啟" }).click()
     const newSessionPopup = await newSessionPopupPromise
     await newSessionPopup.getByText("正在連線到 OpenCode Web…", { exact: true }).waitFor()
+    assert.equal(await newSessionPopup.locator("body").textContent(), "正在連線到 OpenCode Web…", "New Session keeps its plain-text waiting page")
+    assert.equal(await newSessionPopup.locator(".waiting").count(), 0, "New Session does not render the primary Session waiting layout")
     assert.equal(await newSessionPopup.evaluate(() => window.opener), null)
     assert.equal(await newSessionPopup.locator('meta[name="referrer"]').getAttribute("content"), "no-referrer")
     await newSessionPopup.waitForURL(`${instanceBRecord.endpoint}/opened/created-1?session=created-1`)
