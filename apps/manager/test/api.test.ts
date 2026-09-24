@@ -52,6 +52,7 @@ class FakeRuntime implements RuntimePort {
   adoptedCount = 0
   adoptedCreationTimeUtc: string | null = null
   readinessError: Error | null = null
+  readinessCalls = 0
   readinessGate: Promise<void> | null = null
   releaseReadiness: (() => void) | null = null
   summaries = new Map<string, RuntimeSummary>()
@@ -101,6 +102,7 @@ class FakeRuntime implements RuntimePort {
   }
 
   async readiness(launch: LaunchResult) {
+    this.readinessCalls++
     if (this.readinessGate) await this.readinessGate
     if (this.readinessError) throw this.readinessError
     if (!this.reachable) throw new Error("health endpoint unavailable")
@@ -385,6 +387,276 @@ async function startLocalTui(
   await waitFor(() => runtime.observers.has(reservation.reservationId), 500)
   return reservation.reservationId
 }
+
+test("Local TUI initial registration waits for its exact process listener then observes activity", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.portOwnerMatched = false
+  runtime.sessionMetadata.set(project, [
+    { id: "root-a", title: "Root A" },
+    { id: "root-b", title: "Root B" },
+    { id: "child-b", title: "Child B", parentID: "root-b" },
+  ])
+  const clientInvocationId = "10000000-0000-4000-8000-000000000065"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  const registered = await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5065 })
+  assert.equal(registered.state, "starting")
+  await waitFor(() => runtime.inspectCalls > 0, 500)
+  assert.equal(runtime.observers.has(reservation.reservationId), false)
+  assert.equal(repository.getPrimarySession(reservation.reservationId), null)
+
+  runtime.portOwnerMatched = true
+  await waitFor(() => repository.getInstance(reservation.reservationId)?.state === "ready", 1_500)
+  assert.ok(runtime.inspectCalls >= 2, "listener recovery needs a fresh identity and owner check")
+  assert.equal(repository.getInstance(reservation.reservationId)?.healthVersion, "1.18.31")
+  assert.equal(runtime.observers.has(reservation.reservationId), true)
+  assert.equal(repository.getPrimarySession(reservation.reservationId), null, "visible roots are not activity proof")
+  await runtime.emitActivity(reservation.reservationId, { type: "activity", source: "snapshot", sessionIds: ["root-a", "child-b"] })
+  assert.equal(repository.getPrimarySession(reservation.reservationId), null, "ambiguous activity cannot select a root")
+  await runtime.emitActivity(reservation.reservationId, { type: "activity", source: "snapshot", sessionIds: ["child-b"] })
+  assert.equal(repository.getPrimarySession(reservation.reservationId)?.sessionId, "root-b")
+})
+
+test("Local TUI without a listener times out instead of polling indefinitely and can still be rechecked", async (t) => {
+  const { app, project, repository, runtime, service } = await fixture(t)
+  runtime.portOwnerMatched = false
+  const clientInvocationId = "10000000-0000-4000-8000-000000000066"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5066 })
+  await waitFor(() => repository.getInstance(reservation.reservationId)?.state === "unreachable", 16_000)
+  assert.equal(repository.getInstance(reservation.reservationId)?.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")
+  runtime.portOwnerMatched = true
+  const overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.equal(overview.statusCode, 200)
+  const displayed = overview.json().instances.find((instance: { id: string }) => instance.id === reservation.reservationId)
+  assert.equal(displayed.summary.error, null)
+  assert.equal(displayed.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")
+  const callsAtTimeout = runtime.inspectCalls
+  await new Promise<void>((resolve) => setTimeout(resolve, 300))
+  assert.equal(runtime.inspectCalls, callsAtTimeout)
+  assert.equal(runtime.observers.has(reservation.reservationId), false)
+  await service.recheck(reservation.reservationId)
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "ready")
+  assert.equal(runtime.observers.has(reservation.reservationId), true)
+})
+
+test("Local TUI retry rejects changed process identity and foreign port ownership", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  for (const [suffix, change] of [
+    ["067", () => { runtime.identityMatches = false }],
+    ["068", () => { runtime.portOwnedByOther = true }],
+  ] as const) {
+    runtime.identityMatches = true
+    runtime.portOwnedByOther = false
+    runtime.portOwnerMatched = false
+    const clientInvocationId = `10000000-0000-4000-8000-000000000${suffix}`
+    const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+    const previousInspects = runtime.inspectCalls
+    await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: Number(suffix) + 5000 })
+    await waitFor(() => runtime.inspectCalls > previousInspects, 500)
+    assert.equal(repository.getInstance(reservation.reservationId)?.state, "starting")
+    change()
+    runtime.portOwnerMatched = true
+    await waitFor(() => repository.getInstance(reservation.reservationId)?.state === "unreachable", 1_000)
+    assert.equal(repository.getInstance(reservation.reservationId)?.error, "INSTANCE_IDENTITY_UNVERIFIED")
+    assert.equal(runtime.observers.has(reservation.reservationId), false)
+  }
+})
+
+test("finalize and recheck supersede a pending Local TUI registration inspection", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.portOwnerMatched = false
+  const firstInvocation = "10000000-0000-4000-8000-000000000069"
+  const first = await service.reserveLocal({ clientInvocationId: firstInvocation, directory: project })
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  await service.registerLocal(first.reservationId, { clientInvocationId: firstInvocation, pid: 5069 })
+  await waitFor(() => runtime.deferredInspectStarted, 500)
+  assert.equal((await service.finalizeLocal(first.reservationId, { clientInvocationId: firstInvocation, pid: 5069 })).state, "stopped")
+  runtime.portOwnerMatched = true
+  runtime.releaseInspect?.()
+  await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  assert.equal(repository.getInstance(first.reservationId)?.state, "stopped")
+  assert.equal(runtime.observers.has(first.reservationId), false)
+
+  runtime.portOwnerMatched = false
+  runtime.deferredInspectStarted = false
+  const secondInvocation = "10000000-0000-4000-8000-000000000070"
+  const second = await service.reserveLocal({ clientInvocationId: secondInvocation, directory: project })
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  await service.registerLocal(second.reservationId, { clientInvocationId: secondInvocation, pid: 5070 })
+  await waitFor(() => runtime.deferredInspectStarted, 500)
+  await service.recheck(second.reservationId)
+  assert.equal(repository.getInstance(second.reservationId)?.state, "unreachable")
+  await service.setTrackingHidden(second.reservationId, true)
+  runtime.portOwnerMatched = true
+  runtime.releaseInspect?.()
+  await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  assert.equal(repository.getInstance(second.reservationId)?.state, "unreachable")
+  assert.equal(repository.getInstance(second.reservationId)?.trackingHidden, true)
+  assert.equal(runtime.observers.has(second.reservationId), false)
+})
+
+test("direct recheck probe failure does not strand a cancelled Local TUI registration", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  t.after(() => runtime.releaseInspect?.())
+  const clientInvocationId = "10000000-0000-4000-8000-000000000078"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5078 })
+  await waitFor(() => runtime.deferredInspectStarted, 500)
+  runtime.processState = "not-found"
+  const probe = t.mock.method(net, "createServer", () => { throw new Error("fixture recheck probe failure") })
+  try {
+    await assert.rejects(service.recheck(reservation.reservationId), /fixture recheck probe failure/)
+  } finally {
+    probe.mock.restore()
+  }
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
+  assert.equal(repository.getInstance(reservation.reservationId)?.error, "INSTANCE_IDENTITY_CHECK_FAILED")
+  assert.ok(repository.getAllocationForInstance(reservation.reservationId))
+  runtime.releaseInspect?.()
+  await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  assert.equal(runtime.observers.has(reservation.reservationId), false)
+})
+
+test("finalize probe failure does not strand a cancelled Local TUI registration", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  t.after(() => runtime.releaseInspect?.())
+  const clientInvocationId = "10000000-0000-4000-8000-000000000079"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5079 })
+  await waitFor(() => runtime.deferredInspectStarted, 500)
+  const probe = t.mock.method(net, "createServer", () => { throw new Error("fixture finalize probe failure") })
+  try {
+    await assert.rejects(service.finalizeLocal(reservation.reservationId, { clientInvocationId, pid: 5079 }),
+      /fixture finalize probe failure/)
+  } finally {
+    probe.mock.restore()
+  }
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
+  assert.equal(repository.getInstance(reservation.reservationId)?.error, "INSTANCE_IDENTITY_CHECK_FAILED")
+  assert.ok(repository.getAllocationForInstance(reservation.reservationId))
+  runtime.releaseInspect?.()
+  await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  assert.equal(runtime.observers.has(reservation.reservationId), false)
+})
+
+test("stop tracking during pending Local TUI registration cannot later revive it", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.portOwnerMatched = false
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  const clientInvocationId = "10000000-0000-4000-8000-000000000073"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5073 })
+  await waitFor(() => runtime.deferredInspectStarted, 500)
+  const hidden = await service.setTrackingHidden(reservation.reservationId, true)
+  assert.equal(hidden.trackingHidden, true)
+  runtime.portOwnerMatched = true
+  runtime.releaseInspect?.()
+  await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
+  assert.equal(runtime.observers.has(reservation.reservationId), false)
+})
+
+test("failed stop-tracking recheck cannot strand a cancelled Local TUI registration in starting", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  t.after(() => runtime.releaseInspect?.())
+  const clientInvocationId = "10000000-0000-4000-8000-000000000075"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5075 })
+  await waitFor(() => runtime.deferredInspectStarted, 500)
+  runtime.processState = "not-found"
+  const probe = t.mock.method(net, "createServer", () => { throw new Error("fixture loopback probe failure") })
+  try {
+    await assert.rejects(service.setTrackingHidden(reservation.reservationId, true), /fixture loopback probe failure/)
+  } finally {
+    probe.mock.restore()
+  }
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
+  assert.equal(repository.getInstance(reservation.reservationId)?.error, "INSTANCE_IDENTITY_CHECK_FAILED")
+  runtime.releaseInspect?.()
+  await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  assert.equal(runtime.observers.has(reservation.reservationId), false)
+})
+
+test("rejected stop-tracking request leaves the rechecked Local TUI ready", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  t.after(() => runtime.releaseInspect?.())
+  const clientInvocationId = "10000000-0000-4000-8000-000000000076"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5076 })
+  await waitFor(() => runtime.deferredInspectStarted, 500)
+  await assert.rejects(service.setTrackingHidden(reservation.reservationId, true),
+    (error: unknown) => error instanceof ManagerError && error.code === "INSTANCE_TRACKING_HIDE_UNAVAILABLE")
+  runtime.releaseInspect?.()
+  await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "ready")
+  assert.equal(repository.getInstance(reservation.reservationId)?.trackingHidden, false)
+  assert.equal(runtime.observers.has(reservation.reservationId), true)
+})
+
+test("Manager shutdown prevents a late Local TUI readiness result from starting observation", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.blockReadiness()
+  const clientInvocationId = "10000000-0000-4000-8000-000000000071"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5071 })
+  await waitFor(() => runtime.inspectCalls > 0, 500)
+  await service.shutdown()
+  runtime.releaseReadiness?.()
+  await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "starting")
+  assert.equal(runtime.observers.has(reservation.reservationId), false)
+})
+
+test("Local TUI verification deadline also bounds a pending readiness response", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.blockReadiness()
+  t.after(() => runtime.releaseReadiness?.())
+  const clientInvocationId = "10000000-0000-4000-8000-000000000072"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5072 })
+  await waitFor(() => repository.getInstance(reservation.reservationId)?.state === "unreachable", 16_000)
+  assert.equal(repository.getInstance(reservation.reservationId)?.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")
+  runtime.releaseReadiness?.()
+  await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
+  assert.equal(runtime.observers.has(reservation.reservationId), false)
+})
+
+test("Local TUI marks a readiness result after the deadline unreachable before its timer fires", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.blockReadiness()
+  t.after(() => runtime.releaseReadiness?.())
+  const clientInvocationId = "10000000-0000-4000-8000-000000000074"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5074 })
+  await waitFor(() => runtime.readinessCalls === 1, 500)
+  const realNow = Date.now.bind(Date)
+  t.mock.method(Date, "now", () => realNow() + 16_000)
+  runtime.releaseReadiness?.()
+  await waitFor(() => repository.getInstance(reservation.reservationId)?.state === "unreachable", 500)
+  assert.equal(repository.getInstance(reservation.reservationId)?.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")
+  assert.equal(runtime.observers.has(reservation.reservationId), false)
+})
+
+test("Local TUI marks an inspection result after the deadline unreachable before its timer fires", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  t.after(() => runtime.releaseInspect?.())
+  const clientInvocationId = "10000000-0000-4000-8000-000000000077"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5077 })
+  await waitFor(() => runtime.deferredInspectStarted, 500)
+  const realNow = Date.now.bind(Date)
+  t.mock.method(Date, "now", () => realNow() + 16_000)
+  runtime.releaseInspect?.()
+  await waitFor(() => repository.getInstance(reservation.reservationId)?.state === "unreachable", 500)
+  assert.equal(repository.getInstance(reservation.reservationId)?.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")
+  assert.equal(runtime.observers.has(reservation.reservationId), false)
+})
 
 test("unsupported and temporarily unavailable runtime capabilities do not invoke Session operations or advertise a URL", async (t) => {
   const { app, project, runtime, service } = await fixture(t)

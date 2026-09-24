@@ -31,6 +31,14 @@ import { InstanceOverview } from "./overview.js"
 
 const RESERVATION_TTL_MS = 10_000
 const OBSERVER_RETRY_DELAYS_MS = [250, 1_000, 2_000] as const
+const LOCAL_VERIFICATION_DEADLINE_MS = 15_000
+const LOCAL_VERIFICATION_INTERVAL_MS = 200
+
+interface LocalVerification {
+  controller: AbortController
+  deadline: number
+  timer: NodeJS.Timeout
+}
 
 interface ActivityObserverState {
   attempts: number
@@ -44,6 +52,7 @@ export class ManagerService {
   private readonly instanceRuntimes = new Map<string, RuntimePort>()
   private readonly snapshots: InstanceOverview
   private readonly activityObservers = new Map<string, ActivityObserverState>()
+  private readonly localVerifications = new Map<string, LocalVerification>()
   private readonly instanceMutations = new Map<string, Promise<void>>()
   private shuttingDown = false
 
@@ -225,7 +234,14 @@ export class ManagerService {
       return { instanceId: raced.id, state: localRegistrationState(raced) }
     }
     // Local TUI owns the console. Readiness proof runs independently and never grants OMW Stop authority.
-    void this.verifyLocalRegistration(record.id)
+    const controller = new AbortController()
+    const deadline = Date.now() + LOCAL_VERIFICATION_DEADLINE_MS
+    const timer = setTimeout(() => controller.abort(new ManagerError(
+      "LOCAL_TUI_VERIFICATION_TIMEOUT", "Local TUI 初次驗證超時。", 409,
+    )), LOCAL_VERIFICATION_DEADLINE_MS)
+    const verification = { controller, deadline, timer }
+    this.localVerifications.set(record.id, verification)
+    void this.verifyLocalRegistration(record.id, verification)
     return { instanceId: record.id, state: "starting" }
   }
 
@@ -241,7 +257,16 @@ export class ManagerService {
       return { instanceId: reservationId, state: "stopped" }
     }
     if (record.pid !== input.pid) throw new ManagerError("PROCESS_IDENTITY_MISMATCH", "Finalize PID 與已登錄 Local TUI 不符。", 409)
-    if (await loopbackPortAvailable(record.port)) {
+    const interrupted = this.localVerifications.has(record.id)
+    this.cancelLocalVerification(record.id)
+    let portAvailable: boolean
+    try {
+      portAvailable = await loopbackPortAvailable(record.port)
+    } catch (error) {
+      this.failInterruptedLocalVerification(record.id, record, interrupted)
+      throw error
+    }
+    if (portAvailable) {
       record.state = "stopped"
       record.stoppedAt = new Date().toISOString()
       record.error = null
@@ -301,14 +326,31 @@ export class ManagerService {
   }
 
   async recheck(id: string): Promise<ManagedInstance> {
-    return await this.withInstanceMutation(id, async () => await this.recheckUnlocked(id))
+    const interrupted = this.localVerifications.has(id)
+    const registration = interrupted ? this.repository.getInstance(id) : null
+    this.cancelLocalVerification(id)
+    return await this.withInstanceMutation(id, async () => {
+      try {
+        return await this.recheckUnlocked(id)
+      } catch (error) {
+        this.failInterruptedLocalVerification(id, registration, interrupted)
+        throw error
+      }
+    })
   }
 
   async setTrackingHidden(id: string, hidden: boolean): Promise<ManagedInstance> {
+    const interruptedRegistration = hidden && this.localVerifications.has(id)
+    if (hidden) this.cancelLocalVerification(id)
     return await this.withInstanceMutation(id, async () => {
       let record = this.requireInstance(id)
       if (hidden && record.state !== "unreachable" && record.state !== "failed") {
-        await this.recheckUnlocked(id)
+        try {
+          await this.recheckUnlocked(id)
+        } catch (error) {
+          this.failInterruptedLocalVerification(id, record, interruptedRegistration)
+          throw error
+        }
         record = this.requireInstance(id)
       }
       if (hidden && record.state !== "unreachable" && record.state !== "failed") {
@@ -480,6 +522,7 @@ export class ManagerService {
   async shutdown(): Promise<void> {
     if (this.shuttingDown) return
     this.shuttingDown = true
+    for (const id of this.localVerifications.keys()) this.cancelLocalVerification(id)
     const observers = [...this.activityObservers.values()]
     for (const state of observers) {
       if (state.retryTimer) clearTimeout(state.retryTimer)
@@ -711,28 +754,72 @@ export class ManagerService {
     }
   }
 
-  private async verifyLocalRegistration(id: string): Promise<void> {
+  private cancelLocalVerification(id: string): void {
+    const verification = this.localVerifications.get(id)
+    if (!verification) return
+    this.localVerifications.delete(id)
+    clearTimeout(verification.timer)
+    verification.controller.abort()
+  }
+
+  private failInterruptedLocalVerification(id: string, registration: InstanceRecord | null, interrupted: boolean): void {
+    if (!interrupted || !registration || this.shuttingDown) return
+    const current = this.repository.getInstance(id)
+    // recheck 或 port probe 可能在寫入前失敗；取消初次驗證後不能留下無人處理的 starting。
+    if (current?.state !== "starting" || !sameInstanceIdentity(current, registration)) return
+    current.state = "unreachable"
+    current.error = "INSTANCE_IDENTITY_CHECK_FAILED"
+    this.repository.saveInstance(current)
+    this.invalidateOverviewSnapshots()
+  }
+
+  private localVerificationCurrent(id: string, record: InstanceRecord, verification: LocalVerification): boolean {
+    const current = this.repository.getInstance(id)
+    // 世代檢查擋掉取消後的結果；deadline 另走 timeout 錯誤路徑，不能把超時當成取消而留下 starting。
+    return !this.shuttingDown && this.localVerifications.get(id) === verification
+      && !verification.controller.signal.aborted
+      && current?.state === "starting" && !current.trackingHidden && sameInstanceIdentity(current, record)
+  }
+
+  private async verifyLocalRegistration(id: string, verification: LocalVerification): Promise<void> {
     const record = this.repository.getInstance(id)
-    if (!record || record.kind !== "local-tui" || record.state === "stopped") return
     try {
-      const identity = await this.runtimeFor(record).inspect(record)
-      if (!identity.running || !identity.matched || !identity.portOwnerMatched || identity.portOwnedByOther) {
-        throw new ManagerError("INSTANCE_IDENTITY_UNVERIFIED", "Local TUI ready，但 process identity 或 port owner 無法核對。", 409)
+      if (!record || record.kind !== "local-tui") return
+      while (this.localVerificationCurrent(id, record, verification)) {
+        if (Date.now() >= verification.deadline) break
+        const identity = await awaitLocalVerification(this.runtimeFor(record).inspect(record), verification.controller.signal)
+        if (!this.localVerificationCurrent(id, record, verification)) return
+        if (Date.now() >= verification.deadline) break
+        if (!identity.running || !identity.matched || identity.portOwnedByOther) {
+          throw new ManagerError("INSTANCE_IDENTITY_UNVERIFIED", "Local TUI process identity 或 port owner 無法核對。", 409)
+        }
+        if (identity.portOwnerMatched) {
+          const health = await awaitLocalVerification(this.runtimeFor(record).readiness(record), verification.controller.signal)
+          if (!this.localVerificationCurrent(id, record, verification)) return
+          if (Date.now() >= verification.deadline) break
+          const current = this.repository.getInstance(id)!
+          current.state = "ready"
+          current.healthVersion = health.version
+          current.error = null
+          this.repository.saveInstance(current)
+          this.ensureActivityObserver(current)
+          return
+        }
+        // #65: exact process 已核對但 listener 尚未出現；不可把無 foreign owner 當成 ready 證據。
+        await awaitLocalVerification(delay(Math.min(LOCAL_VERIFICATION_INTERVAL_MS, verification.deadline - Date.now())), verification.controller.signal)
       }
-      const health = await this.runtimeFor(record).readiness(record)
-      const current = this.repository.getInstance(id)
-      if (!current || current.state === "stopped") return
-      current.state = "ready"
-      current.healthVersion = health.version
-      current.error = null
-      this.repository.saveInstance(current)
-      this.ensureActivityObserver(current)
+      if (this.localVerifications.get(id) !== verification) return
+      throw new ManagerError("LOCAL_TUI_VERIFICATION_TIMEOUT", "Local TUI 初次驗證超時。", 409)
     } catch (error) {
+      if (this.shuttingDown || this.localVerifications.get(id) !== verification) return
       const current = this.repository.getInstance(id)
-      if (!current || current.state === "stopped") return
+      if (!record || !current || current.state !== "starting" || current.trackingHidden || !sameInstanceIdentity(current, record)) return
       current.state = "unreachable"
       current.error = safeRuntimeCode(error, "LOCAL_TUI_VERIFICATION_FAILED").code
       this.repository.saveInstance(current)
+    } finally {
+      if (this.localVerifications.get(id) === verification) this.localVerifications.delete(id)
+      clearTimeout(verification.timer)
     }
   }
 
@@ -945,6 +1032,23 @@ export class ManagerService {
 
 async function delay(milliseconds: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
+}
+
+async function awaitLocalVerification<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    void pending.catch(() => undefined)
+    throw signal.reason
+  }
+  let onAbort!: () => void
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason)
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+  try {
+    return await Promise.race([pending, aborted])
+  } finally {
+    signal.removeEventListener("abort", onAbort)
+  }
 }
 
 function newInstanceRecord(allocation: PortAllocation, directory: string, clientInvocationId: string | null): InstanceRecord {
