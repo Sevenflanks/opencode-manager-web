@@ -31,6 +31,7 @@ import {
 } from "lucide-vue-next"
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { ApiError, managerApi } from "@/api"
+import { createNotificationPreference, createPendingTracker } from "@/browser-notifications"
 import { createOverviewRefresh } from "@/overview-refresh"
 import { createSessionTodoRefresh } from "@/session-todo-refresh"
 import { renderSessionWaiting } from "@/session-waiting"
@@ -132,6 +133,26 @@ const currentManagerPassword = ref("")
 const nextManagerPassword = ref("")
 const confirmManagerPassword = ref("")
 const managerStopped = ref(false)
+const notificationPreference = createNotificationPreference({
+  storage: {
+    getItem: (key) => window.localStorage.getItem(key),
+    setItem: (key, value) => window.localStorage.setItem(key, value),
+    removeItem: (key) => window.localStorage.removeItem(key),
+  },
+  supported: () => window.isSecureContext && "Notification" in window,
+  permission: () => Notification.permission,
+  requestPermission: () => Notification.requestPermission(),
+})
+const notificationStatus = ref(notificationPreference.status())
+const notificationError = ref("")
+const notificationBusy = ref(false)
+const pendingTracker = createPendingTracker()
+let notificationRegistration: ServiceWorkerRegistration | null = null
+let notificationReady = false
+let notificationGeneration = 0
+let notificationFlight: Promise<void> | null = null
+let notificationNeedsDrain = false
+let notificationController: AbortController | null = null
 let confirmationClosing = false
 let confirmationLeaveCompleted = false
 let pollTimer: number | undefined
@@ -192,6 +213,7 @@ const refresh = createOverviewRefresh({
     appliedQuery.value = result.query
     appliedFilter.value = result.filter
     const next = result.overview
+    if (current()) void revealNotificationTarget(next.instances)
     const detailRouteIsCurrent = Boolean(route.detailTarget)
       && route.historyGeneration === mobileHistoryGeneration
       && mobileHistoryView() === "detail"
@@ -225,6 +247,9 @@ const {
   stale: overviewStale, refreshing: overviewRefreshing,
   invalidate: invalidateOverview, refreshAfterMutation, load: loadOverview,
 } = refresh
+watch(() => Boolean(mutating.value || lifecyclePending.value || switchingSessionId.value), (pending) => {
+  if (pending) suspendNotifications()
+}, { flush: "sync" })
 
 const selected = computed(() => overview.value.instances.find((instance) => instance.id === selectedId.value) ?? null)
 const todoRefresh = createSessionTodoRefresh({ read: (id) => managerApi.primaryTodos(id) })
@@ -373,6 +398,8 @@ onMounted(async () => {
   shareSupported.value = typeof navigator.share === "function"
   if (isMobileViewport() && !mobileHistoryView()) replaceMobileHistory("list")
   if (isMobileViewport()) applyMobileHistoryContext()
+  window.addEventListener("hashchange", handleNotificationHash)
+  if (notificationPreference.enabled()) void startNotifications()
   void loadConnectivity("background")
   const overviewLoaded = await loadOverview(true, "background")
   if (appDisposed) return
@@ -384,12 +411,19 @@ onMounted(async () => {
   connectivityPollTimer = window.setInterval(() => void loadConnectivity("background"), 30_000)
   pollTimer = window.setInterval(() => {
     if (!mutating.value && !lifecyclePending.value && !switchingSessionId.value) void loadOverview(false, "background")
+    notificationStatus.value = notificationPreference.status()
+    if (notificationPreference.enabled() && document.visibilityState === "visible") {
+      if (notificationReady) void pollNotifications()
+      else if (!notificationBusy.value) void startNotifications()
+    }
   }, 5_000)
 })
 onBeforeUnmount(() => {
   appDisposed = true
   window.clearInterval(pollTimer)
   window.clearInterval(connectivityPollTimer)
+  suspendNotifications()
+  window.removeEventListener("hashchange", handleNotificationHash)
   window.clearTimeout(noticeTimer)
   document.removeEventListener("pointerdown", handleDocumentPointerdown, true)
   document.removeEventListener("keydown", handleDocumentKeydown, true)
@@ -655,7 +689,10 @@ async function handleMobileHistoryChange(): Promise<void> {
 function handleForegroundRefresh(): void {
   refresh.foreground()
   syncPrimaryTodos()
-  if (document.visibilityState !== "visible") { persistMobileListHistory(); return }
+  if (document.visibilityState !== "visible") { suspendNotifications(); persistMobileListHistory(); return }
+  notificationStatus.value = notificationPreference.status()
+  if (notificationReady && notificationPreference.enabled()) { pendingTracker.reset(); void pollNotifications() }
+  else if (notificationPreference.enabled() && !notificationBusy.value) void startNotifications()
   connectivityStale.value = connectivity.value !== null
   if (overviewStale.value && confirmation.value?.requiresFreshOverview) {
     ensureFreshOverviewMutation(confirmation.value.freshnessErrorTarget)
@@ -665,7 +702,156 @@ function handleForegroundRefresh(): void {
 }
 
 function handlePageHide(): void {
+  suspendNotifications()
   persistMobileListHistory()
+}
+
+function suspendNotifications(): void {
+  notificationGeneration++
+  pendingTracker.reset()
+  if (notificationFlight) notificationNeedsDrain = true
+  notificationController?.abort()
+}
+
+async function startNotifications(): Promise<void> {
+  const generation = ++notificationGeneration
+  notificationReady = false
+  notificationBusy.value = true
+  try {
+    if ("serviceWorker" in navigator) {
+      let timer: number | undefined
+      try {
+        notificationRegistration = await Promise.race([
+          navigator.serviceWorker.register("/notification-sw.js", { scope: "/" }).then(() => navigator.serviceWorker.ready),
+          new Promise<never>((_, reject) => { timer = window.setTimeout(() => reject(new Error("Service Worker timeout")), 15_000) }),
+        ])
+      } finally { window.clearTimeout(timer) }
+      if (typeof notificationRegistration.showNotification !== "function") throw new Error("無法使用系統通知")
+    }
+    if (generation !== notificationGeneration || !notificationPreference.enabled()) return
+    notificationReady = true
+    notificationStatus.value = notificationPreference.status()
+    pendingTracker.reset()
+    await pollNotifications()
+  } catch {
+    if (generation !== notificationGeneration) return
+    notificationReady = false
+    notificationPreference.fail()
+    notificationStatus.value = notificationPreference.status()
+    notificationError.value = "此瀏覽器目前無法顯示通知；請確認 HTTPS、系統通知設定及手機安裝條件。"
+  } finally {
+    if (generation === notificationGeneration || !notificationReady) notificationBusy.value = false
+  }
+}
+
+async function toggleNotifications(event: Event): Promise<void> {
+  if (!(event.target instanceof HTMLInputElement)) return
+  if (!event.target.checked) {
+    notificationPreference.disable()
+    notificationReady = false
+    suspendNotifications()
+    notificationStatus.value = notificationPreference.status()
+    notificationError.value = ""
+    return
+  }
+  notificationBusy.value = true
+  notificationError.value = ""
+  // enable() 在此同步進入 requestPermission，保留 checkbox click 的 user activation。
+  const allowed = await notificationPreference.enable()
+  notificationStatus.value = notificationPreference.status()
+  if (allowed) await startNotifications()
+  else {
+    notificationBusy.value = false
+    if (notificationStatus.value === "off") notificationError.value = "尚未取得瀏覽器通知權限；通知未啟用。"
+  }
+}
+
+async function pollNotifications(): Promise<void> {
+  if (!notificationReady || !notificationPreference.enabled() || document.visibilityState !== "visible" || appDisposed || managerStopped.value
+    || mutating.value || lifecyclePending.value || switchingSessionId.value) return
+  // 前一輪完成後必須重新檢查頁面與操作狀態；等待期間可能已隱藏、停止或開始 mutation。
+  if (notificationFlight) await notificationFlight
+  if (!notificationReady || !notificationPreference.enabled() || document.visibilityState !== "visible" || appDisposed || managerStopped.value
+    || mutating.value || lifecyclePending.value || switchingSessionId.value) return
+  const generation = notificationGeneration
+  const controller = new AbortController()
+  notificationController = controller
+  const timeout = window.setTimeout(() => controller.abort(), 15_000)
+  const flight = (async () => {
+    try {
+      if (notificationNeedsDrain) {
+        await managerApi.notificationOverview(controller.signal)
+        if (generation !== notificationGeneration) return
+        notificationNeedsDrain = false
+      }
+      const response = await managerApi.notificationOverview(controller.signal)
+      if (generation !== notificationGeneration || document.visibilityState !== "visible" || !notificationPreference.enabled()) return
+      notificationError.value = ""
+      for (const event of pendingTracker.observe(response.instances)) {
+        if (generation !== notificationGeneration || !notificationPreference.enabled()) break
+        const title = "有待回答或待授權事項"
+        const body = `執行個體 ${event.instanceId}：${event.count} 筆待處理`
+        const url = `${window.location.origin}/#instance=${encodeURIComponent(event.instanceId)}`
+        try {
+          if (notificationRegistration) {
+            await notificationRegistration.showNotification(title, { body, data: { url }, tag: `omw-${event.instanceId}` })
+          } else {
+            const notice = new Notification(title, { body, tag: `omw-${event.instanceId}` })
+            notice.onclick = () => { window.location.hash = `instance=${encodeURIComponent(event.instanceId)}`; window.focus(); notice.close() }
+          }
+        } catch {
+          notificationPreference.fail()
+          notificationReady = false
+          notificationStatus.value = notificationPreference.status()
+          notificationError.value = "瀏覽器無法顯示通知；請檢查網站權限、Service Worker 或手機安裝條件。"
+          pendingTracker.reset()
+          return
+        }
+      }
+    } catch {
+      if (generation !== notificationGeneration) return
+      pendingTracker.reset()
+      if (controller.signal.aborted) notificationNeedsDrain = true
+      notificationError.value = "通知監測暫時無法取得最新資料；恢復後會重新建立基準。"
+    } finally {
+      window.clearTimeout(timeout)
+    }
+  })()
+  notificationFlight = flight
+  await flight
+  if (notificationFlight === flight) notificationFlight = null
+  if (notificationController === controller) notificationController = null
+}
+
+function handleNotificationHash(): void { void revealNotificationTarget(overview.value.instances) }
+
+async function revealNotificationTarget(instances: ManagedInstance[]): Promise<void> {
+  const id = new URLSearchParams(window.location.hash.slice(1)).get("instance")
+  if (!id || !overviewLastSucceededAt.value) return
+  const target = instances.find((item) => item.id === id)
+  if (!target) {
+    if (query.value || filter.value !== "all" || !includeHidden.value) {
+      query.value = ""
+      filter.value = "all"
+      includeHidden.value = true
+      void loadOverview(false, "background")
+    } else if (!overviewStale.value) {
+      window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search)
+      showNotice("通知對應的執行個體已不存在。")
+    }
+    return
+  }
+  window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search)
+  if (isMobileViewport()) {
+    listScrollPosition = window.scrollY
+    returnToInstanceId = id
+    mobileDetailOpen.value = true
+    pushMobileHistory(id)
+    void revealSelectedDetail()
+  }
+  selectedId.value = id
+  resetSelectedScope()
+  await loadSessions()
 }
 
 async function restoreMobileListScroll(): Promise<void> {
@@ -1287,6 +1473,7 @@ async function performStopManager(): Promise<void> {
     await managerApi.shutdown()
     window.clearInterval(pollTimer)
     window.clearInterval(connectivityPollTimer)
+    suspendNotifications()
     managerSettingsOpen.value = false
     managerStopped.value = true
   } catch (cause) {
@@ -1955,6 +2142,18 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
         <Button variant="ghost" size="icon" aria-label="關閉 OMW 設定" :disabled="managerSettingsBusy" @click="managerSettingsOpen = false"><XIcon /></Button>
       </header>
       <div class="manager-settings-body">
+        <section class="notification-settings" aria-label="瀏覽器通知設定">
+          <label><input type="checkbox" :checked="notificationStatus === 'on'" :disabled="notificationBusy || notificationStatus === 'unsupported' || notificationStatus === 'blocked' || notificationStatus === 'unavailable'" @change="toggleNotifications">頁面開啟期間通知所有執行個體的待回答與待授權</label>
+          <p v-if="notificationBusy">正在確認通知是否可用…</p>
+          <p v-else-if="notificationStatus === 'on' && !notificationError">已在此瀏覽器啟用；僅於頁面開啟、前景可見且可讀取資料時監測。</p>
+          <p v-else-if="notificationStatus === 'on'">偏好已啟用，但目前無法監測最新資料。</p>
+          <p v-else-if="notificationStatus === 'blocked'">瀏覽器已封鎖通知；請到網站或系統通知設定允許後重新整理。</p>
+          <p v-else-if="notificationStatus === 'unsupported'">此瀏覽器或目前連線不支援通知；請使用 HTTPS 與支援通知的瀏覽器。</p>
+          <p v-else-if="notificationStatus === 'unavailable'">通知目前不可用；請確認瀏覽器儲存空間、Service Worker 與系統通知設定。</p>
+          <p v-else>通知已關閉；設定僅保存在此瀏覽器。</p>
+          <p v-if="notificationError" role="alert">{{ notificationError }}</p>
+          <small>透過約 5 秒輪詢，短暫出現又消失的事項可能漏報；背景節流或裝置休眠時無法保證即時或鎖屏通知。手機須支援網站通知，部分平台須先將網站加入主畫面。</small>
+        </section>
         <form class="credential-form" @submit.prevent="updateManagerCredentials">
           <div><p class="eyebrow">ACCOUNT</p><h3>修改 OMW 帳號與密碼</h3></div>
           <p>本機與遠端模式都必須驗證目前密碼。更新不會變更 launcher token、資料目錄、SQLite 或 OpenCode Sessions。</p>
