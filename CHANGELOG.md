@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.4.1...v0.4.2) (2026-09-25)
+
+
+### Bug Fixes
+
+* **web:** 改善目錄瀏覽、設定焦點與手機操作可用性 ([5fecc12](https://github.com/Sevenflanks/opencode-manager-web/commit/5fecc1207f6f218d47cd8773b8b8f7a3da3d7c18))
+* **web:** 讓設定成功訊息在對話框內可被讀取 ([27ba0bf](https://github.com/Sevenflanks/opencode-manager-web/commit/27ba0bf0224d3916ba0ea2dcf48abafac4bc575e))
+
 ## [0.4.1](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.4.0...v0.4.1) (2026-09-24)
 
 
