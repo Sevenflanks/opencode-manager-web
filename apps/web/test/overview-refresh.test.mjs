@@ -173,6 +173,72 @@ test("notification registration interrupted by a hidden page restarts on return 
   })
 })
 
+test("overlapping notification poll requests queue one follow-up read", { skip: !enabled, timeout: 15_000 }, async () => {
+  let reads = 0
+  let active = 0
+  let maxActive = 0
+  let release
+  let baselineDone
+  let blocked
+  const baseline = new Promise((resolve) => { baselineDone = resolve })
+  const blockedRead = new Promise((resolve) => { blocked = resolve })
+  await withOverviewPage(async ({ page }) => {
+    await page.getByRole("button", { name: "已失聯", exact: true }).click()
+    await page.route("**/api/v1/overview?**", async (route) => {
+      if (new URL(route.request().url()).searchParams.get("filter") !== "all") return route.continue()
+      const read = ++reads
+      active++
+      maxActive = Math.max(maxActive, active)
+      try {
+        if (read === 2) await new Promise((resolve) => { release = resolve; blocked() })
+        const response = await route.fetch()
+        const overview = await response.json()
+        overview.instances[0].state = "ready"
+        overview.instances[0].summary.pendingQuestions = 0
+        overview.instances[0].summary.pendingPermissions = 0
+        await route.fulfill({ response, json: overview })
+      } finally {
+        active--
+        if (read === 1) baselineDone()
+      }
+    })
+    await page.getByRole("button", { name: "OMW 設定" }).click()
+    await page.getByRole("checkbox", { name: /頁面開啟期間通知/ }).check()
+    await baseline
+    try {
+      await page.evaluate(() => window.__notificationPoll())
+      await blockedRead
+      await page.evaluate(() => { window.__notificationPoll(); window.__notificationPoll() })
+    } finally {
+      release?.()
+    }
+    await page.waitForFunction(() => window.__notificationReads === 3, null, { timeout: 5_000 })
+    assert.equal(reads, 3, "multiple waiters schedule just one fresh snapshot")
+    assert.equal(maxActive, 1, "notification reads never overlap")
+  }, async (page) => {
+    await page.addInitScript(() => {
+      window.__notificationReads = 0
+      const interval = window.setInterval.bind(window)
+      window.setInterval = (callback, delay, ...args) => {
+        if (delay === 5_000) window.__notificationPoll = callback
+        return interval(callback, delay, ...args)
+      }
+      Object.defineProperty(window, "Notification", { configurable: true, value: {
+        permission: "granted", requestPermission: async () => "granted",
+      } })
+      const registration = { showNotification: async () => {} }
+      Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: {
+        register: async () => registration, ready: Promise.resolve(registration),
+      } })
+      const fetch = window.fetch.bind(window)
+      window.fetch = async (...args) => {
+        if (args[0] === "/api/v1/overview?q=&filter=all" && localStorage.getItem("omw-browser-notifications") === "true") window.__notificationReads++
+        return fetch(...args)
+      }
+    })
+  })
+})
+
 test("foreground refresh retains the old list, neutral status and stable narrow layout while Manager shares a >5s snapshot", { skip: !enabled, timeout: 25_000 }, async () => {
   await withOverviewPage(async ({ page, origin, id, setInspect, inspectCount }) => {
     const before = await page.locator(".overview-freshness time").getAttribute("datetime")

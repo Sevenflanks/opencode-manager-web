@@ -151,6 +151,7 @@ let notificationRegistration: ServiceWorkerRegistration | null = null
 let notificationReady = false
 let notificationGeneration = 0
 let notificationFlight: Promise<void> | null = null
+let notificationQueued = false
 let notificationNeedsDrain = false
 let notificationController: AbortController | null = null
 let confirmationClosing = false
@@ -769,10 +770,12 @@ async function toggleNotifications(event: Event): Promise<void> {
 async function pollNotifications(): Promise<void> {
   if (!notificationReady || !notificationPreference.enabled() || document.visibilityState !== "visible" || appDisposed || managerStopped.value
     || mutating.value || lifecyclePending.value || switchingSessionId.value) return
-  // 前一輪完成後必須重新檢查頁面與操作狀態；等待期間可能已隱藏、停止或開始 mutation。
-  if (notificationFlight) await notificationFlight
-  if (!notificationReady || !notificationPreference.enabled() || document.visibilityState !== "visible" || appDisposed || managerStopped.value
-    || mutating.value || lifecyclePending.value || switchingSessionId.value) return
+  // 等待者只能排一輪；若各自接著讀，舊回應可能在新回應後把待處理基準改回 0。
+  if (notificationFlight) {
+    notificationQueued = true
+    await notificationFlight
+    return
+  }
   const generation = notificationGeneration
   const controller = new AbortController()
   notificationController = controller
@@ -821,6 +824,10 @@ async function pollNotifications(): Promise<void> {
   await flight
   if (notificationFlight === flight) notificationFlight = null
   if (notificationController === controller) notificationController = null
+  if (notificationQueued) {
+    notificationQueued = false
+    void pollNotifications()
+  }
 }
 
 function handleNotificationHash(): void { void revealNotificationTarget(overview.value.instances) }
