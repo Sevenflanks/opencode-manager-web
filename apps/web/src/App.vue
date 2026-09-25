@@ -113,6 +113,8 @@ const noticeSwipe = createSwipeDismiss("horizontal", 80)
 const errorSwipe = createSwipeDismiss("horizontal", 80)
 type SwipeKind = "panel" | "settings" | "notice" | "error"
 let activeSwipe: { kind: SwipeKind; id: number; x: number; y: number; target: HTMLElement } | null = null
+let suppressMultitouchBackdropClick = false
+let clearSwipeClickGuard: (() => void) | null = null
 const swipes = { panel: panelSwipe, settings: settingsSwipe, notice: noticeSwipe, error: errorSwipe }
 const startPanelOpen = ref(false)
 const startPanelBlocking = ref(false)
@@ -431,6 +433,7 @@ onBeforeUnmount(() => {
   document.removeEventListener("pointerdown", handleDocumentPointerdown, true)
   document.removeEventListener("pointerdown", cancelSwipeOnSecondPointer, true)
   cancelSwipe()
+  clearSwipeClickGuard?.()
   document.removeEventListener("keydown", handleDocumentKeydown, true)
   window.removeEventListener("scroll", handleMobileListScroll)
   document.removeEventListener("visibilitychange", handleForegroundRefresh)
@@ -1453,8 +1456,21 @@ function currentStartPanelMotion(): "pointer" | "reduced" | "none" {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduced" : "pointer"
 }
 
-function handleDocumentPointerdown(): void {
+function handleDocumentPointerdown(event: PointerEvent): void {
   inputModality = "pointer"
+  // 新的 pointerdown 一定屬於下一次操作；不可沿用上一個滑動留下的合成 click 防護。
+  clearSwipeClickGuard?.()
+  // 第二指落在遮罩時，原本的 backdrop 關閉事件不得搶在 pointercancel 前關閉面板。
+  suppressMultitouchBackdropClick = event.pointerType === "touch" && !event.isPrimary
+}
+
+function handleStartBackdropPointerdown(event: PointerEvent): void {
+  if (event.pointerType === "touch" && !event.isPrimary) return
+  closeStartPanel()
+}
+
+function handleSettingsBackdropClick(): void {
+  if (!suppressMultitouchBackdropClick) closeManagerSettings()
 }
 
 function cancelSwipeOnSecondPointer(event: PointerEvent): void {
@@ -1496,21 +1512,32 @@ function moveSwipe(event: PointerEvent, kind: SwipeKind): void {
 function endSwipe(event: PointerEvent, kind: SwipeKind): void {
   if (activeSwipe?.kind !== kind || activeSwipe.id !== event.pointerId) return
   const { x, y } = activeSwipe
-  const dismiss = swipes[kind].end(event.pointerId)
+  const dismiss = swipes[kind].end(event.pointerId, event.clientX, event.clientY)
   cancelSwipe()
   if (!dismiss) return
   // 觸控合成 click 可能在 pointerup 後才送到已卸載的通知下方；只擋這次 click。
   const blockClick = (click: MouseEvent) => {
-    if (click instanceof PointerEvent && click.pointerType === "mouse") return
-    const nearStart = Math.abs(click.clientX - x) <= 24 && Math.abs(click.clientY - y) <= 24
-    const nearEnd = Math.abs(click.clientX - event.clientX) <= 24 && Math.abs(click.clientY - event.clientY) <= 24
-    if (!nearStart && !nearEnd) return
+    if (click instanceof PointerEvent) {
+      if (click.pointerType !== "touch" || click.pointerId !== event.pointerId) return
+    } else {
+      const nearStart = Math.abs(click.clientX - x) <= 24 && Math.abs(click.clientY - y) <= 24
+      const nearEnd = Math.abs(click.clientX - event.clientX) <= 24 && Math.abs(click.clientY - event.clientY) <= 24
+      if (!nearStart && !nearEnd) return
+    }
     click.preventDefault()
     click.stopImmediatePropagation()
-    document.removeEventListener("click", blockClick, true)
+    clear()
   }
+  let timer: number
+  const clear = () => {
+    document.removeEventListener("click", blockClick, true)
+    window.clearTimeout(timer)
+    if (clearSwipeClickGuard === clear) clearSwipeClickGuard = null
+  }
+  clearSwipeClickGuard?.()
+  clearSwipeClickGuard = clear
   document.addEventListener("click", blockClick, true)
-  window.setTimeout(() => document.removeEventListener("click", blockClick, true), 350)
+  timer = window.setTimeout(clear, 350)
   if (kind === "panel") closeStartPanel()
   else if (kind === "settings") closeManagerSettings()
   else if (kind === "notice") clearNotice()
@@ -2060,7 +2087,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
     :data-motion="startPanelMotion"
     :inert="startPanelClosing || undefined"
     :aria-hidden="startPanelClosing || undefined"
-    @pointerdown.self="closeStartPanel()"
+    @pointerdown.self="handleStartBackdropPointerdown($event)"
   >
     <section
       ref="startPanel"
@@ -2128,7 +2155,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
   </div>
   </Transition>
 
-  <div v-if="managerSettingsOpen" class="start-panel-overlay manager-settings-overlay" @click.self="closeManagerSettings()">
+  <div v-if="managerSettingsOpen" class="start-panel-overlay manager-settings-overlay" @click.self="handleSettingsBackdropClick()">
     <section ref="managerSettingsDialog" class="manager-settings" role="dialog" aria-modal="true" aria-labelledby="manager-settings-title" :style="settingsDrag ? { transform: `translateY(${settingsDrag}px)` } : undefined">
       <header class="start-panel-head">
         <div><p class="eyebrow">MANAGER SETTINGS</p><h2 id="manager-settings-title">OMW 設定</h2></div>

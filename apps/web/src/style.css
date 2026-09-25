@@ -379,7 +379,8 @@ h3 { font-size: .95rem; }
   .start-panel { max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); border-radius: 10px 10px 0 0; }
   .start-panel-head { gap: 8px; }
   .start-panel-head > div:first-child { flex: 1 1 auto; overflow-wrap: anywhere; }
-  .panel-drag-area { flex: 0 0 44px; touch-action: pan-x pinch-zoom; }
+  .panel-drag-area { display: grid; flex: 0 0 44px; place-items: center; touch-action: pan-x pinch-zoom; }
+  .panel-drag-area::after { content: ""; width: 26px; height: 4px; border-radius: 999px; background: #849196; pointer-events: none; }
   .manager-settings { max-height: calc(100dvh - 16px); overflow-y: auto; border-radius: 10px 10px 0 0; }
   .credential-form > button, .manager-shutdown-panel > button { width: 100%; }
   .start-panel-enter-from[data-motion="pointer"] .start-panel, .start-panel-leave-to[data-motion="pointer"] .start-panel { transform: translateY(8px); }

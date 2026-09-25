@@ -27,9 +27,9 @@ export function createSwipeDismiss(direction: "down" | "horizontal", threshold: 
         : Math.abs(dx) > Math.abs(dy) ? dx : 0
       return distance
     },
-    end(id: number): boolean {
+    end(id: number, x: number, y: number): boolean {
       if (id !== pointerId) return false
-      const dismiss = Math.abs(distance) >= threshold
+      const dismiss = Math.abs(this.move(id, x, y)) >= threshold
       pointerId = null
       distance = 0
       return dismiss

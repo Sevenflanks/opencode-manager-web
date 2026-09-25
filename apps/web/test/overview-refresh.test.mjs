@@ -747,6 +747,7 @@ test("touch panels dismiss only from the blank header on release, keep drafts, l
   await withOverviewPage(async ({ page }) => {
     await page.getByRole("button", { name: "啟動執行個體" }).first().click()
     const panel = page.getByRole("dialog", { name: "啟動執行個體" })
+    assert.equal(await panel.locator(".panel-drag-area").evaluate((node) => getComputedStyle(node, "::after").content), '""', "mobile grab area must be discoverable")
     await panel.getByRole("textbox", { name: "Shortcut 名稱" }).fill("尚未儲存")
     assert.equal(await page.locator("body").evaluate((body) => body.style.overflow), "hidden")
     await touchSwipe(page, panel.locator(".start-panel-head h2"), 0, 110)
@@ -766,6 +767,7 @@ test("touch panels dismiss only from the blank header on release, keep drafts, l
     await panel.waitFor({ state: "hidden", timeout: 3_000 })
     await page.getByRole("button", { name: "OMW 設定" }).click()
     const settings = page.getByRole("dialog", { name: "OMW 設定" })
+    assert.equal(await settings.locator(".panel-drag-area").evaluate((node) => getComputedStyle(node, "::after").content), '""')
     await settings.locator('input[autocomplete="username"]').fill("test-account")
     assert.equal(await page.locator(".toast-region").evaluate((node) => node.inert), true)
     await touchSwipe(page, settings.locator(".panel-drag-area"), 0, 105)
@@ -901,6 +903,175 @@ test("touch launch panel cannot dismiss during a pending shortcut mutation", { s
       await panel.waitFor({ state: "hidden", timeout: 3_000 })
     } finally {
       release()
+    }
+  })
+})
+
+test("touch review: a second finger on the backdrop cannot dismiss a dragging panel", { skip: !enabled, timeout: 15_000 }, async () => {
+  await withOverviewPage(async ({ page }) => {
+    await page.getByRole("button", { name: "啟動執行個體" }).first().click()
+    const panel = page.getByRole("dialog", { name: "啟動執行個體" })
+    const box = await panel.locator(".panel-drag-area").boundingBox()
+    assert.ok(box)
+    assert.match(await panel.locator(".panel-drag-area").evaluate((node) => getComputedStyle(node).touchAction), /pinch-zoom/)
+    const x = Math.round(box.x + box.width / 2)
+    const y = Math.round(box.y + box.height / 2)
+    const backdrop = { x: 2, y: 250, id: 2 }
+    const cdp = await page.context().newCDPSession(page)
+    try {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + 110, id: 1 }] })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y: y + 110, id: 1 }, backdrop] })
+      assert.equal(await panel.count(), 1, "second finger on backdrop must not close before release")
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [backdrop] })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] })
+      assert.equal(await panel.count(), 1, "pinch/cancel must not dismiss")
+    } finally {
+      await cdp.detach()
+    }
+    await page.mouse.click(2, 250)
+    await panel.waitFor({ state: "hidden", timeout: 3_000 })
+    await page.getByRole("button", { name: "啟動執行個體" }).first().click()
+    await touchAtBackdrop(page, 2, 250)
+    await panel.waitFor({ state: "hidden", timeout: 3_000 })
+  })
+})
+
+async function touchAtBackdrop(page, x, y) {
+  const cdp = await page.context().newCDPSession(page)
+  try {
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] })
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] })
+  } finally {
+    await cdp.detach()
+  }
+}
+
+test("touch review: pointerup position overrides an earlier long panel drag", { skip: !enabled, timeout: 12_000 }, async () => {
+  await withOverviewPage(async ({ page }) => {
+    await page.getByRole("button", { name: "啟動執行個體" }).first().click()
+    const panel = page.getByRole("dialog", { name: "啟動執行個體" })
+    const handle = panel.locator(".panel-drag-area")
+    const box = await handle.boundingBox()
+    assert.ok(box)
+    const x = Math.round(box.x + box.width / 2)
+    const y = Math.round(box.y + box.height / 2)
+    await page.evaluate(() => document.addEventListener("pointerdown", (event) => { if (event.pointerType === "touch") window.__swipeSourceId = event.pointerId }, { capture: true, once: true }))
+    const cdp = await page.context().newCDPSession(page)
+    try {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + 110, id: 1 }] })
+      await handle.evaluate((node, { x, y }) => node.dispatchEvent(new PointerEvent("pointerup", {
+        bubbles: true, pointerType: "touch", pointerId: window.__swipeSourceId, isPrimary: true, clientX: x, clientY: y + 20,
+      })), { x, y })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] })
+      assert.equal(await panel.count(), 1, "release back near the origin must not close the panel")
+    } finally {
+      await cdp.detach()
+    }
+  })
+})
+
+test("touch review: settings ignores a backdrop click synthesized after two fingers", { skip: !enabled, timeout: 15_000 }, async () => {
+  await withOverviewPage(async ({ page }) => {
+    await page.getByRole("button", { name: "OMW 設定" }).click()
+    const settings = page.getByRole("dialog", { name: "OMW 設定" })
+    const box = await settings.locator(".panel-drag-area").boundingBox()
+    assert.ok(box)
+    assert.match(await settings.locator(".panel-drag-area").evaluate((node) => getComputedStyle(node).touchAction), /pinch-zoom/)
+    const x = Math.round(box.x + box.width / 2)
+    const y = Math.round(box.y + box.height / 2)
+    const cdp = await page.context().newCDPSession(page)
+    try {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + 110, id: 1 }] })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y: y + 110, id: 1 }, { x: 2, y: 250, id: 2 }] })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [{ x: 2, y: 250, id: 2 }] })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] })
+    } finally {
+      await cdp.detach()
+    }
+    await page.locator(".manager-settings-overlay").evaluate((node) => node.dispatchEvent(new MouseEvent("click", { bubbles: true })))
+    assert.equal(await settings.count(), 1, "multi-touch's trailing click must not dismiss settings")
+    await page.mouse.click(2, 250)
+    await settings.waitFor({ state: "hidden", timeout: 3_000 })
+    await page.getByRole("button", { name: "OMW 設定" }).click()
+    await touchAtBackdrop(page, 2, 250)
+    await settings.waitFor({ state: "hidden", timeout: 3_000 })
+  })
+})
+
+test("touch review: a fresh tap at the swipe release point is not consumed by the old click guard", { skip: !enabled, timeout: 15_000 }, async () => {
+  await withOverviewPage(async ({ page, id }) => {
+    await page.locator(`.instance-row[data-instance-id="${id}"]`).click()
+    await page.getByRole("button", { name: "執行個體操作" }).click()
+    await page.getByRole("button", { name: "重新檢查", exact: true }).click()
+    const box = await page.locator(".toast-success span").boundingBox()
+    assert.ok(box)
+    const x = Math.round(box.x + box.width / 2)
+    const y = Math.round(box.y + box.height / 2)
+    const releaseX = x - 90
+    const cdp = await page.context().newCDPSession(page)
+    try {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: releaseX, y, id: 1 }] })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] })
+      await page.waitForFunction(() => !document.querySelector(".toast-success"))
+      await page.evaluate(({ x, y }) => {
+        const button = document.createElement("button")
+        button.id = "under-swipe"
+        button.type = "button"
+        button.textContent = "點擊測試"
+        button.style.cssText = `position:fixed;z-index:100;left:${x - 23}px;top:${y - 23}px;width:46px;height:46px`
+        button.addEventListener("click", () => button.dataset.clicks = String(Number(button.dataset.clicks ?? 0) + 1))
+        document.body.append(button)
+      }, { x: releaseX, y })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: releaseX, y, id: 3 }] })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] })
+      // CDP touch input 在此 harness 只產生 pointer 事件；補送相同來源的 click 驗證防點穿守衛。
+      await page.evaluate(({ x, y }) => document.querySelector("#under-swipe")?.dispatchEvent(new PointerEvent("click", {
+        bubbles: true, pointerType: "touch", pointerId: 3, clientX: x, clientY: y,
+      })), { x: releaseX, y })
+      assert.equal(await page.locator("#under-swipe").getAttribute("data-clicks"), "1")
+    } finally {
+      await cdp.detach()
+    }
+  })
+})
+
+test("touch review: the dismissed toast's synthesized click cannot activate its underlying button", { skip: !enabled, timeout: 15_000 }, async () => {
+  await withOverviewPage(async ({ page, id }) => {
+    await page.locator(`.instance-row[data-instance-id="${id}"]`).click()
+    await page.getByRole("button", { name: "執行個體操作" }).click()
+    await page.getByRole("button", { name: "重新檢查", exact: true }).click()
+    const box = await page.locator(".toast-success span").boundingBox()
+    assert.ok(box)
+    const x = Math.round(box.x + box.width / 2)
+    const y = Math.round(box.y + box.height / 2)
+    const releaseX = x - 90
+    await page.evaluate(({ x, y }) => {
+      const button = document.createElement("button")
+      button.id = "under-swipe"
+      button.type = "button"
+      button.style.cssText = `position:fixed;z-index:50;left:${x - 23}px;top:${y - 23}px;width:46px;height:46px`
+      button.addEventListener("click", () => button.dataset.clicked = "yes")
+      document.body.append(button)
+    }, { x: releaseX, y })
+    await page.evaluate(() => {
+      document.addEventListener("pointerdown", (event) => { if (event.pointerType === "touch") window.__swipeSourceId = event.pointerId }, { capture: true, once: true })
+    })
+    const cdp = await page.context().newCDPSession(page)
+    try {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: releaseX, y, id: 1 }] })
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] })
+      await page.evaluate(({ x, y }) => document.querySelector("#under-swipe")?.dispatchEvent(new PointerEvent("click", {
+        bubbles: true, pointerType: "touch", pointerId: window.__swipeSourceId, clientX: x, clientY: y,
+      })), { x: releaseX, y })
+      assert.equal(await page.locator("#under-swipe").getAttribute("data-clicked"), null)
+      await page.locator(".toast-success").waitFor({ state: "hidden", timeout: 3_000 })
+    } finally {
+      await cdp.detach()
     }
   })
 })
