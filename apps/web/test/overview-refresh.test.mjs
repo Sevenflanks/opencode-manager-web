@@ -194,7 +194,7 @@ test("overlapping notification poll requests queue one follow-up read", { skip: 
         const response = await route.fetch()
         const overview = await response.json()
         overview.instances[0].state = "ready"
-        overview.instances[0].summary.pendingQuestions = 0
+        overview.instances[0].summary.pendingQuestions = read === 1 ? 0 : 1
         overview.instances[0].summary.pendingPermissions = 0
         await route.fulfill({ response, json: overview })
       } finally {
@@ -213,11 +213,14 @@ test("overlapping notification poll requests queue one follow-up read", { skip: 
       release?.()
     }
     await page.waitForFunction(() => window.__notificationReads === 3, null, { timeout: 5_000 })
+    await page.waitForFunction(() => window.__shown.length === 1)
     assert.equal(reads, 3, "multiple waiters schedule just one fresh snapshot")
     assert.equal(maxActive, 1, "notification reads never overlap")
+    assert.equal(await page.evaluate(() => window.__shown.length), 1, "one pending round notifies once despite multiple poll attempts")
   }, async (page) => {
     await page.addInitScript(() => {
       window.__notificationReads = 0
+      window.__shown = []
       const interval = window.setInterval.bind(window)
       window.setInterval = (callback, delay, ...args) => {
         if (delay === 5_000) window.__notificationPoll = callback
@@ -226,7 +229,7 @@ test("overlapping notification poll requests queue one follow-up read", { skip: 
       Object.defineProperty(window, "Notification", { configurable: true, value: {
         permission: "granted", requestPermission: async () => "granted",
       } })
-      const registration = { showNotification: async () => {} }
+      const registration = { showNotification: async (title) => { window.__shown.push(title) } }
       Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: {
         register: async () => registration, ready: Promise.resolve(registration),
       } })
