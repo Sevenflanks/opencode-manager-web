@@ -110,6 +110,9 @@ const shortcutName = ref("")
 const shortcutDirectory = ref("")
 const browserPath = ref("")
 const listing = ref<DirectoryListing | null>(null)
+const browsingPath = ref("")
+const browseError = ref("")
+let browseGeneration = 0
 const sessions = ref<SessionRootsResponse>({ roots: [], unknownParent: [] })
 const sessionsLoading = ref(false)
 const sessionsLoaded = ref(false)
@@ -125,8 +128,10 @@ const confirmationDisplay = ref<ConfirmationRequest | null>(null)
 const confirmationAccepting = ref(false)
 const confirmationReturnFocus = ref<HTMLElement | null>(null)
 const managerSettingsOpen = ref(false)
+const managerSettingsDialog = ref<HTMLElement | null>(null)
 const managerSettingsBusy = ref(false)
 const managerSettingsError = ref("")
+const managerSettingsSuccess = ref("")
 const managerUsername = ref("omw")
 const currentManagerPassword = ref("")
 const nextManagerPassword = ref("")
@@ -139,6 +144,8 @@ let connectivityPollTimer: number | undefined
 let noticeTimer: number | undefined
 let appDisposed = false
 let returnFocusElement: HTMLElement | null = null
+let managerSettingsReturnFocus: HTMLElement | null = null
+let managerSettingsBodyOverflow = ""
 let previousBodyOverflow = ""
 let inputModality: "pointer" | "keyboard" = "keyboard"
 let restoreFocusAfterStartPanelClose = true
@@ -400,6 +407,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("popstate", handleMobileHistoryChange)
   mobileBreakpoint?.removeEventListener("change", handleMobileBreakpointChange)
   if (startPanelBlocking.value) document.body.style.overflow = previousBodyOverflow
+  if (managerSettingsOpen.value) document.body.style.overflow = managerSettingsBodyOverflow
   refresh.dispose()
   todoRefresh.dispose()
   connectivityReadGeneration++
@@ -811,16 +819,36 @@ async function deleteShortcut(shortcut: DirectoryShortcut): Promise<void> {
 }
 
 async function browse(directory: string): Promise<void> {
-  beginUserAction()
+  const generation = ++browseGeneration
+  browserPath.value = directory
+  listing.value = null
+  browseError.value = ""
+  browsingPath.value = directory
   try {
-    listing.value = await managerApi.browse(directory)
-    browserPath.value = listing.value.current
+    const result = await managerApi.browse(directory)
+    if (generation !== browseGeneration) return
+    listing.value = result
+    browserPath.value = result.current
   } catch (cause) {
-    actionError.value = message(cause)
+    if (generation === browseGeneration) browseError.value = message(cause)
+  } finally {
+    if (generation === browseGeneration) browsingPath.value = ""
+  }
+}
+
+function updateBrowserPath(value: string): void {
+  browserPath.value = value
+  if (value !== listing.value?.current) {
+    // 輸入一旦離開已確認的目錄，舊 listing 與在途回應都不能再提供啟動目標。
+    browseGeneration++
+    listing.value = null
+    browsingPath.value = ""
+    browseError.value = ""
   }
 }
 
 async function start(directory: string): Promise<void> {
+  if (browsingPath.value || !listing.value || browserPath.value !== listing.value.current || directory !== listing.value.current) return
   await mutate(async () => {
     const instance = await managerApi.start(directory)
     await selectNewInstance(instance)
@@ -1239,15 +1267,32 @@ async function mutate(operation: () => Promise<void>): Promise<void> {
 
 function openManagerSettings(): void {
   beginUserAction()
+  managerSettingsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  managerSettingsBodyOverflow = document.body.style.overflow
+  document.body.style.overflow = "hidden"
   managerSettingsError.value = ""
+  managerSettingsSuccess.value = ""
   currentManagerPassword.value = ""
   nextManagerPassword.value = ""
   confirmManagerPassword.value = ""
   managerSettingsOpen.value = true
+  void nextTick(() => managerSettingsDialog.value?.querySelector<HTMLElement>('input[autocomplete="username"]')?.focus())
+}
+
+function closeManagerSettings(force = false): void {
+  if (!managerSettingsOpen.value || (managerSettingsBusy.value && !force)) return
+  managerSettingsSuccess.value = ""
+  managerSettingsOpen.value = false
+  document.body.style.overflow = managerSettingsBodyOverflow
+  const target = managerSettingsReturnFocus
+  void nextTick(() => {
+    if (target?.isConnected && !target.closest("[inert]")) target.focus({ preventScroll: true })
+  })
 }
 
 async function updateManagerCredentials(): Promise<void> {
   managerSettingsError.value = ""
+  managerSettingsSuccess.value = ""
   if (nextManagerPassword.value !== confirmManagerPassword.value) {
     managerSettingsError.value = "兩次輸入的新密碼不一致。"
     return
@@ -1262,7 +1307,8 @@ async function updateManagerCredentials(): Promise<void> {
     currentManagerPassword.value = ""
     nextManagerPassword.value = ""
     confirmManagerPassword.value = ""
-    showNotice("OMW 帳密已更新；後續請求將使用新帳密，遠端瀏覽器可能要求重新登入。")
+    managerSettingsSuccess.value = "OMW 帳密已更新；後續請求將使用新帳密，遠端瀏覽器可能要求重新登入。"
+    showNotice(managerSettingsSuccess.value)
   } catch (cause) {
     managerSettingsError.value = message(cause)
   } finally {
@@ -1287,7 +1333,7 @@ async function performStopManager(): Promise<void> {
     await managerApi.shutdown()
     window.clearInterval(pollTimer)
     window.clearInterval(connectivityPollTimer)
-    managerSettingsOpen.value = false
+    closeManagerSettings(true)
     managerStopped.value = true
   } catch (cause) {
     managerSettingsError.value = message(cause)
@@ -1397,6 +1443,26 @@ function trapStartPanelFocus(event: KeyboardEvent): void {
 function handleDocumentKeydown(event: KeyboardEvent): void {
   inputModality = "keyboard"
   if (confirmation.value) return
+  if (managerSettingsOpen.value) {
+    if (event.key === "Escape") {
+      event.preventDefault()
+      closeManagerSettings()
+    } else if (event.key === "Tab" && managerSettingsDialog.value) {
+      const focusable = Array.from(managerSettingsDialog.value.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      )).filter((element) => !element.hidden && element.getClientRects().length > 0)
+      const first = focusable[0]
+      const last = focusable.at(-1)
+      if (first && last && (!managerSettingsDialog.value.contains(document.activeElement)
+        || (event.shiftKey && document.activeElement === first)
+        || (!event.shiftKey && document.activeElement === last))) {
+        event.preventDefault()
+        if (event.shiftKey && managerSettingsDialog.value.contains(document.activeElement)) last.focus()
+        else first.focus()
+      }
+    }
+    return
+  }
   if (startPanelOpen.value) trapStartPanelFocus(event)
 }
 
@@ -1486,7 +1552,7 @@ function instancePid(instance: ManagedInstance): string {
 }
 function instanceRowLabel(instance: ManagedInstance): string {
   const identity = instance.pid == null ? `${instancePid(instance)} · ${shortId(instance.id)}` : instancePid(instance)
-  return `${identity} ${instanceTitle(instance)}`
+  return `${instance.projectName || projectFolderName(instance.projectDirectory)}，${instance.projectDirectory}，${instanceTitle(instance)}，${statusHeadline(instance)}，${stateLabel(instance.state)}，${identity}${selectedId.value === instance.id ? '，目前選取' : ''}`
 }
 function actionPending(action: LifecycleAction): boolean { return lifecyclePending.value === action }
 function ensureFreshOverviewMutation(target: "lifecycle" | "action" = "lifecycle"): boolean {
@@ -1538,7 +1604,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
 
 <template>
   <div class="app-root" :data-mobile-view="mobileDetailOpen ? 'detail' : 'list'">
-  <div class="shell" :inert="startPanelBlocking || undefined">
+  <div class="shell" :inert="startPanelBlocking || managerSettingsOpen || undefined">
     <header class="topbar">
       <div class="topbar-brand">
         <p class="eyebrow">WINDOWS · CONNECTIVITY CONSOLE</p>
@@ -1622,7 +1688,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
     <section class="overview-freshness" :data-state="overviewFreshnessState" aria-label="執行個體資料狀態">
       <AlertTriangleIcon v-if="overviewFreshnessState === 'failed' || overviewFreshnessState === 'unavailable'" />
       <RefreshCwIcon v-else />
-      <div>
+      <div :tabindex="overviewError ? 0 : -1">
         <strong v-if="overviewFreshnessState === 'unavailable'">尚未取得執行個體資料</strong>
         <strong v-else-if="overviewFreshnessState === 'initial'">正在取得執行個體資料</strong>
         <strong v-else-if="overviewFreshnessState === 'refreshing'" role="status">正在更新，先顯示上次資料</strong>
@@ -1645,7 +1711,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
           <Button type="submit" variant="outline" size="icon" class="no-press-transform" aria-label="執行搜尋"><SearchIcon /></Button>
         </form>
         <div class="filters" role="group" aria-label="Instance 篩選">
-          <button v-for="item in filters" :key="item.value" type="button" :class="{ active: filter === item.value }" @click="setFilter(item.value)">{{ item.label }}</button>
+          <button v-for="item in filters" :key="item.value" type="button" :class="{ active: filter === item.value }" :aria-pressed="filter === item.value" @click="setFilter(item.value)">{{ item.label }}</button>
         </div>
         <label class="hidden-toggle">
           <input v-model="includeHidden" type="checkbox" @change="loadOverview(true, 'user')">
@@ -1662,6 +1728,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
             :class="{ selected: selectedId === instance.id }"
             :data-instance-id="instance.id"
             :aria-label="instanceRowLabel(instance)"
+            :aria-current="selectedId === instance.id ? 'true' : undefined"
             @click="choose(instance)"
           >
             <span class="state-dot" :data-category="statusCategory(instance)" />
@@ -1685,6 +1752,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
                 :class="{ selected: selectedId === instance.id }"
                 :data-instance-id="instance.id"
                 :aria-label="instanceRowLabel(instance)"
+                :aria-current="selectedId === instance.id ? 'true' : undefined"
                 @click="choose(instance)"
               >
                 <span class="state-dot" :data-category="statusCategory(instance)" />
@@ -1783,6 +1851,12 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
             </template>
             <strong v-else>尚未綁定主 Session</strong>
           </div>
+          <p v-if="statusCategory(selected) === 'attention'" class="status-attention primary-session-attention"><AlertTriangleIcon />{{ attentionSummary(selected) }}</p>
+          <p v-else-if="selected.state === 'ready' && selected.primarySummary.scope === 'unknown'" class="inline-error primary-session-attention"><AlertTriangleIcon />無法確認主 Session 工作範圍。</p>
+          <div class="detail-actions primary-actions">
+            <Button :disabled="opening || selected.state !== 'ready' || !selected.primarySession" @click="openPrimarySession(selected)"><ExternalLinkIcon />{{ opening ? '連線中…' : '進入主 Session' }}</Button>
+            <Button variant="outline" class="new-session-button" :disabled="overviewMutationsBlocked || opening || selected.state !== 'ready'" @click="openNewSession(selected)"><PlusIcon />{{ opening ? '連線中…' : 'New Session' }}</Button>
+          </div>
           <section class="primary-todos" aria-label="主 Session 待辦事項" :aria-busy="todosLoading">
             <div class="primary-todos-head">
               <h3>主 Session 待辦事項</h3>
@@ -1811,12 +1885,6 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
               </div>
             </div>
           </section>
-          <p v-if="statusCategory(selected) === 'attention'" class="status-attention primary-session-attention"><AlertTriangleIcon />{{ attentionSummary(selected) }}</p>
-          <p v-else-if="selected.state === 'ready' && selected.primarySummary.scope === 'unknown'" class="inline-error primary-session-attention"><AlertTriangleIcon />無法確認主 Session 工作範圍。</p>
-          <div class="detail-actions primary-actions">
-            <Button :disabled="opening || selected.state !== 'ready' || !selected.primarySession" @click="openPrimarySession(selected)"><ExternalLinkIcon />{{ opening ? '連線中…' : '進入主 Session' }}</Button>
-            <Button variant="outline" class="new-session-button" :disabled="overviewMutationsBlocked || opening || selected.state !== 'ready'" @click="openNewSession(selected)"><PlusIcon />{{ opening ? '連線中…' : 'New Session' }}</Button>
-          </div>
           <details class="main-session-details">
             <summary>主要 Session 綁定說明</summary>
             <p>主要 Session 固定綁定於這個 Instance；一般活動與 Project 共用歷史不會自動改綁。只有 New Session 或進階手動切換會更新。</p>
@@ -1930,13 +1998,18 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
         <section class="browser-panel">
           <div class="section-heading"><div><p class="eyebrow">DIRECTORY</p><h3>瀏覽並啟動</h3></div></div>
           <form class="browse-form" @submit.prevent="browse(browserPath)">
-            <Input v-model="browserPath" placeholder="輸入 OMW 程序可存取的目錄" aria-label="瀏覽目錄" />
+            <Input :model-value="browserPath" placeholder="輸入 OMW 程序可存取的目錄" aria-label="瀏覽目錄" @update:model-value="updateBrowserPath" />
             <Button type="submit" variant="outline" aria-label="瀏覽"><SearchIcon /><span class="button-label">瀏覽</span></Button>
           </form>
+          <p v-if="browsingPath" class="browse-status" role="status">正在讀取目錄：<code>{{ browsingPath }}</code></p>
+          <div v-else-if="browseError" class="browse-error" role="alert">
+            <p>無法讀取目錄：<code>{{ browserPath }}</code> · {{ browseError }}</p>
+            <Button type="button" variant="outline" size="sm" @click="browse(browserPath)">重試瀏覽</Button>
+          </div>
           <template v-if="listing">
             <div class="current-directory">
               <code>{{ listing.current }}</code>
-              <Button variant="success" :disabled="mutating" @click="start(listing.current)"><PlusIcon />啟動全新 Instance</Button>
+              <Button variant="success" :disabled="mutating || Boolean(browsingPath) || browserPath !== listing.current" @click="start(listing.current)"><PlusIcon />啟動全新 Instance</Button>
             </div>
             <button v-if="listing.parent" type="button" class="directory-row" @click="browse(listing.parent)"><ChevronLeftIcon />上層目錄</button>
             <button v-for="child in listing.children" :key="child.path" type="button" class="directory-row" @click="browse(child.path)"><FolderIcon />{{ child.name }}</button>
@@ -1948,11 +2021,11 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
   </div>
   </Transition>
 
-  <div v-if="managerSettingsOpen" class="start-panel-overlay manager-settings-overlay" @pointerdown.self="managerSettingsOpen = false">
-    <section class="manager-settings" role="dialog" aria-modal="true" aria-labelledby="manager-settings-title">
+  <div v-if="managerSettingsOpen" class="start-panel-overlay manager-settings-overlay" @click.self="closeManagerSettings()">
+    <section ref="managerSettingsDialog" class="manager-settings" role="dialog" aria-modal="true" aria-labelledby="manager-settings-title">
       <header class="start-panel-head">
         <div><p class="eyebrow">MANAGER SETTINGS</p><h2 id="manager-settings-title">OMW 設定</h2></div>
-        <Button variant="ghost" size="icon" aria-label="關閉 OMW 設定" :disabled="managerSettingsBusy" @click="managerSettingsOpen = false"><XIcon /></Button>
+        <Button variant="ghost" size="icon" aria-label="關閉 OMW 設定" :disabled="managerSettingsBusy" @click="closeManagerSettings()"><XIcon /></Button>
       </header>
       <div class="manager-settings-body">
         <form class="credential-form" @submit.prevent="updateManagerCredentials">
@@ -1963,6 +2036,8 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
           <label><span>新密碼（至少 16 字元）</span><Input v-model="nextManagerPassword" type="password" autocomplete="new-password" minlength="16" required /></label>
           <label><span>再次輸入新密碼</span><Input v-model="confirmManagerPassword" type="password" autocomplete="new-password" minlength="16" required /></label>
           <Button type="submit" :disabled="managerSettingsBusy">{{ managerSettingsBusy ? '更新中…' : '更新帳密' }}</Button>
+          <!-- 對話框開啟時 toast-region 為 inert，成功訊息需留在對話框內供讀屏讀取。 -->
+          <p v-if="managerSettingsSuccess" role="status">{{ managerSettingsSuccess }}</p>
         </form>
         <section class="manager-shutdown-panel">
           <div><p class="eyebrow">MANAGER LIFECYCLE</p><h3>停止 OMW</h3></div>
@@ -1989,7 +2064,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
     @after-leave="finishConfirmationLeave"
   />
 
-  <div class="toast-region" aria-live="polite">
+  <div class="toast-region" :inert="managerSettingsOpen || undefined" aria-live="polite">
     <Transition name="toast"><div v-if="notice" class="toast toast-success" role="status">
       <span>{{ notice }}</span><button type="button" aria-label="關閉成功通知" @click="clearNotice"><XIcon /></button>
     </div></Transition>

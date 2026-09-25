@@ -24,6 +24,229 @@ import {
 const enabled = process.env.OMW_BROWSER_TEST === "1"
 const realEnabled = enabled && process.env.OMW_REAL_OPENCODE_TEST === "1"
 
+test("browser usability keeps browsing, settings, mobile detail and overview semantics consistent", { skip: !enabled, timeout: 70_000 }, async () => {
+  const executablePath = process.env.OMW_BROWSER_EXECUTABLE
+  assert.ok(executablePath, "OMW_BROWSER_EXECUTABLE is required")
+  const sandbox = await mkdtemp(path.join(tmpdir(), "omw-browser-usability-"))
+  await Promise.all([
+    mkdir(path.join(sandbox, "browser-profile", "AppData", "Roaming"), { recursive: true }),
+    mkdir(path.join(sandbox, "browser-profile", "AppData", "Local"), { recursive: true }),
+    mkdir(path.join(sandbox, "browser-profile", "Temp"), { recursive: true }),
+  ])
+  const repository = new ManagerRepository(":memory:")
+  const service = new ManagerService(repository, new BrowserRuntime())
+  const port = await freePort()
+  const origin = `http://127.0.0.1:${port}`
+  const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist")
+  const app = buildApp({ service, authority: { hostname: "127.0.0.1", port }, allowedOrigins: new Set([origin]), webRoot })
+  const longTodo = "很長的待辦內容 ".repeat(35)
+  const longVersion = `fixture-${"long-version-".repeat(15)}`
+  const active = fakeManagedInstance({
+    id: "inst-attention", projectName: "專案 A", projectDirectory: "C:\\fixture\\project-a",
+    healthVersion: longVersion,
+    primarySession: { sessionId: "ses-a", title: "工作 A", source: "manual", boundAt: "2026-09-22T00:00:00.000Z" },
+    primarySummary: { scope: "known", activity: "reported-non-busy", busySessions: 0, retrySessions: 0, pendingQuestions: 2, pendingPermissions: 0, error: null },
+  })
+  const stopped = fakeManagedInstance({ id: "inst-stopped", projectName: "專案 B", projectDirectory: "C:\\fixture\\project-b", state: "stopped" })
+  let browser: Browser | undefined
+  let releaseOld = () => {}
+  let releaseCredential = () => {}
+  try {
+    await app.listen({ host: "127.0.0.1", port })
+    browser = await chromium.launch({ executablePath, headless: true, env: createBrowserEnvironment(sandbox) })
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" })
+    let browseFails = false
+    let credentialFails = true
+    let overviewFails = false
+    let credentialPending = false
+    let oldRequestStarted = () => {}
+    const oldStarted = new Promise<void>((resolve) => { oldRequestStarted = resolve })
+    let credentialRequestStarted = () => {}
+    const credentialStarted = new Promise<void>((resolve) => { credentialRequestStarted = resolve })
+    const oldGate = new Promise<void>((resolve) => { releaseOld = resolve })
+    const credentialGate = new Promise<void>((resolve) => { releaseCredential = resolve })
+    await page.route("**/api/v1/**", async (route) => {
+      const request = route.request()
+      const url = new URL(request.url())
+      if (url.pathname === "/api/v1/overview") {
+        await route.fulfill(overviewFails
+          ? { status: 503, json: { error: { code: "UNAVAILABLE", message: "overview unavailable fixture" } } }
+          : { json: { shortcuts: [], instances: [active, stopped] } })
+      } else if (url.pathname === "/api/v1/instances/inst-attention/primary-todos") {
+        await route.fulfill({ json: { instanceId: active.id, sessionId: "ses-a", todos: [{ content: longTodo, status: "pending" }] } })
+      } else if (url.pathname === "/api/v1/directories") {
+        const directory = url.searchParams.get("path") ?? ""
+        if (directory === "C:\\old") {
+          oldRequestStarted()
+          await oldGate
+        }
+        await route.fulfill(browseFails
+          ? { status: 503, json: { error: { code: "BROWSE_FAILED", message: "browse failure fixture" } } }
+          : { json: { current: directory, parent: null, children: [{ name: "child", path: `${directory}\\child` }], errors: [] } })
+      } else if (url.pathname === "/api/v1/settings/credentials" && request.method() === "PATCH") {
+        if (credentialPending) {
+          credentialRequestStarted()
+          await credentialGate
+        }
+        await route.fulfill(credentialFails
+          ? { status: 503, json: { error: { code: "CREDENTIAL_FAILED", message: "credential failure fixture" } } }
+          : { status: 204, body: "" })
+      } else {
+        await route.fulfill({ status: 404, json: { error: { code: "FIXTURE_MISSING", message: url.pathname } } })
+      }
+    })
+    await page.goto(origin, { waitUntil: "networkidle" })
+    const filter = page.getByRole("button", { name: "需處理", exact: true })
+    await filter.focus()
+    await page.keyboard.press("Space")
+    assert.equal(await filter.getAttribute("aria-pressed"), "true")
+    const activeRow = page.locator('[data-instance-id="inst-attention"].instance-row')
+    assert.match(await activeRow.getAttribute("aria-label") ?? "", /專案 A.*需處理.*可連線/)
+    const stoppedRow = page.locator('[data-instance-id="inst-stopped"].instance-row')
+    await page.getByRole("button", { name: "全部", exact: true }).click()
+    await page.locator(".history-toggle").click()
+    assert.match(await stoppedRow.getAttribute("aria-label") ?? "", /專案 B.*已停止/)
+
+    const settingsTrigger = page.getByRole("button", { name: "OMW 設定" })
+    await settingsTrigger.click()
+    const settings = page.getByRole("dialog", { name: "OMW 設定" })
+    const username = settings.getByRole("textbox", { name: "帳號" })
+    assert.equal(await username.evaluate((input) => input === document.activeElement), true)
+    assert.equal(await page.locator(".shell").evaluate((shell) => (shell as HTMLElement).inert), true)
+    const closeSettings = settings.getByRole("button", { name: "關閉 OMW 設定" })
+    await closeSettings.focus()
+    await page.keyboard.press("Shift+Tab")
+    assert.equal(await settings.getByRole("button", { name: "停止 OMW" }).evaluate((button) => button === document.activeElement), true)
+    await settings.getByRole("button", { name: "停止 OMW" }).focus()
+    await page.keyboard.press("Tab")
+    assert.equal(await closeSettings.evaluate((button) => button === document.activeElement), true)
+    await username.fill("omw")
+    await settings.getByRole("textbox", { name: "目前密碼" }).fill("current-password")
+    await settings.getByRole("textbox", { name: "新密碼（至少 16 字元）" }).fill("new-password-123456")
+    await settings.getByRole("textbox", { name: "再次輸入新密碼" }).fill("new-password-123456")
+    credentialPending = true
+    await settings.getByRole("button", { name: "更新帳密" }).click()
+    await credentialStarted
+    assert.equal(await closeSettings.isDisabled(), true)
+    await page.keyboard.press("Escape")
+    await page.mouse.click(2, 2)
+    assert.equal(await settings.isVisible(), true, "busy settings reject Escape and backdrop")
+    releaseCredential()
+    await settings.getByRole("alert").getByText("credential failure fixture").waitFor()
+    credentialPending = false
+    await page.keyboard.press("Escape")
+    await settings.waitFor({ state: "hidden" })
+    assert.equal(await settingsTrigger.evaluate((button) => button === document.activeElement), true)
+    await settingsTrigger.click()
+    credentialFails = false
+    await settings.getByRole("textbox", { name: "目前密碼" }).fill("current-password")
+    await settings.getByRole("textbox", { name: "新密碼（至少 16 字元）" }).fill("new-password-123456")
+    await settings.getByRole("textbox", { name: "再次輸入新密碼" }).fill("new-password-123456")
+    await settings.getByRole("button", { name: "更新帳密" }).click()
+    const settingsSuccess = settings.getByRole("status")
+    await settingsSuccess.getByText(/OMW 帳密已更新/).waitFor()
+    assert.equal(await settingsSuccess.evaluate((status) => status.closest("[inert]") === null), true, "settings success status has no inert ancestor")
+    assert.equal(await page.locator(".shell").evaluate((shell) => (shell as HTMLElement).inert), true, "settings keep the background inert")
+    assert.equal(await page.locator(".toast-region").evaluate((region) => (region as HTMLElement).inert), true, "settings keep the toast inert")
+    await page.mouse.click(2, 2)
+    await settings.waitFor({ state: "hidden" })
+    await page.waitForFunction(() => document.activeElement?.closest(".topbar") !== null)
+    assert.equal(await settingsTrigger.evaluate((button) => button === document.activeElement), true)
+    await settingsTrigger.click()
+    assert.equal(await settings.getByRole("status").count(), 0, "reopened settings do not retain the previous success")
+    await closeSettings.click()
+    await settings.waitFor({ state: "hidden" })
+    await page.waitForFunction(() => document.activeElement?.closest(".topbar") !== null)
+    assert.equal(await settingsTrigger.evaluate((button) => button === document.activeElement), true)
+
+    await page.getByRole("button", { name: "啟動執行個體", exact: true }).first().click()
+    const browseInput = page.getByRole("textbox", { name: "瀏覽目錄" })
+    await browseInput.fill("C:\\ready")
+    await page.getByRole("button", { name: "瀏覽", exact: true }).click()
+    await page.getByText("C:\\ready", { exact: true }).last().waitFor()
+    await browseInput.fill("C:\\old")
+    assert.equal(await page.getByRole("button", { name: "啟動全新 Instance" }).count(), 0, "editing clears old launch target")
+    await page.getByRole("button", { name: "瀏覽", exact: true }).click()
+    await oldStarted
+    assert.match(await page.locator(".browse-status").textContent() ?? "", /C:\\old/)
+    assert.equal(await page.getByRole("button", { name: "啟動全新 Instance" }).count(), 0, "pending browse cannot launch the previous listing")
+    await browseInput.fill("C:\\new")
+    await page.getByRole("button", { name: "瀏覽", exact: true }).click()
+    await page.getByText("C:\\new", { exact: true }).last().waitFor()
+    releaseOld()
+    await page.waitForTimeout(100)
+    assert.equal(await page.locator(".current-directory code").textContent(), "C:\\new", "old response cannot replace newest listing")
+    browseFails = true
+    await page.getByRole("button", { name: "瀏覽", exact: true }).click()
+    await page.locator(".browse-error").getByText(/browse failure fixture/).waitFor()
+    assert.equal(await page.getByRole("button", { name: "啟動全新 Instance" }).count(), 0)
+    browseFails = false
+    await page.getByRole("button", { name: "重試瀏覽" }).click()
+    await page.locator(".current-directory code").getByText("C:\\new", { exact: true }).waitFor()
+    await page.getByRole("button", { name: "關閉啟動面板" }).click()
+    await page.locator(".start-panel-overlay").waitFor({ state: "hidden" })
+
+    await activeRow.focus()
+    await page.keyboard.press("Enter")
+    await page.locator(".primary-todos-timeline li").waitFor()
+    assert.equal(await activeRow.getAttribute("aria-current"), "true")
+    assert.match(await activeRow.getAttribute("aria-label") ?? "", /目前選取/)
+    await page.getByText("Technical info", { exact: true }).focus()
+    await page.keyboard.press("Enter")
+    assert.equal(await page.locator(".identity-strip code").last().textContent(), longVersion)
+    assert.equal(await page.locator(".identity-strip code").last().evaluate((code) => getComputedStyle(code).whiteSpace), "normal")
+    for (const width of [320, 360, 390]) {
+      await page.setViewportSize({ width, height: 844 })
+      for (const fontSize of ["16px", "32px"]) {
+        await page.evaluate((size) => { document.documentElement.style.fontSize = size }, fontSize)
+        const layout = await page.evaluate(() => {
+          const actions = document.querySelector<HTMLElement>(".primary-actions")!
+          const attention = document.querySelector<HTMLElement>(".primary-session-attention")!
+          const todos = document.querySelector<HTMLElement>(".primary-todos")!
+          const summary = document.querySelector<HTMLElement>(".summary-grid")!
+          return {
+            order: attention.compareDocumentPosition(todos) & Node.DOCUMENT_POSITION_FOLLOWING,
+            actionsBeforeTodos: actions.getBoundingClientRect().bottom <= todos.getBoundingClientRect().top,
+            summaryColumns: getComputedStyle(summary).gridTemplateColumns.split(" ").length,
+            pageWidth: document.documentElement.scrollWidth,
+          }
+        })
+        assert.ok(layout.order && layout.actionsBeforeTodos, `${width}px ${fontSize}: attention and actions precede full todos`)
+        assert.equal(layout.summaryColumns, 1, `${width}px ${fontSize}: readable summary does not squeeze three columns`)
+        assert.equal(layout.pageWidth <= width, true, `${width}px ${fontSize}: no horizontal overflow`)
+        assert.equal(await page.locator(".primary-todos-timeline li p").textContent(), longTodo)
+      }
+    }
+    await page.getByRole("button", { name: "返回列表" }).click()
+    for (const width of [320, 360, 390]) {
+      await page.setViewportSize({ width, height: 844 })
+      for (const fontSize of ["16px", "32px"]) {
+        await page.evaluate((size) => { document.documentElement.style.fontSize = size }, fontSize)
+        const freshness = page.locator('.overview-freshness[data-state="fresh"]')
+        const normalHeight = await freshness.evaluate((element) => element.getBoundingClientRect().height)
+        assert.ok(normalHeight > 0 && normalHeight < 128, `${width}px ${fontSize}: fresh state stays compact and visible`)
+        overviewFails = true
+        await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+        await page.locator('.overview-freshness[data-state="failed"] [role="alert"]').waitFor()
+        assert.match(await page.locator(".overview-freshness").textContent() ?? "", /更新失敗.*overview unavailable fixture/s)
+        assert.equal(await page.locator(".overview-freshness").evaluate((element) => element.getBoundingClientRect().height), normalHeight, "refresh failure does not shift the list")
+        const errorBounds = await page.locator(".overview-freshness").evaluate((element) => element.getBoundingClientRect())
+        assert.ok(errorBounds.width > 0 && errorBounds.right <= width, `${width}px ${fontSize}: error stays within its status region`)
+        overviewFails = false
+        await page.getByRole("button", { name: "重試更新" }).click()
+        await page.locator('.overview-freshness[data-state="fresh"]').waitFor()
+      }
+    }
+  } finally {
+    releaseOld()
+    releaseCredential()
+    await browser?.close()
+    await app.close()
+    repository.close()
+    await rm(sandbox, { recursive: true, force: true })
+  }
+})
+
 test("browser process environment excludes host credential variables", () => {
   const sentinelName = "OMW_BROWSER_SENTINEL_PASSWORD"
   const previous = process.env[sentinelName]
@@ -700,7 +923,7 @@ test("mobile list-detail navigation preserves context and separates stopped hist
         noOverflow: document.documentElement.scrollWidth <= window.innerWidth,
       }
     })
-    assert.deepEqual(compactSummary, { sameRow: true, readable: true, noOverflow: true }, "360px summary remains a readable, non-overflowing three-column row")
+    assert.deepEqual(compactSummary, { sameRow: false, readable: true, noOverflow: true }, "360px summary uses readable stacked cards without overflow")
     await page.setViewportSize({ width: 390, height: 844 })
 
     const screenshotDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../.scratch")
@@ -1716,7 +1939,7 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     await page.getByRole("textbox", { name: "搜尋" }).fill("search-only-session-metadata")
     await page.getByRole("button", { name: "執行搜尋" }).click()
     await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 1)
-    assert.equal(await page.getByRole("button", { name: `#11001 ${longTitle}` }).count(), 1, "search must include Session metadata")
+    assert.equal(await page.getByRole("button", { name: /shared-project.*修正跨裝置同步與背景執行狀態.*可連線.*#11001/ }).count(), 1, "search must include Session metadata")
     await page.getByRole("textbox", { name: "搜尋" }).fill("")
       await page.getByRole("button", { name: "執行搜尋" }).click()
       await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 6)
@@ -1746,7 +1969,7 @@ test("Session-first Instance list and recovery actions honor the browser contrac
       await page.getByRole("button", { name: "執行搜尋" }).click()
       await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 6)
 
-      await page.getByRole("button", { name: /inst-a2-.*Stopped primary work/ }).click()
+      await page.getByRole("button", { name: /Stopped primary work.*inst-a2-/ }).click()
       assert.equal(await page.getByRole("button", { name: "接續對話" }).isEnabled(), true, "stopped Instance with primary Session allows resume")
       assert.equal(await page.getByRole("button", { name: "移除紀錄" }).isEnabled(), true, "stopped Instance with released port allows remove")
       assert.match(await page.locator(".lifecycle-reason").textContent() ?? "", /重新檢查：已停止不需檢查.*停止追蹤：可用移除紀錄/)
@@ -1760,7 +1983,7 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     await lifecycleTrigger.click()
     assert.equal(await lifecycleTrigger.getAttribute("aria-expanded"), "false")
     await returnToInstanceList(page)
-    await page.getByRole("button", { name: /inst-a2-.*Stopped primary work/ }).click()
+    await page.getByRole("button", { name: /Stopped primary work.*inst-a2-/ }).click()
     assert.equal(await lifecycleTrigger.getAttribute("aria-expanded"), "false", "explicitly collapsed lifecycle actions stay collapsed across switches")
     await returnToInstanceList(page)
     await page.getByRole("button", { name: /inst-che/ }).click()
@@ -1787,7 +2010,7 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     await returnToInstanceList(page)
     await page.getByRole("textbox", { name: "搜尋" }).fill("fresh-start-project")
     await page.getByRole("button", { name: "執行搜尋" }).click()
-    await page.getByRole("button", { name: /inst-new.*尚未綁定主 Session/ }).click()
+    await page.getByRole("button", { name: /尚未綁定主 Session.*inst-new/ }).click()
     const freshStartButton = page.getByRole("button", { name: "啟動", exact: true })
     assert.equal(await freshStartButton.isEnabled(), true, "stopped unbound Instance offers a fresh start")
     const successContrast = await freshStartButton.evaluate((button) => {
@@ -1831,7 +2054,7 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     await page.getByRole("textbox", { name: "搜尋" }).fill("Local TUI recovery work")
     await page.getByRole("button", { name: "執行搜尋" }).click()
     await page.getByRole("button", { name: "已失聯", exact: true }).click()
-    await page.getByRole("button", { name: /inst-b1-.*Local TUI recovery work/ }).click()
+    await page.getByRole("button", { name: /Local TUI recovery work.*inst-b1-/ }).click()
     const resumeButton = page.getByRole("button", { name: "接續對話" })
     await page.waitForFunction(() => Array.from(document.querySelectorAll<HTMLButtonElement>("button")).some((button) => button.textContent?.includes("接續對話") && !button.disabled))
     await resumeButton.click()
@@ -1849,14 +2072,14 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     await page.locator(".primary-session-card").getByText("Local TUI recovery work", { exact: true }).waitFor()
     assert.equal(await page.locator(".search-row input").inputValue(), "", "resume clears a query that excludes the new Instance")
     assert.equal(await page.locator(".filters button.active").textContent(), "全部", "resume resets the state filter to all")
-    assert.match(await page.locator(".instance-row.selected").getAttribute("aria-label") ?? "", /^#33003 Local TUI recovery work$/, "resume keeps the new ready Instance visible and selected")
+    assert.match(await page.locator(".instance-row.selected").getAttribute("aria-label") ?? "", /Local TUI recovery work.*可連線.*#33003/, "resume keeps the new ready Instance visible and selected")
     assert.equal(popupCount, 0, "resume must not immediately open OpenCode Web")
 
     await returnToInstanceList(page)
     await page.getByRole("textbox", { name: "搜尋" }).fill("Partial resume fixture")
     await page.getByRole("button", { name: "執行搜尋" }).click()
     await page.getByRole("button", { name: "已失聯", exact: true }).click()
-    await page.getByRole("button", { name: /inst-b2-.*Partial resume fixture/ }).click()
+    await page.getByRole("button", { name: /Partial resume fixture.*inst-b2-/ }).click()
     await page.getByRole("button", { name: "接續對話" }).click()
     await page.getByRole("alertdialog", { name: "接續主要對話？" }).getByRole("button", { name: "接續對話" }).click()
     await page.getByText(/新的背景執行個體 inst-par 已啟動，但尚未完成主要 Session 綁定.*列表已顯示並選取.*不要重複接續/).waitFor()
@@ -1864,16 +2087,16 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     await page.locator(".primary-session-card").getByText("尚未綁定主 Session", { exact: true }).waitFor()
     assert.equal(await page.locator(".search-row input").inputValue(), "", "partial resume clears a query that excludes the new Instance")
     assert.equal(await page.locator(".filters button.active").textContent(), "全部", "partial resume resets the state filter to all")
-    assert.equal(await page.locator(".instance-row.selected").getAttribute("aria-label"), "#33003 尚未綁定主 Session", "partial resume keeps the new ready unbound Instance visible and selected")
+    assert.match(await page.locator(".instance-row.selected").getAttribute("aria-label") ?? "", /尚未綁定主 Session.*可連線.*#33003/, "partial resume keeps the new ready unbound Instance visible and selected")
 
     await returnToInstanceList(page)
-    await page.getByRole("button", { name: /inst-b2-.*Partial resume fixture/ }).click()
+    await page.getByRole("button", { name: /Partial resume fixture.*inst-b2-/ }).click()
     await page.getByRole("button", { name: "停止追蹤" }).click()
     await page.getByText("已從主列表隱藏；程序與保留的連線埠不受影響。", { exact: true }).waitFor()
     await page.waitForFunction(() => !document.body.textContent?.includes("Partial resume fixture"))
     await page.getByLabel("顯示已停止追蹤").check()
-    await page.getByRole("button", { name: /inst-b2-.*Partial resume fixture/ }).waitFor()
-    await page.getByRole("button", { name: /inst-b2-.*Partial resume fixture/ }).click()
+    await page.getByRole("button", { name: /Partial resume fixture.*inst-b2-/ }).waitFor()
+    await page.getByRole("button", { name: /Partial resume fixture.*inst-b2-/ }).click()
     await page.getByRole("button", { name: "恢復追蹤" }).click()
     await page.getByText("已恢復追蹤此執行個體。", { exact: true }).waitFor()
 
@@ -2142,7 +2365,8 @@ test("connectivity UI reports, copies, shares, and degrades safely", { skip: !en
     assert.equal(await page.getByRole("textbox", { name: "手動複製遠端入口" }).count(), 0, "AbortError is a cancellation, not a share failure")
 
     await page.locator(".connectivity-details summary").click()
-    assert.match(await page.locator(".connectivity-details").textContent() ?? "", /0\.2\.1-runtime.*1\.88\.2.*v24\.8\.0.*吻合.*2 \/ 2/s)
+    assert.equal(await page.locator(".version-chip").textContent(), "0.2.1-runtime")
+    assert.match(await page.locator(".connectivity-details").textContent() ?? "", /1\.88\.2.*v24\.8\.0.*吻合.*2 \/ 2/s)
     for (const width of [390, 360]) {
       await page.setViewportSize({ width, height: 844 })
       const layout = await page.locator(".connectivity").evaluate((section) => ({
