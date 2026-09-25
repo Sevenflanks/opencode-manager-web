@@ -457,7 +457,13 @@ test("primary Session Todo follows wrapped rows, refresh changes and errors with
         assert.ok(height + 1 >= needed, `${width}px content fits: ${height}px >= ${needed}px`)
         assert.equal(overflow, "clip", "the measured container clips only while its height catches up; settled content remains fully readable")
         const last = await panel.locator(".primary-todos-timeline li").last().boundingBox()
-        if (last) assert.ok((await action.boundingBox()).y >= last.y + last.height - 1, "actions follow the last row")
+        if (last) {
+          const actions = await action.boundingBox()
+          const todoBounds = await panel.boundingBox()
+          const following = await page.locator(".main-session-details").boundingBox()
+          assert.ok(actions.y + actions.height <= todoBounds.y, "primary actions precede the full todo list")
+          assert.ok(following.y >= last.y + last.height - 1, "following content stays below the last todo row")
+        }
       }
 
       if (width === 1440) {
@@ -486,11 +492,11 @@ test("primary Session Todo follows wrapped rows, refresh changes and errors with
         const element = document.querySelector(".primary-todos-content")
         const target = parseFloat(element.style.height)
         if (element.firstElementChild.getBoundingClientRect().height <= prior || target - element.getBoundingClientRect().height <= 24) return false
-        const action = document.querySelector(".primary-actions")
-        return { overflow: getComputedStyle(element).overflowY, excess: element.firstElementChild.getBoundingClientRect().bottom - action.getBoundingClientRect().top }
+        const following = document.querySelector(".main-session-details")
+        return { overflow: getComputedStyle(element).overflowY, excess: element.firstElementChild.getBoundingClientRect().bottom - following.getBoundingClientRect().top }
       }, wideHeight)
       const { overflow: animatedOverflow, excess } = await transitionFrame.jsonValue()
-      assert.ok(excess > 10, "during the resize animation, long rows would otherwise cover the actions")
+      assert.ok(excess > 10, "during the resize animation, long rows would otherwise cover following content")
       assert.equal(animatedOverflow, "clip", "only the transitioning content box clips rows before its target height catches up")
       await readable(narrowWidth)
       const narrowHeight = (await measured()).needed
@@ -551,7 +557,7 @@ test("a hung refresh times out, retains the last successful time, and a retry re
       }
     })
     try {
-      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+      await page.getByRole("button", { name: "重新整理" }).click()
       await page.locator('.overview-freshness[data-state="refreshing"]').waitFor()
       await page.locator('.overview-freshness[data-state="failed"]').waitFor({ timeout: 19_000 })
       assert.match(await page.locator(".overview-freshness").textContent(), /更新逾時/)
