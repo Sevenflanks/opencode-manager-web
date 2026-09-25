@@ -112,6 +112,7 @@ h3 { font-size: .95rem; }
 .filters { display: flex; gap: 5px; overflow-x: auto; padding: 10px 0; }
 .filters button { min-height: 34px; flex: 0 0 auto; border: 1px solid #30373b; border-radius: 999px; padding: 0 11px; color: #8c989e; background: transparent; font-size: .72rem; }
 .filters button.active { border-color: #50c8c6; color: #bdf0ee; background: #17302f; }
+.filter-hint { display: flex; justify-content: space-between; gap: 8px; padding-bottom: 4px; color: #a6b4b0; font-size: .7rem; }
 .hidden-toggle { display: inline-flex; min-height: 36px; align-items: center; gap: 8px; margin-bottom: 8px; color: #929da2; font-size: .72rem; cursor: pointer; }
 .hidden-toggle input { width: 16px; height: 16px; accent-color: #50c8c6; }
 .instance-list { min-width: 0; }
@@ -262,6 +263,8 @@ h3 { font-size: .95rem; }
 .start-panel:focus { outline: none; }
 .start-panel-head { display: flex; min-height: 66px; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #30373b; padding: 10px 14px; }
 .start-panel-head button { min-width: 44px; min-height: 44px; }
+.start-panel-head > div:first-child { min-width: 0; }
+.panel-drag-area { min-width: 44px; min-height: 44px; flex: 1 1 auto; }
 .start-panel-body { min-width: 0; overflow-y: auto; overscroll-behavior: contain; padding: 14px; }
 .start-panel-body .shortcut-rail, .start-panel-body .browser-panel { margin-bottom: 14px; }
 .start-panel-body .browser-panel { margin-bottom: 0; }
@@ -306,6 +309,7 @@ h3 { font-size: .95rem; }
 .toast-success { border-color: #286765; color: #b2eeeb; background: #122322f5; }
 .toast-info { border-color: #536068; color: #d1d9dd; background: #1b2023f5; }
 .toast-error { border-color: #783d36; color: #ffc0b8; background: #291b19f5; }
+.toast { touch-action: pan-y pinch-zoom; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes confirmation-fade-in { from { opacity: 0; } }
@@ -373,6 +377,9 @@ h3 { font-size: .95rem; }
   .shortcut-form input, .shortcut-form input:first-child, .browse-form input { max-width: none; flex: 1 1 100%; }
   .start-panel-overlay { place-items: end center; padding: max(8px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom)); }
   .start-panel { max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); border-radius: 10px 10px 0 0; }
+  .start-panel-head { gap: 8px; }
+  .start-panel-head > div:first-child { flex: 1 1 auto; overflow-wrap: anywhere; }
+  .panel-drag-area { flex: 0 0 44px; touch-action: pan-x pinch-zoom; }
   .manager-settings { max-height: calc(100dvh - 16px); overflow-y: auto; border-radius: 10px 10px 0 0; }
   .credential-form > button, .manager-shutdown-panel > button { width: 100%; }
   .start-panel-enter-from[data-motion="pointer"] .start-panel, .start-panel-leave-to[data-motion="pointer"] .start-panel { transform: translateY(8px); }

@@ -34,6 +34,7 @@ import { ApiError, managerApi } from "@/api"
 import { createOverviewRefresh } from "@/overview-refresh"
 import { createSessionTodoRefresh } from "@/session-todo-refresh"
 import { renderSessionWaiting } from "@/session-waiting"
+import { createSwipeDismiss } from "@/swipe-dismiss"
 import SessionTreeNode from "@/components/SessionTreeNode.vue"
 import { Button } from "@/components/ui/button"
 import ConfirmationDialog from "@/components/ui/dialog/ConfirmationDialog.vue"
@@ -99,6 +100,20 @@ const historyOpen = ref<Set<string>>(new Set())
 const mutating = ref(false)
 const actionError = ref("")
 const notice = ref("")
+const filtersRail = ref<HTMLElement | null>(null)
+const filterCanLeft = ref(false)
+const filterCanRight = ref(false)
+const panelDrag = ref(0)
+const settingsDrag = ref(0)
+const noticeDrag = ref(0)
+const errorDrag = ref(0)
+const panelSwipe = createSwipeDismiss("down", 80)
+const settingsSwipe = createSwipeDismiss("down", 80)
+const noticeSwipe = createSwipeDismiss("horizontal", 80)
+const errorSwipe = createSwipeDismiss("horizontal", 80)
+type SwipeKind = "panel" | "settings" | "notice" | "error"
+let activeSwipe: { kind: SwipeKind; id: number; x: number; y: number; target: HTMLElement } | null = null
+const swipes = { panel: panelSwipe, settings: settingsSwipe, notice: noticeSwipe, error: errorSwipe }
 const startPanelOpen = ref(false)
 const startPanelBlocking = ref(false)
 const startPanelClosing = ref(false)
@@ -240,6 +255,20 @@ const todoCompletedCount = computed(() => primaryTodos.value.filter((todo) => to
 const todoActiveCount = computed(() => primaryTodos.value.filter((todo) => todo.status !== "cancelled").length)
 const todoCancelledCount = computed(() => primaryTodos.value.filter((todo) => todo.status === "cancelled").length)
 const todoMeasuredContent = ref<HTMLElement | null>(null)
+watch(filtersRail, (rail, _, onCleanup) => {
+  if (!rail) return
+  const observer = new ResizeObserver(updateFilterHints)
+  observer.observe(rail)
+  rail.querySelectorAll("button").forEach((button) => observer.observe(button))
+  updateFilterHints()
+  onCleanup(() => observer.disconnect())
+}, { flush: "post" })
+function updateFilterHints(): void {
+  const rail = filtersRail.value
+  if (!rail) return
+  filterCanLeft.value = rail.scrollLeft > 1
+  filterCanRight.value = rail.scrollLeft + rail.clientWidth < rail.scrollWidth - 1
+}
 watch(todoMeasuredContent, (content, _, onCleanup) => {
   if (!content) return
   const container = content.parentElement
@@ -374,6 +403,7 @@ onMounted(async () => {
   if (isMobileViewport()) window.history.scrollRestoration = "manual"
   mobileBreakpoint.addEventListener("change", handleMobileBreakpointChange)
   document.addEventListener("pointerdown", handleDocumentPointerdown, true)
+  document.addEventListener("pointerdown", cancelSwipeOnSecondPointer, true)
   document.addEventListener("keydown", handleDocumentKeydown, true)
   window.addEventListener("scroll", handleMobileListScroll, { passive: true })
   window.addEventListener("popstate", handleMobileHistoryChange)
@@ -399,6 +429,8 @@ onBeforeUnmount(() => {
   window.clearInterval(connectivityPollTimer)
   window.clearTimeout(noticeTimer)
   document.removeEventListener("pointerdown", handleDocumentPointerdown, true)
+  document.removeEventListener("pointerdown", cancelSwipeOnSecondPointer, true)
+  cancelSwipe()
   document.removeEventListener("keydown", handleDocumentKeydown, true)
   window.removeEventListener("scroll", handleMobileListScroll)
   document.removeEventListener("visibilitychange", handleForegroundRefresh)
@@ -1266,6 +1298,7 @@ async function mutate(operation: () => Promise<void>): Promise<void> {
 }
 
 function openManagerSettings(): void {
+  cancelSwipe()
   beginUserAction()
   managerSettingsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
   managerSettingsBodyOverflow = document.body.style.overflow
@@ -1281,6 +1314,7 @@ function openManagerSettings(): void {
 
 function closeManagerSettings(force = false): void {
   if (!managerSettingsOpen.value || (managerSettingsBusy.value && !force)) return
+  cancelSwipe()
   managerSettingsSuccess.value = ""
   managerSettingsOpen.value = false
   document.body.style.overflow = managerSettingsBodyOverflow
@@ -1348,17 +1382,24 @@ function beginUserAction(): void {
 }
 
 function showNotice(value: string): void {
+  if (activeSwipe?.kind === "notice") cancelSwipe()
   window.clearTimeout(noticeTimer)
   notice.value = value
   noticeTimer = window.setTimeout(() => { notice.value = "" }, 6_000)
 }
 
 function clearNotice(): void {
+  if (activeSwipe?.kind === "notice") cancelSwipe()
   window.clearTimeout(noticeTimer)
   notice.value = ""
 }
 
+watch(actionError, () => {
+  if (activeSwipe?.kind === "error") cancelSwipe()
+})
+
 function openStartPanel(): void {
+  cancelSwipe()
   beginUserAction()
   if (!startPanelBlocking.value) {
     returnFocusElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -1378,6 +1419,7 @@ function openStartPanel(): void {
 
 function closeStartPanel(restoreFocus = true, force = false): void {
   if ((mutating.value && !force) || startPanelClosing.value) return
+  cancelSwipe()
   startPanelMotion.value = currentStartPanelMotion()
   restoreFocusAfterStartPanelClose = restoreFocus
   startPanelClosing.value = true
@@ -1413,6 +1455,66 @@ function currentStartPanelMotion(): "pointer" | "reduced" | "none" {
 
 function handleDocumentPointerdown(): void {
   inputModality = "pointer"
+}
+
+function cancelSwipeOnSecondPointer(event: PointerEvent): void {
+  if (activeSwipe && event.pointerId !== activeSwipe.id) cancelSwipe()
+}
+
+function setSwipeDrag(kind: SwipeKind, distance: number): void {
+  if (kind === "panel") panelDrag.value = distance
+  else if (kind === "settings") settingsDrag.value = distance
+  else if (kind === "notice") noticeDrag.value = distance
+  else errorDrag.value = distance
+}
+
+function cancelSwipe(): void {
+  if (!activeSwipe) return
+  const { kind, id, target } = activeSwipe
+  swipes[kind].cancel()
+  if (target.hasPointerCapture(id)) target.releasePointerCapture(id)
+  setSwipeDrag(kind, 0)
+  activeSwipe = null
+}
+
+function startSwipe(event: PointerEvent, kind: SwipeKind): void {
+  if (event.pointerType !== "touch" || !event.isPrimary || activeSwipe
+    || (kind === "panel" && (!isMobileViewport() || mutating.value || startPanelClosing.value))
+    || (kind === "settings" && (!isMobileViewport() || managerSettingsBusy.value))
+    || ((kind === "notice" || kind === "error") && (managerSettingsOpen.value || (event.target as Element).closest("button")))) return
+  const target = event.currentTarget as HTMLElement
+  if (!swipes[kind].start(event.pointerId, event.clientX, event.clientY)) return
+  activeSwipe = { kind, id: event.pointerId, x: event.clientX, y: event.clientY, target }
+  target.setPointerCapture(event.pointerId)
+}
+
+function moveSwipe(event: PointerEvent, kind: SwipeKind): void {
+  if (activeSwipe?.kind !== kind || activeSwipe.id !== event.pointerId) return
+  setSwipeDrag(kind, swipes[kind].move(event.pointerId, event.clientX, event.clientY))
+}
+
+function endSwipe(event: PointerEvent, kind: SwipeKind): void {
+  if (activeSwipe?.kind !== kind || activeSwipe.id !== event.pointerId) return
+  const { x, y } = activeSwipe
+  const dismiss = swipes[kind].end(event.pointerId)
+  cancelSwipe()
+  if (!dismiss) return
+  // 觸控合成 click 可能在 pointerup 後才送到已卸載的通知下方；只擋這次 click。
+  const blockClick = (click: MouseEvent) => {
+    if (click instanceof PointerEvent && click.pointerType === "mouse") return
+    const nearStart = Math.abs(click.clientX - x) <= 24 && Math.abs(click.clientY - y) <= 24
+    const nearEnd = Math.abs(click.clientX - event.clientX) <= 24 && Math.abs(click.clientY - event.clientY) <= 24
+    if (!nearStart && !nearEnd) return
+    click.preventDefault()
+    click.stopImmediatePropagation()
+    document.removeEventListener("click", blockClick, true)
+  }
+  document.addEventListener("click", blockClick, true)
+  window.setTimeout(() => document.removeEventListener("click", blockClick, true), 350)
+  if (kind === "panel") closeStartPanel()
+  else if (kind === "settings") closeManagerSettings()
+  else if (kind === "notice") clearNotice()
+  else actionError.value = ""
 }
 
 function trapStartPanelFocus(event: KeyboardEvent): void {
@@ -1710,9 +1812,12 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
           <Input v-model="query" placeholder="搜尋 Project、path、Instance、Session" aria-label="搜尋" />
           <Button type="submit" variant="outline" size="icon" class="no-press-transform" aria-label="執行搜尋"><SearchIcon /></Button>
         </form>
-        <div class="filters" role="group" aria-label="Instance 篩選">
+        <div ref="filtersRail" class="filters" role="group" aria-label="Instance 篩選" @scroll.passive="updateFilterHints">
           <button v-for="item in filters" :key="item.value" type="button" :class="{ active: filter === item.value }" :aria-pressed="filter === item.value" @click="setFilter(item.value)">{{ item.label }}</button>
         </div>
+        <p v-if="filterCanLeft || filterCanRight" class="filter-hint">
+          <span v-if="filterCanLeft">← 向左捲動</span><span v-if="filterCanRight">向右捲動 →</span>
+        </p>
         <label class="hidden-toggle">
           <input v-model="includeHidden" type="checkbox" @change="loadOverview(true, 'user')">
           <span>顯示已停止追蹤</span>
@@ -1960,6 +2065,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
     <section
       ref="startPanel"
       class="start-panel"
+      :style="panelDrag ? { transform: `translateY(${panelDrag}px)` } : undefined"
       role="dialog"
       aria-modal="true"
       aria-labelledby="start-panel-title"
@@ -1967,6 +2073,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
     >
       <header class="start-panel-head">
         <div><p class="eyebrow">START INSTANCE</p><h2 id="start-panel-title">啟動執行個體</h2></div>
+        <div class="panel-drag-area" aria-hidden="true" @pointerdown="startSwipe($event, 'panel')" @pointermove="moveSwipe($event, 'panel')" @pointerup="endSwipe($event, 'panel')" @pointercancel="cancelSwipe" @lostpointercapture="cancelSwipe" />
         <Button variant="ghost" size="icon" aria-label="關閉啟動面板" :disabled="mutating" @click="closeStartPanel()"><XIcon /></Button>
       </header>
       <div class="start-panel-body">
@@ -2022,9 +2129,10 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
   </Transition>
 
   <div v-if="managerSettingsOpen" class="start-panel-overlay manager-settings-overlay" @click.self="closeManagerSettings()">
-    <section ref="managerSettingsDialog" class="manager-settings" role="dialog" aria-modal="true" aria-labelledby="manager-settings-title">
+    <section ref="managerSettingsDialog" class="manager-settings" role="dialog" aria-modal="true" aria-labelledby="manager-settings-title" :style="settingsDrag ? { transform: `translateY(${settingsDrag}px)` } : undefined">
       <header class="start-panel-head">
         <div><p class="eyebrow">MANAGER SETTINGS</p><h2 id="manager-settings-title">OMW 設定</h2></div>
+        <div class="panel-drag-area" aria-hidden="true" @pointerdown="startSwipe($event, 'settings')" @pointermove="moveSwipe($event, 'settings')" @pointerup="endSwipe($event, 'settings')" @pointercancel="cancelSwipe" @lostpointercapture="cancelSwipe" />
         <Button variant="ghost" size="icon" aria-label="關閉 OMW 設定" :disabled="managerSettingsBusy" @click="closeManagerSettings()"><XIcon /></Button>
       </header>
       <div class="manager-settings-body">
@@ -2065,10 +2173,10 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
   />
 
   <div class="toast-region" :inert="managerSettingsOpen || undefined" aria-live="polite">
-    <Transition name="toast"><div v-if="notice" class="toast toast-success" role="status">
+    <Transition name="toast"><div v-if="notice" class="toast toast-success" role="status" :style="noticeDrag ? { transform: `translateX(${noticeDrag}px)` } : undefined" @pointerdown="startSwipe($event, 'notice')" @pointermove="moveSwipe($event, 'notice')" @pointerup="endSwipe($event, 'notice')" @pointercancel="cancelSwipe" @lostpointercapture="cancelSwipe">
       <span>{{ notice }}</span><button type="button" aria-label="關閉成功通知" @click="clearNotice"><XIcon /></button>
     </div></Transition>
-    <Transition name="toast"><div v-if="actionError" class="toast toast-error" role="alert">
+    <Transition name="toast"><div v-if="actionError" class="toast toast-error" role="alert" :style="errorDrag ? { transform: `translateX(${errorDrag}px)` } : undefined" @pointerdown="startSwipe($event, 'error')" @pointermove="moveSwipe($event, 'error')" @pointerup="endSwipe($event, 'error')" @pointercancel="cancelSwipe" @lostpointercapture="cancelSwipe">
       <AlertTriangleIcon /><span>{{ actionError }}</span><button type="button" aria-label="關閉錯誤通知" @click="actionError = ''"><XIcon /></button>
     </div></Transition>
   </div>
