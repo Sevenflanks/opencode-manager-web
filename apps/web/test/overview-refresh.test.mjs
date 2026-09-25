@@ -132,15 +132,13 @@ test("global notification uses unfiltered instance-wide polling, persists prefer
   })
 })
 
-test("notification registration interrupted by a hidden page restarts on return without prompting", { skip: !enabled, timeout: 15_000 }, async () => {
+test("notification registration interrupted by pagehide restarts on return without prompting", { skip: !enabled, timeout: 15_000 }, async () => {
   await withOverviewPage(async ({ page }) => {
     await page.waitForFunction(() => typeof window.__releaseRegister === "function")
     await page.waitForFunction(() => window.__pollInstalled === true)
     await page.evaluate(() => {
-      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" })
-      document.dispatchEvent(new Event("visibilitychange"))
-      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" })
-      document.dispatchEvent(new Event("visibilitychange"))
+      window.dispatchEvent(new Event("pagehide"))
+      window.dispatchEvent(new Event("pageshow"))
       window.__releaseRegister()
     })
     await page.waitForFunction(() => window.__registrations === 2, null, { timeout: 8_000 })
@@ -169,6 +167,92 @@ test("notification registration interrupted by a hidden page restarts on return 
           : Promise.resolve(registration),
         ready: Promise.resolve(registration),
       } })
+    })
+  })
+})
+
+test("hidden open page detects 0 to pending once; foreground and pagehide rebuild baselines", { skip: !enabled, timeout: 15_000 }, async () => {
+  let pending = 0
+  let reads = 0
+  await withOverviewPage(async ({ page }) => {
+    await page.waitForFunction(() => typeof window.__notificationPoll === "function" && window.__notificationReads >= 2, null, { timeout: 3_000 })
+    await page.waitForTimeout(50)
+    assert.deepEqual(await page.evaluate(() => window.__shown), [])
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" })
+      document.dispatchEvent(new Event("visibilitychange"))
+    })
+    pending = 1
+    await page.evaluate(() => window.__notificationPoll())
+    await page.waitForFunction(() => window.__shown.length === 1, null, { timeout: 3_000 })
+    await page.evaluate(() => window.__notificationPoll())
+    await page.waitForFunction(() => window.__notificationReads >= 4, null, { timeout: 3_000 })
+    assert.equal(await page.evaluate(() => window.__shown.length), 1, "the same hidden pending round notifies only once")
+
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" })
+      document.dispatchEvent(new Event("visibilitychange"))
+    })
+    await page.waitForFunction(() => window.__notificationReads >= 5, null, { timeout: 3_000 })
+    await page.waitForTimeout(50)
+    assert.equal(await page.evaluate(() => window.__shown.length), 1, "foreground refresh does not replay hidden pending work")
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" })
+      document.dispatchEvent(new Event("visibilitychange"))
+    })
+    await page.evaluate(() => window.dispatchEvent(new Event("pagehide")))
+    const before = reads
+    pending = 0
+    await page.evaluate(() => window.__notificationPoll())
+    assert.equal(reads, before, "pagehide stops polling even if a timer fires")
+    pending = 1
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" })
+      document.dispatchEvent(new Event("visibilitychange"))
+      window.dispatchEvent(new Event("pageshow"))
+    })
+    await page.waitForFunction(() => window.__notificationReads >= 6, null, { timeout: 3_000 })
+    await page.waitForTimeout(50)
+    assert.equal(await page.evaluate(() => window.__shown.length), 1, "returning foreground baselines existing pending work")
+    pending = 0
+    const beforeClear = await page.evaluate(() => window.__notificationReads)
+    await page.evaluate(() => window.__notificationPoll())
+    await page.waitForFunction((before) => window.__notificationReads > before, beforeClear, { timeout: 3_000 })
+    await page.waitForTimeout(100)
+    pending = 1
+    await page.evaluate(() => window.__notificationPoll())
+    await page.waitForFunction(() => window.__shown.length === 2, null, { timeout: 3_000 })
+  }, async (page) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("omw-browser-notifications", "true")
+      window.__notificationReads = 0
+      window.__shown = []
+      const interval = window.setInterval.bind(window)
+      window.setInterval = (callback, delay, ...args) => {
+        if (delay === 5_000) window.__notificationPoll = callback
+        return interval(callback, delay, ...args)
+      }
+      Object.defineProperty(window, "Notification", { configurable: true, value: {
+        permission: "granted", requestPermission: async () => "granted",
+      } })
+      const registration = { showNotification: async (title) => { window.__shown.push(title) } }
+      Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: {
+        register: async () => registration, ready: Promise.resolve(registration),
+      } })
+      const fetch = window.fetch.bind(window)
+      window.fetch = async (...args) => {
+        if (args[0] === "/api/v1/overview?q=&filter=all") window.__notificationReads++
+        return fetch(...args)
+      }
+    })
+    await page.route("**/api/v1/overview?**", async (route) => {
+      const response = await route.fetch()
+      const overview = await response.json()
+      overview.instances[0].state = "ready"
+      overview.instances[0].summary.pendingQuestions = pending
+      overview.instances[0].summary.pendingPermissions = 0
+      await route.fulfill({ response, json: overview })
+      reads++
     })
   })
 })
@@ -719,7 +803,8 @@ test("a hung refresh times out, retains the last successful time, and a retry re
       }
     })
     try {
-      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+      // 列已顯示不代表 onMounted 的 visibilitychange listener 已註冊；此例用按鈕直接測逾時與重試。
+      await page.getByRole("button", { name: "重新整理", exact: true }).click()
       await page.locator('.overview-freshness[data-state="refreshing"]').waitFor()
       await page.locator('.overview-freshness[data-state="failed"]').waitFor({ timeout: 19_000 })
       assert.match(await page.locator(".overview-freshness").textContent(), /更新逾時/)

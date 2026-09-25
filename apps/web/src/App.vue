@@ -149,6 +149,7 @@ const notificationBusy = ref(false)
 const pendingTracker = createPendingTracker()
 let notificationRegistration: ServiceWorkerRegistration | null = null
 let notificationReady = false
+let notificationPageActive = true
 let notificationGeneration = 0
 let notificationFlight: Promise<void> | null = null
 let notificationQueued = false
@@ -407,13 +408,15 @@ onMounted(async () => {
   if (overviewLoaded && isMobileViewport() && mobileHistoryView() === "list") await restoreMobileListScroll()
   if (appDisposed) return
   document.addEventListener("visibilitychange", handleForegroundRefresh)
-  window.addEventListener("pageshow", handleForegroundRefresh)
+  window.addEventListener("pageshow", handlePageShow)
   window.addEventListener("pagehide", handlePageHide)
+  document.addEventListener("freeze", handlePageHide)
+  document.addEventListener("resume", handlePageShow)
   connectivityPollTimer = window.setInterval(() => void loadConnectivity("background"), 30_000)
   pollTimer = window.setInterval(() => {
     if (!mutating.value && !lifecyclePending.value && !switchingSessionId.value) void loadOverview(false, "background")
     notificationStatus.value = notificationPreference.status()
-    if (notificationPreference.enabled() && document.visibilityState === "visible") {
+    if (notificationPreference.enabled() && notificationPageActive) {
       if (notificationReady) void pollNotifications()
       else if (!notificationBusy.value) void startNotifications()
     }
@@ -430,8 +433,10 @@ onBeforeUnmount(() => {
   document.removeEventListener("keydown", handleDocumentKeydown, true)
   window.removeEventListener("scroll", handleMobileListScroll)
   document.removeEventListener("visibilitychange", handleForegroundRefresh)
-  window.removeEventListener("pageshow", handleForegroundRefresh)
+  window.removeEventListener("pageshow", handlePageShow)
   window.removeEventListener("pagehide", handlePageHide)
+  document.removeEventListener("freeze", handlePageHide)
+  document.removeEventListener("resume", handlePageShow)
   window.removeEventListener("popstate", handleMobileHistoryChange)
   mobileBreakpoint?.removeEventListener("change", handleMobileBreakpointChange)
   if (startPanelBlocking.value) document.body.style.overflow = previousBodyOverflow
@@ -690,10 +695,11 @@ async function handleMobileHistoryChange(): Promise<void> {
 function handleForegroundRefresh(): void {
   refresh.foreground()
   syncPrimaryTodos()
-  if (document.visibilityState !== "visible") { suspendNotifications(); persistMobileListHistory(); return }
+  // hidden 仍是開啟的頁面：保留已知 0 基準，讓瀏覽器允許的背景輪詢能偵測新事項。
+  if (document.visibilityState !== "visible") { persistMobileListHistory(); return }
   notificationStatus.value = notificationPreference.status()
-  if (notificationReady && notificationPreference.enabled()) { pendingTracker.reset(); void pollNotifications() }
-  else if (notificationPreference.enabled() && !notificationBusy.value) void startNotifications()
+  if (notificationPageActive && notificationReady && notificationPreference.enabled()) { suspendNotifications(); void pollNotifications() }
+  else if (notificationPageActive && notificationPreference.enabled() && !notificationBusy.value) void startNotifications()
   connectivityStale.value = connectivity.value !== null
   if (overviewStale.value && confirmation.value?.requiresFreshOverview) {
     ensureFreshOverviewMutation(confirmation.value.freshnessErrorTarget)
@@ -703,8 +709,14 @@ function handleForegroundRefresh(): void {
 }
 
 function handlePageHide(): void {
+  notificationPageActive = false
   suspendNotifications()
   persistMobileListHistory()
+}
+
+function handlePageShow(): void {
+  notificationPageActive = true
+  handleForegroundRefresh()
 }
 
 function suspendNotifications(): void {
@@ -729,7 +741,7 @@ async function startNotifications(): Promise<void> {
       } finally { window.clearTimeout(timer) }
       if (typeof notificationRegistration.showNotification !== "function") throw new Error("無法使用系統通知")
     }
-    if (generation !== notificationGeneration || !notificationPreference.enabled()) return
+    if (generation !== notificationGeneration || !notificationPageActive || !notificationPreference.enabled()) return
     notificationReady = true
     notificationStatus.value = notificationPreference.status()
     pendingTracker.reset()
@@ -768,7 +780,7 @@ async function toggleNotifications(event: Event): Promise<void> {
 }
 
 async function pollNotifications(): Promise<void> {
-  if (!notificationReady || !notificationPreference.enabled() || document.visibilityState !== "visible" || appDisposed || managerStopped.value
+  if (!notificationReady || !notificationPreference.enabled() || !notificationPageActive || appDisposed || managerStopped.value
     || mutating.value || lifecyclePending.value || switchingSessionId.value) return
   // 等待者只能排一輪；若各自接著讀，舊回應可能在新回應後把待處理基準改回 0。
   if (notificationFlight) {
@@ -788,10 +800,10 @@ async function pollNotifications(): Promise<void> {
         notificationNeedsDrain = false
       }
       const response = await managerApi.notificationOverview(controller.signal)
-      if (generation !== notificationGeneration || document.visibilityState !== "visible" || !notificationPreference.enabled()) return
+      if (generation !== notificationGeneration || !notificationPageActive || !notificationPreference.enabled()) return
       notificationError.value = ""
       for (const event of pendingTracker.observe(response.instances)) {
-        if (generation !== notificationGeneration || !notificationPreference.enabled()) break
+        if (generation !== notificationGeneration || !notificationPageActive || !notificationPreference.enabled()) break
         const title = "有待回答或待授權事項"
         const body = `執行個體 ${event.instanceId}：${event.count} 筆待處理`
         const url = `${window.location.origin}/#instance=${encodeURIComponent(event.instanceId)}`
