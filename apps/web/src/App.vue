@@ -131,6 +131,7 @@ const managerSettingsOpen = ref(false)
 const managerSettingsDialog = ref<HTMLElement | null>(null)
 const managerSettingsBusy = ref(false)
 const managerSettingsError = ref("")
+const managerSettingsSuccess = ref("")
 const managerUsername = ref("omw")
 const currentManagerPassword = ref("")
 const nextManagerPassword = ref("")
@@ -1270,6 +1271,7 @@ function openManagerSettings(): void {
   managerSettingsBodyOverflow = document.body.style.overflow
   document.body.style.overflow = "hidden"
   managerSettingsError.value = ""
+  managerSettingsSuccess.value = ""
   currentManagerPassword.value = ""
   nextManagerPassword.value = ""
   confirmManagerPassword.value = ""
@@ -1279,6 +1281,7 @@ function openManagerSettings(): void {
 
 function closeManagerSettings(force = false): void {
   if (!managerSettingsOpen.value || (managerSettingsBusy.value && !force)) return
+  managerSettingsSuccess.value = ""
   managerSettingsOpen.value = false
   document.body.style.overflow = managerSettingsBodyOverflow
   const target = managerSettingsReturnFocus
@@ -1289,6 +1292,7 @@ function closeManagerSettings(force = false): void {
 
 async function updateManagerCredentials(): Promise<void> {
   managerSettingsError.value = ""
+  managerSettingsSuccess.value = ""
   if (nextManagerPassword.value !== confirmManagerPassword.value) {
     managerSettingsError.value = "兩次輸入的新密碼不一致。"
     return
@@ -1303,7 +1307,8 @@ async function updateManagerCredentials(): Promise<void> {
     currentManagerPassword.value = ""
     nextManagerPassword.value = ""
     confirmManagerPassword.value = ""
-    showNotice("OMW 帳密已更新；後續請求將使用新帳密，遠端瀏覽器可能要求重新登入。")
+    managerSettingsSuccess.value = "OMW 帳密已更新；後續請求將使用新帳密，遠端瀏覽器可能要求重新登入。"
+    showNotice(managerSettingsSuccess.value)
   } catch (cause) {
     managerSettingsError.value = message(cause)
   } finally {
@@ -2031,6 +2036,8 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
           <label><span>新密碼（至少 16 字元）</span><Input v-model="nextManagerPassword" type="password" autocomplete="new-password" minlength="16" required /></label>
           <label><span>再次輸入新密碼</span><Input v-model="confirmManagerPassword" type="password" autocomplete="new-password" minlength="16" required /></label>
           <Button type="submit" :disabled="managerSettingsBusy">{{ managerSettingsBusy ? '更新中…' : '更新帳密' }}</Button>
+          <!-- 對話框開啟時 toast-region 為 inert，成功訊息需留在對話框內供讀屏讀取。 -->
+          <p v-if="managerSettingsSuccess" role="status">{{ managerSettingsSuccess }}</p>
         </form>
         <section class="manager-shutdown-panel">
           <div><p class="eyebrow">MANAGER LIFECYCLE</p><h3>停止 OMW</h3></div>
