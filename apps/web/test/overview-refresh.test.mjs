@@ -996,20 +996,50 @@ async function touchSwipe(page, locator, dx, dy, cancel = false) {
   }
 }
 
+async function waitForPanelDragReset(page, dragArea, baseline) {
+  // inline transform 清空不代表 CSS 已復位；等回原位置且起手點命中拖曳區，避免下一次手勢打到內容區。
+  const target = await dragArea.elementHandle()
+  assert.ok(target, "panel drag area exists")
+  await page.waitForFunction(async ({ target, baseline }) => {
+    const ready = () => {
+      if (!target.isConnected) return null
+      const box = target.getBoundingClientRect()
+      const x = Math.round(box.x + box.width / 2)
+      const y = Math.round(box.y + box.height / 2)
+      const hit = document.elementFromPoint(x, y)
+      if (Math.abs(box.x - baseline.x) > 1 || Math.abs(box.y - baseline.y) > 1
+        || Math.abs(box.width - baseline.width) > 1 || Math.abs(box.height - baseline.height) > 1
+        || !(hit === target || target.contains(hit))) return null
+      return { x: box.x, y: box.y }
+    }
+    const first = ready()
+    if (!first) return false
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    const next = ready()
+    return next && Math.abs(next.x - first.x) < 1 && Math.abs(next.y - first.y) < 1
+  }, { target, baseline }, { timeout: 3_000 })
+}
+
 test("touch panels dismiss only from the blank header on release, keep drafts, lock and restore focus", { skip: !enabled, timeout: 20_000 }, async () => {
   await withOverviewPage(async ({ page }) => {
     await page.getByRole("button", { name: "啟動執行個體" }).first().click()
     const panel = page.getByRole("dialog", { name: "啟動執行個體" })
-    assert.equal(await panel.locator(".panel-drag-area").evaluate((node) => getComputedStyle(node, "::after").content), '""', "mobile grab area must be discoverable")
+    const dragArea = panel.locator(".panel-drag-area")
+    assert.equal(await dragArea.evaluate((node) => getComputedStyle(node, "::after").content), '""', "mobile grab area must be discoverable")
     await panel.getByRole("textbox", { name: "Shortcut 名稱" }).fill("尚未儲存")
     assert.equal(await page.locator("body").evaluate((body) => body.style.overflow), "hidden")
+    const baseline = await dragArea.boundingBox()
+    assert.ok(baseline, "panel drag area visible before gestures")
     await touchSwipe(page, panel.locator(".start-panel-head h2"), 0, 110)
     assert.equal(await panel.count(), 1, "title is not a drag handle")
-    await touchSwipe(page, panel.locator(".panel-drag-area"), 0, 110, true)
+    await waitForPanelDragReset(page, dragArea, baseline)
+    await touchSwipe(page, dragArea, 0, 110, true)
     assert.equal(await panel.count(), 1, "pointercancel must not dismiss")
-    await touchSwipe(page, panel.locator(".panel-drag-area"), 0, 35)
+    await waitForPanelDragReset(page, dragArea, baseline)
+    await touchSwipe(page, dragArea, 0, 35)
     assert.equal(await panel.count(), 1, "short drag must not dismiss")
-    await touchSwipe(page, panel.locator(".panel-drag-area"), 0, 110)
+    await waitForPanelDragReset(page, dragArea, baseline)
+    await touchSwipe(page, dragArea, 0, 110)
     await panel.waitFor({ state: "hidden", timeout: 3_000 })
     await page.waitForFunction(() => document.body.style.overflow === "", null, { timeout: 3_000 })
     assert.equal(await page.locator("body").evaluate((body) => body.style.overflow), "")

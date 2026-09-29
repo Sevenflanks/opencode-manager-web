@@ -1,0 +1,16 @@
+TAP version 13
+# Subtest: touch panels dismiss only from the blank header on release, keep drafts, lock and restore focus
+ok 1 - touch panels dismiss only from the blank header on release, keep drafts, lock and restore focus
+  ---
+  duration_ms: 1770.15
+  type: 'test'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2145.2774
