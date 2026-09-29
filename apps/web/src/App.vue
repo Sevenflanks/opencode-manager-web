@@ -41,7 +41,7 @@ import { Button } from "@/components/ui/button"
 import ConfirmationDialog from "@/components/ui/dialog/ConfirmationDialog.vue"
 import { Input } from "@/components/ui/input"
 import ErrorDetails from "@/components/ErrorDetails.vue"
-import { presentError, presentStatusError, safeDiagnostic, type PresentedError } from "@/error-presentation"
+import { LocalError, presentError, presentStatusError, safeDiagnostic, type PresentedError } from "@/error-presentation"
 import { useMessages, type MessageKey } from "@/i18n"
 
 const { t, date: formatDate, number } = useMessages()
@@ -1292,11 +1292,11 @@ async function openWithPopup(
   request: () => Promise<OpenUrlResponse>,
   expectedSessionId?: string,
 ): Promise<OpenUrlResponse> {
-  if (opening.value) throw new Error(t("popup.busy"))
+  if (opening.value) throw new LocalError("popup.busy")
   const instanceId = instance.id
   // 必須在 click 的 user activation 內、任何 await 之前取得 handle，否則瀏覽器可能封鎖延遲開啟的分頁。
   const popup = window.open("about:blank", "_blank")
-  if (!popup) throw new Error(t("popup.blocked"))
+  if (!popup) throw new LocalError("popup.blocked")
 
   opening.value = true
   try {
@@ -1317,11 +1317,11 @@ async function openWithPopup(
       ? typeof response.sessionId === "string" && response.sessionId.length > 0
       : response.sessionId === expectedSessionId
     if (response.instanceId !== instanceId || !sessionMatches) {
-      throw new Error(t("popup.mismatch"))
+      throw new LocalError("popup.mismatch")
     }
     const destination = new URL(response.url)
     if ((destination.protocol !== "http:" && destination.protocol !== "https:") || destination.username || destination.password) {
-      throw new Error(t("popup.unsafe"))
+      throw new LocalError("popup.unsafe")
     }
     popup.location.replace(destination.href)
     return response

@@ -31,12 +31,20 @@ const knownCodes: Record<string, MessageKey> = {
 
 export interface PresentedError { summary: string; summaryKey: MessageKey; params?: Record<string, string | number>; diagnostic: string | null; code: string | null }
 
+type LocalErrorKey = "popup.busy" | "popup.blocked" | "popup.mismatch" | "popup.unsafe"
+
+// 本機已知失敗以受限 key 傳遞；任意 Error.message 仍不能成為使用者可見摘要。
+export class LocalError extends Error {
+  constructor(readonly key: LocalErrorKey) { super(key) }
+}
+
 export function safeDiagnostic(value: unknown): string | null {
   // Free-form diagnostics 可能夾帶 Basic、URL 或新型憑證；只顯示我們已知的純 code。
   return typeof value === "string" && Object.hasOwn(knownCodes, value) ? value : null
 }
 
 export function presentError(cause: unknown, t: (key: MessageKey) => string): PresentedError {
+  if (cause instanceof LocalError) return { summary: t(cause.key), summaryKey: cause.key, code: null, diagnostic: null }
   if (cause instanceof ApiError) {
     const known = Object.hasOwn(knownCodes, cause.code) ? knownCodes[cause.code] : null
     const summaryKey = known ?? (cause.status === 401 ? "error.unauthorized" : cause.code === "HTTP_ERROR" ? "error.http" : "error.unknown")

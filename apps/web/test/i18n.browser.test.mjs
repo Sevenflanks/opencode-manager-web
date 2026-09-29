@@ -38,6 +38,7 @@ test("mobile i18n keeps primary/main/child semantics, user content and safe diag
     let failOverview = false
     let failTodos = false
     let failSessions = false
+    let blockedActionRequests = 0
     const instance = {
       id: instanceId, kind: "headless", projectName: "User Project Name", projectDirectory: directory,
       state: "ready", endpoint: "http://127.0.0.1:40001", port: 40001, pid: 12345,
@@ -50,6 +51,7 @@ test("mobile i18n keeps primary/main/child semantics, user content and safe diag
     }
     await page.route("**/api/v1/**", route => {
       const request = new URL(route.request().url())
+      if (route.request().method() !== "GET" || request.pathname.includes("open-url")) blockedActionRequests++
       let body
       if (request.pathname === "/api/v1/overview") {
         if (failOverview) return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: { code: "INSTANCE_START_TIMEOUT", message: "Basic dXNlcjpwYXNz credential=secret" } }) })
@@ -149,6 +151,33 @@ test("mobile i18n keeps primary/main/child semantics, user content and safe diag
     await confirmation.getByText("停止整個 Instance？").waitFor()
     await confirmation.getByRole("button", { name: "取消" }).click()
     await confirmation.waitFor({ state: "hidden" })
+
+    // window.open 回傳 null 必須阻止 API 副作用，且兩個入口都呈現可隨 locale 更新的操作指引。
+    await page.evaluate(() => { window.open = () => null })
+    const blockedText = "瀏覽器封鎖了彈出視窗，請允許此網站開啟新分頁後再試。"
+    const actionToast = page.locator(".toast-error[role='alert']")
+    await page.getByRole("button", { name: "進入入口 Session" }).click()
+    await actionToast.getByText(blockedText).waitFor()
+    assert.equal(blockedActionRequests, 0, "blocked open must not request a URL")
+    await page.evaluate(async messages => {
+      const { i18n } = await import("/src/i18n.ts")
+      i18n.global.setLocaleMessage("en-US", messages)
+      i18n.global.locale.value = "en-US"
+    }, { ...longLocale, popup: { blocked: "Allow pop-ups for this site, then retry." } })
+    await actionToast.getByText("Allow pop-ups for this site, then retry.").waitFor()
+    await page.evaluate(async () => { const { i18n } = await import("/src/i18n.ts"); i18n.global.locale.value = "zh-TW" })
+    await actionToast.getByText(blockedText).waitFor()
+
+    await page.getByRole("button", { name: "New Session" }).click()
+    const createConfirmation = page.getByRole("alertdialog")
+    await createConfirmation.getByText("建立 New Session？").waitFor()
+    await createConfirmation.getByRole("button", { name: "建立並開啟" }).click()
+    await actionToast.getByText(blockedText).waitFor()
+    assert.equal(blockedActionRequests, 0, "blocked New Session must not create a Session")
+    await page.evaluate(async () => { const { i18n } = await import("/src/i18n.ts"); i18n.global.locale.value = "en-US" })
+    await actionToast.getByText("Allow pop-ups for this site, then retry.").waitFor()
+    await page.evaluate(async () => { const { i18n } = await import("/src/i18n.ts"); i18n.global.locale.value = "zh-TW" })
+    await actionToast.getByText(blockedText).waitFor()
     await page.getByRole("button", { name: "返回列表" }).click()
 
     failOverview = true

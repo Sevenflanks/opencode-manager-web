@@ -8,7 +8,7 @@ import { createServer } from "vite"
 const server = await createServer({ server: { middlewareMode: true, hmr: false }, optimizeDeps: { noDiscovery: true }, appType: "custom" })
 try {
   const { i18n, useMessages } = await server.ssrLoadModule("/src/i18n.ts")
-  const { presentError, presentStatusError, safeDiagnostic } = await server.ssrLoadModule("/src/error-presentation.ts")
+  const { LocalError, presentError, presentStatusError, safeDiagnostic } = await server.ssrLoadModule("/src/error-presentation.ts")
   const { ApiError } = await server.ssrLoadModule("/src/api.ts")
   const longLocale = JSON.parse(await readFile(new URL("./long-test.locale.json", import.meta.url), "utf8"))
   const base = i18n.global.getLocaleMessage("zh-TW")
@@ -62,6 +62,15 @@ try {
     assert.equal(status.summary, "error.startTimeout")
     assert.equal(status.code, "INSTANCE_START_TIMEOUT")
     assert.equal(presentStatusError("Basic dXNlcjpwYXNz", t, "error.unknown").summary, "error.unknown")
+  })
+
+  await test("only typed local popup failures have actionable summaries; ordinary Error messages remain private", () => {
+    const t = (key) => key
+    const blocked = presentError(new LocalError("popup.blocked"), t)
+    assert.deepEqual(blocked, { summary: "popup.blocked", summaryKey: "popup.blocked", code: null, diagnostic: null })
+    assert.equal(presentError(new Error("popup.blocked"), t).summaryKey, "error.unknown")
+    assert.equal(presentError(Object.assign(new Error("private"), { key: "popup.blocked" }), t).summaryKey, "error.unknown")
+    assert.equal(presentError(new ApiError("popup.blocked", "private", 500), t).summaryKey, "error.unknown")
   })
 
   await test("locale formats counts but never formats PID or port; timestamps retain the same instant", async () => {
