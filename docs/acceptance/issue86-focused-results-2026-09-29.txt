@@ -1,0 +1,41 @@
+Issue #86 focused execution results, 2026-09-29
+Branch: fix/86-session-tab; base: ef06ffc
+Browser: Microsoft Edge 154.0.4258.37 (headless Playwright)
+OpenCode: 1.18.33
+Local machine paths, ephemeral isolation roots and ports are intentionally omitted.
+
+Red, revised behavior test before implementation:
+  ✖ primary Session tabs follow the Instance binding and preserve previous targets (1205.588ms)
+  AssertionError [ERR_ASSERTION]: the live tab needs no new Open URL request
+  actual: ['inst-a/ses-shared', 'inst-a/ses-shared']
+  expected: ['inst-a/ses-shared']
+  tests 1; pass 0; fail 1
+
+Green, revised behavior test after implementation (final test source):
+  ✔ primary Session tabs follow the Instance binding and preserve previous targets (4081.1915ms)
+  tests 1; pass 1; fail 0; skipped 0
+
+Red, real OpenCode integration before New Session handle registration:
+  ✖ mobile UI drives real Manager API Start, official Open URL, and safe Stop (12073.0036ms)
+  AssertionError [ERR_ASSERTION]: primary action reuses the New Session tab
+  3 !== 2
+  tests 1; pass 0; fail 1
+
+Green, final focused Edge run:
+  ✔ primary Session popup shows a safe, responsive waiting page until navigation (1698.4989ms)
+  ✔ primary Session tabs follow the Instance binding and preserve previous targets (16217.1361ms)
+  tests 2; pass 2; fail 0; skipped 0
+
+Green, final real Manager + real OpenCode + real Edge integration:
+  ✔ mobile UI drives real Manager API Start, official Open URL, and safe Stop (19923.958ms)
+  tests 1; pass 1; fail 0; skipped 0
+
+Build/type checks:
+  npm run build -w @omw/web: passed
+  npm run build -w @omw/manager: passed
+  npm run typecheck: passed (contracts, manager, CLI, web)
+  git diff --check: passed
+
+Prior full suite: unrelated swipe test in apps/web/test/overview-refresh.test.mjs:1013
+timed out waiting for launch dialog to hide. Baseline verifier independently
+confirmed the same failure at ef06ffc in Edge/Chromium. Not rerun for this revision.

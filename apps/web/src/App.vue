@@ -138,6 +138,7 @@ const sessionsError = ref("")
 const sessionPage = ref(1)
 const switchingSessionId = ref("")
 const opening = ref(false)
+const sessionTabs = new Map<string, Window>()
 const lifecycleOpen = ref(false)
 const lifecyclePending = ref<LifecycleAction | null>(null)
 const lifecycleError = ref("")
@@ -1312,6 +1313,8 @@ async function openWithPopup(
       throw new Error("Manager 回傳了不安全的 Open URL。")
     }
     popup.location.replace(destination.href)
+    // New Session 建立並開啟的頁也能由進入主 Session 重用；只有通過回應驗證的頁才登記。
+    sessionTabs.set(JSON.stringify([instanceId, response.sessionId]), popup)
     return response
   } catch (cause) {
     if (!popup.closed) popup.close()
@@ -1332,7 +1335,22 @@ async function openWeb(instance: ManagedInstance, sessionId: string): Promise<vo
 
 async function openPrimarySession(instance: ManagedInstance): Promise<void> {
   if (!instance.primarySession) return
-  await openWeb(instance, instance.primarySession.sessionId)
+  const sessionId = instance.primarySession.sessionId
+  // Session metadata 可跨 Instance 共用，分頁只能依實際綁定的 Instance + Session 重用。
+  const key = JSON.stringify([instance.id, sessionId])
+  const existing = sessionTabs.get(key)
+  if (existing && !existing.closed) {
+    beginUserAction()
+    if (opening.value) {
+      actionError.value = "已有連線請求正在進行中。"
+      return
+    }
+    // 只依 Manager 的 binding 識別目標；跨來源下無法得知使用者是否在 OpenCode 分頁內自行切換 Session。
+    existing.focus()
+    return
+  }
+  sessionTabs.delete(key)
+  await openWeb(instance, sessionId)
 }
 
 async function refreshSelectedInstance(instanceId: string): Promise<void> {
