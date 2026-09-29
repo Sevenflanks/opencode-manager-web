@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.4.1...v0.5.0) (2026-09-29)
+
+
+### Features
+
+* **web:** 支援觸碰手勢與水平篩選提示 ([5fa1aa7](https://github.com/Sevenflanks/opencode-manager-web/commit/5fa1aa7fee56e0db2948ba31d05874d4a9f13a3a))
+* **web:** 支援面板與通知觸碰手勢及篩選捲動提示 ([fa0c9e7](https://github.com/Sevenflanks/opencode-manager-web/commit/fa0c9e7a4bf721cf050150b84a43095d1457ee0a)), closes [#83](https://github.com/Sevenflanks/opencode-manager-web/issues/83)
+* **web:** 新增瀏覽器待處理通知與全域開關 ([#81](https://github.com/Sevenflanks/opencode-manager-web/issues/81)) ([30c95e9](https://github.com/Sevenflanks/opencode-manager-web/commit/30c95e9162994b088b3510570c79db1f178abda6))
+
+
+### Bug Fixes
+
+* **web:** 修正多指取消與滑動後點擊隔離 ([1a8fd25](https://github.com/Sevenflanks/opencode-manager-web/commit/1a8fd25839315366244d076d08b39b1edc0af894)), closes [#83](https://github.com/Sevenflanks/opencode-manager-web/issues/83)
+* **web:** 改善目錄瀏覽、設定焦點與手機操作可用性 ([5fecc12](https://github.com/Sevenflanks/opencode-manager-web/commit/5fecc1207f6f218d47cd8773b8b8f7a3da3d7c18))
+* **web:** 讓設定成功訊息在對話框內可被讀取 ([27ba0bf](https://github.com/Sevenflanks/opencode-manager-web/commit/27ba0bf0224d3916ba0ea2dcf48abafac4bc575e))
+
 ## [0.4.1](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.4.0...v0.4.1) (2026-09-24)
 
 
