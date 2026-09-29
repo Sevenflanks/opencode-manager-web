@@ -1,0 +1,66 @@
+Issue #91 — existing test output excerpts (2026-09-29)
+
+These are excerpts transcribed from the existing tool outputs, not complete raw logs.
+The 10 repetitions, related file and full suite used Node's default spec reporter,
+not TAP; TAP totals for those runs do not exist. Only issue91-focused.tap.txt
+contains the original TAP of a separate single focused run. Private isolation
+paths, loopback ports, and individual test lines unrelated to these totals
+are omitted. No tests were rerun to prepare these excerpts.
+
+Baseline ef06ffc, before edit, focused command:
+node scripts/isolated-entry.mjs test node --test --test-name-pattern='^touch panels dismiss only' apps/web/test/overview-refresh.test.mjs
+  First invocation: tests 1; suites 0; pass 1; fail 0; cancelled 0; skipped 0; todo 0; process exit 0.
+  Second invocation: tests 1; suites 0; pass 0; fail 1; cancelled 0; skipped 0; todo 0; process exit 1.
+  Red failure (private absolute path removed):
+    locator.waitFor: Timeout 3000ms exceeded.
+    Call log:
+      - waiting for getByRole('dialog', { name: '啟動執行個體' }) to be hidden
+        10 × locator resolved to visible <section role="dialog" tabindex="-1" aria-modal="true" class="start-panel" aria-labelledby="start-panel-title">…</section>
+    at apps/web/test/overview-refresh.test.mjs:1013:17
+
+After edit, focused command (10 sequential invocations, fresh Node process each):
+node scripts/isolated-entry.mjs test node --test --test-name-pattern='^touch panels dismiss only' apps/web/test/overview-refresh.test.mjs
+  Every row is from that run's spec-reporter totals; exit from the following shell marker.
+  run | tests | suites | pass | fail | cancelled | skipped | todo | exit
+    1 |     1 |      0 |    1 |    0 |         0 |       0 |    0 |    0
+    2 |     1 |      0 |    1 |    0 |         0 |       0 |    0 |    0
+    3 |     1 |      0 |    1 |    0 |         0 |       0 |    0 |    0
+    4 |     1 |      0 |    1 |    0 |         0 |       0 |    0 |    0
+    5 |     1 |      0 |    1 |    0 |         0 |       0 |    0 |    0
+    6 |     1 |      0 |    1 |    0 |         0 |       0 |    0 |    0
+    7 |     1 |      0 |    1 |    0 |         0 |       0 |    0 |    0
+    8 |     1 |      0 |    1 |    0 |         0 |       0 |    0 |    0
+    9 |     1 |      0 |    1 |    0 |         0 |       0 |    0 |    0
+   10 |     1 |      0 |    1 |    0 |         0 |       0 |    0 |    0
+  Shell summary: Focused repetitions: pass=10 fail=0.
+
+Complete related browser file, browser opt-in enabled:
+node scripts/isolated-entry.mjs test node --test apps/web/test/overview-refresh.test.mjs
+  tests 31; suites 0; pass 31; fail 0; cancelled 0; skipped 0; todo 0;
+  duration_ms 144879.7065; process exit 0.
+
+Typecheck:
+npm run typecheck
+  > @omw/contracts@0.5.0 typecheck
+  > tsc -p tsconfig.json --noEmit
+  > @omw/manager@0.5.0 typecheck
+  > tsc -p tsconfig.json --noEmit
+  > @sevenflanks/omw@0.5.0 typecheck
+  > tsc -p tsconfig.json --noEmit
+  > @omw/web@0.5.0 typecheck
+  > vue-tsc --noEmit
+  All four completed with no diagnostics; command exit 0.
+
+Full suite, browser opt-in enabled:
+node scripts/isolated-entry.mjs test cmd.exe /d /s /c 'npm test'
+  npm run test:release       tests 15;  suites 0; pass 15;  fail 0; cancelled 0; skipped 0; todo 0; duration_ms 37178.1233.
+  npm run test -w @omw/manager
+                             tests 220; suites 0; pass 214; fail 0; cancelled 0; skipped 6; todo 0; duration_ms 72550.8365.
+  npm run test -w @sevenflanks/omw
+                             tests 62;  suites 0; pass 62;  fail 0; cancelled 0; skipped 0; todo 0; duration_ms 7505.8191.
+  npm run test -w @omw/web tests 46;  suites 0; pass 46;  fail 0; cancelled 0; skipped 0; todo 0; duration_ms 139245.7032.
+  Parent process exit 0. Real OpenCode opt-in tests among manager skips were not run.
+
+Initial full-suite launcher attempt, before the successful cmd.exe invocation:
+node scripts/isolated-entry.mjs test npm test
+  Error: spawn EINVAL (spawn npm.cmd); no test suite started.
