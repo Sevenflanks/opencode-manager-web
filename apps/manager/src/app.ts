@@ -290,7 +290,10 @@ export function buildApp(options: {
       },
     } as const
     app.post<{ Params: { id: string }; Body: LauncherRegistrationRequest }>("/api/v1/launcher/reservations/:id/register", {
-      schema: { body: registrationBody },
+      schema: { body: { ...registrationBody, properties: {
+        ...registrationBody.properties,
+        resumedSessionId: { type: "string", minLength: 1, maxLength: 512 },
+      } } },
     }, async (request, reply) => reply.code(202).send(await options.service.registerLocal(request.params.id, request.body)))
     app.post<{ Params: { id: string }; Body: LauncherRegistrationRequest }>("/api/v1/launcher/reservations/:id/finalize", {
       schema: { body: registrationBody },

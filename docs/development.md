@@ -221,10 +221,17 @@ limitation，非待修 bug。
 - Instance 第一次透過 session activity SSE 取得自身活動的有效 evidence 時，OMW 會沿 Session
   parent chain 找到 root，並在尚未綁定時以 first-writer-wins 方式 pin；同一 Instance 後續的
   idle 或其他 activity 不會換綁。
+- Managed Local TUI 帶單一明確 `-s`／`--session` 恢復目標時，launcher 在 register 傳遞該 ID；
+  Manager 驗證 Instance 已 ready、process／port owner 與 directory-scoped Session metadata 後，
+  即使 SSE 的 busy 已結束，也可解析 parent chain 並綁定 root，`source` 沿用 `activity` 相容值。
+  `--fork`、`-c`／`--continue` 或重複 Session 參數不傳此恢復意圖；不從共用 Project 清單猜測。
 - 活動 evidence 不是獨佔 ownership 證明。其他 Instance 的活動、同 Project 的歷史 metadata、
   單獨存在的 root，或「看起來像最新」的 Session 都不能自動成為 primary。
-- SSE 在首次連線前漏掉，或 observer 用盡 retry budget 後仍沒有可用 evidence 時，binding 保持
-  `null`；OMW 不猜歷史。使用者要在 Advanced 明確指定 root Session，才會建立 `manual` binding。
+- 沒有明確 `-s` 時，SSE 在首次連線前漏掉，或 observer 用盡 retry budget 後仍沒有可用
+  evidence，binding 保持 `null`。明確恢復的 metadata 最多查詢四次、ready 後最多 15 秒；
+  recheck 只接續原有剩餘額度，identity 核對失敗立即停止。耗盡、無效或跨目錄目標不會 fallback
+  到其他 busy Session；仍未綁定時，需在 Advanced 明確選擇 root 建立 `manual` binding，或重新
+  啟動 Instance。這不擴充一般無 `-s` 的活動追蹤。
 - OMW New Session 明確呼叫 `POST /api/v1/instances/:id/sessions` 建立新的 root；建立成功且
   response 是 root 後才設為 `new-session` primary。建立失敗、response 不是 root 或 runtime 不可用
   時，原 binding 保持不變。

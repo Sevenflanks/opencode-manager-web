@@ -440,6 +440,249 @@ async function startLocalTui(
   return reservation.reservationId
 }
 
+test("explicit Local TUI resume binds a verified child root after readiness even when activity already ended", async (t) => {
+  const credentials: StoredCredentials = {
+    manager: { username: "fixture", password: "fixture-password-long-enough" },
+    launcherToken: "fixture-launcher-token-long-enough-for-validation",
+  }
+  const { app, project, runtime, repository } = await fixture(t, { launcherCredentials: credentials })
+  runtime.sessionMetadata.set(project, [
+    { id: "other", title: "Other root" },
+    { id: "root", title: "Resumed root" },
+    { id: "child", title: "Resumed child", parentID: "root" },
+  ])
+  const headers = { ...readHeaders, "x-omw-launcher-token": credentials.launcherToken }
+  const clientInvocationId = "10000000-0000-4000-8000-000000000085"
+  const reservation = await app.inject({
+    method: "POST", url: "/api/v1/launcher/reservations", headers,
+    payload: { clientInvocationId, directory: project },
+  })
+  assert.equal(reservation.statusCode, 201)
+  const id = reservation.json().reservationId as string
+  const registration = await app.inject({
+    method: "POST", url: `/api/v1/launcher/reservations/${id}/register`, headers,
+    payload: { clientInvocationId, pid: 5085, resumedSessionId: "child" },
+  })
+  assert.equal(registration.statusCode, 202)
+  await waitFor(() => repository.getInstance(id)?.state === "ready", 500)
+  await waitFor(() => runtime.sessionCalls > 0, 500)
+  await waitFor(() => repository.getPrimarySession(id)?.sessionId === "root", 1_500)
+  const overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+  assert.equal(overview.statusCode, 200)
+  assert.equal(overview.json().instances.find((instance: { id: string }) => instance.id === id)?.primarySession?.sessionId, "root")
+  assert.equal(repository.getPrimarySession(id)?.source, "activity")
+  assert.deepEqual(runtime.activityBusySessions.get(id), undefined, "no busy activity was needed")
+})
+
+test("launcher explicit resume passes through Manager registration and reaches overview", async (t) => {
+  // 此邊界從真正的 launcher 入口經 Manager API 到 overview；原生 TUI 僅以可控制退出時間的替身取代。
+  const { runLauncher } = await import(new URL("../../../../packages/launcher/dist/src/cli.js", import.meta.url).href)
+  const credentials: StoredCredentials = {
+    manager: { username: "fixture", password: "fixture-password-long-enough" },
+    launcherToken: "fixture-launcher-token-long-enough-for-validation",
+  }
+  const { app, project, repository, runtime } = await fixture(t, { launcherCredentials: credentials })
+  runtime.sessionMetadata.set(project, [
+    { id: "unrelated", title: "Another root" },
+    { id: "root", title: "Resumed root" },
+    { id: "resumed", title: "Resumed child", parentID: "root" },
+  ])
+  const observedArguments: string[][] = []
+  let releaseNative!: (code: number) => void
+  const nativeCompletion = new Promise<number>((resolve) => { releaseNative = resolve })
+  const diagnostics: string[] = []
+  const running = runLauncher(["-s", "resumed"], { OMW_OPENCODE_EXECUTABLE: "opencode.exe" }, project, "fixture-launcher", {
+    async resolveExecutable() { return "opencode.exe" },
+    async loadCredentials() { return { launcherToken: credentials.launcherToken } },
+    invocationId() { return "10000000-0000-4000-8000-000000000095" },
+    diagnostic(message: string) { diagnostics.push(message) },
+    async request<T>(_origin: string, pathname: string, _token: string, body: unknown): Promise<T> {
+      const response = await app.inject({
+        method: "POST", url: pathname,
+        headers: { ...readHeaders, "x-omw-launcher-token": credentials.launcherToken },
+        payload: body as object,
+      })
+      assert.ok(response.statusCode >= 200 && response.statusCode < 300,
+        `${pathname}: ${response.statusCode} ${response.body}`)
+      return response.json() as T
+    },
+    spawnForeground(_executable: string, args: string[]) {
+      observedArguments.push(args)
+      return { pid: 5095, completion: nativeCompletion }
+    },
+  })
+  try {
+    await waitFor(() => observedArguments.length > 0, 500)
+    await waitFor(() => repository.listInstances().some((instance) => repository.getPrimarySession(instance.id)?.sessionId === "root"), 2_000)
+    const overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
+    assert.equal(overview.json().instances.some((instance: { primarySession: { sessionId: string } | null }) => instance.primarySession?.sessionId === "root"), true)
+    assert.deepEqual(observedArguments[0]?.slice(0, 2), ["-s", "resumed"])
+    assert.equal(runtime.sessionCalls, 1, "the resumed target binds without a busy event or second message")
+    assert.deepEqual(diagnostics, [])
+  } finally {
+    releaseNative(0)
+    assert.equal(await running, 0)
+  }
+})
+
+test("explicit resume retries transient metadata failure without another busy event", async (t) => {
+  const { project, runtime, repository, service } = await fixture(t)
+  let queries = 0
+  const sessions = runtime.sessions.bind(runtime)
+  runtime.sessions = async (record) => {
+    queries++
+    if (queries === 1) throw new Error("metadata temporarily unavailable")
+    return sessions(record)
+  }
+  const clientInvocationId = "10000000-0000-4000-8000-000000000086"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5086, resumedSessionId: "child" })
+  await waitFor(() => repository.getPrimarySession(reservation.reservationId)?.sessionId === "root", 2_000)
+  assert.equal(queries, 2)
+  assert.equal(repository.getPrimarySession(reservation.reservationId)?.source, "activity")
+})
+
+test("explicit resume survives recheck during a pending metadata lookup", async (t) => {
+  const { project, runtime, repository, service } = await fixture(t)
+  let releaseFirst!: () => void
+  const sessions = runtime.sessions.bind(runtime)
+  runtime.sessions = async (record) => {
+    if (runtime.sessionCalls === 0) {
+      runtime.sessionCalls++
+      return await new Promise((resolve) => {
+        releaseFirst = () => resolve([{ id: "unrelated", title: "Unrelated" }])
+      })
+    }
+    return sessions(record)
+  }
+  const clientInvocationId = "10000000-0000-4000-8000-000000000091"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5091, resumedSessionId: "child" })
+  await waitFor(() => Boolean(releaseFirst), 500)
+  assert.equal((await service.recheck(reservation.reservationId)).state, "ready")
+  releaseFirst()
+  await waitFor(() => repository.getPrimarySession(reservation.reservationId)?.sessionId === "root", 2_000)
+  assert.equal(runtime.sessionCalls, 2, "recheck continues the original target after cancelling stale metadata")
+})
+
+test("explicit resume rechecks do not reset the metadata attempt budget", async (t) => {
+  const { project, runtime, repository, service } = await fixture(t)
+  runtime.sessionMetadata.set(project, [{ id: "unrelated", title: "Unrelated" }])
+  const clientInvocationId = "10000000-0000-4000-8000-000000000092"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5092, resumedSessionId: "missing" })
+  await waitFor(() => runtime.sessionCalls >= 2, 2_000)
+  for (let index = 0; index < 3; index++) {
+    assert.equal((await service.recheck(reservation.reservationId)).state, "ready")
+  }
+  await waitFor(() => runtime.sessionCalls >= 4, 5_000)
+  await service.recheck(reservation.reservationId)
+  await new Promise<void>((resolve) => setTimeout(resolve, 300))
+  assert.equal(runtime.sessionCalls, 4)
+  assert.equal(repository.getPrimarySession(reservation.reservationId), null)
+})
+
+test("explicit resume gives up after bounded metadata attempts and never chooses another visible root", async (t) => {
+  const { project, runtime, repository, service } = await fixture(t)
+  runtime.sessionMetadata.set(project, [{ id: "different", title: "Different root" }])
+  const clientInvocationId = "10000000-0000-4000-8000-000000000087"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5087, resumedSessionId: "missing" })
+  await waitFor(() => runtime.sessionCalls >= 4, 5_000)
+  await new Promise<void>((resolve) => setTimeout(resolve, 300))
+  assert.equal(runtime.sessionCalls, 4)
+  assert.equal(repository.getPrimarySession(reservation.reservationId), null)
+  await waitFor(() => runtime.observers.has(reservation.reservationId), 500)
+  await runtime.emitActivity(reservation.reservationId, { type: "activity", source: "event", sessionIds: ["different"] })
+  assert.equal(repository.getPrimarySession(reservation.reservationId), null, "an invalid explicit target cannot fall back to unrelated busy activity")
+})
+
+test("explicit resume does not overwrite a manual choice made while metadata is pending", async (t) => {
+  const { project, runtime, repository, service } = await fixture(t)
+  runtime.sessionMetadata.set(project, [{ id: "resumed", title: "Resumed" }, { id: "chosen", title: "Chosen" }])
+  let release: (() => void) | undefined
+  const sessions = runtime.sessions.bind(runtime)
+  runtime.sessions = async (record) => {
+    if (runtime.sessionCalls === 0) {
+      runtime.sessionCalls++
+      return await new Promise((resolve) => {
+        release = () => resolve([{ id: "resumed", title: "Resumed" }, { id: "chosen", title: "Chosen" }])
+      })
+    }
+    return sessions(record)
+  }
+  const clientInvocationId = "10000000-0000-4000-8000-000000000088"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5088, resumedSessionId: "resumed" })
+  await waitFor(() => Boolean(release), 500)
+  await service.selectPrimarySession(reservation.reservationId, "chosen")
+  release?.()
+  await new Promise<void>((resolve) => setTimeout(resolve, 100))
+  assert.equal(repository.getPrimarySession(reservation.reservationId)?.sessionId, "chosen")
+  assert.equal(repository.getPrimarySession(reservation.reservationId)?.source, "manual")
+})
+
+test("explicit resume cannot bind after launcher finalizes during metadata lookup", async (t) => {
+  const { project, runtime, repository, service } = await fixture(t)
+  let release!: () => void
+  runtime.sessions = async () => {
+    runtime.sessionCalls++
+    return await new Promise((resolve) => {
+      release = () => resolve([{ id: "child", title: "Child", parentID: "root" }, { id: "root", title: "Root" }])
+    })
+  }
+  const clientInvocationId = "10000000-0000-4000-8000-000000000090"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5090, resumedSessionId: "child" })
+  await waitFor(() => Boolean(release), 500)
+  const result = await service.finalizeLocal(reservation.reservationId, { clientInvocationId, pid: 5090 })
+  release()
+  await new Promise<void>((resolve) => setTimeout(resolve, 100))
+  assert.equal(result.state, "stopped")
+  assert.equal(repository.getPrimarySession(reservation.reservationId), null)
+  assert.equal(runtime.sessionCalls, 1)
+})
+
+test("explicit resume rejects unverified identity without querying Session metadata", async (t) => {
+  const { project, runtime, repository, service } = await fixture(t)
+  const inspect = runtime.inspect.bind(runtime)
+  runtime.inspect = async (record) => {
+    if (runtime.inspectCalls > 0) runtime.identityMatches = false
+    return inspect(record)
+  }
+  const clientInvocationId = "10000000-0000-4000-8000-000000000089"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5089, resumedSessionId: "child" })
+  await waitFor(() => repository.getInstance(reservation.reservationId)?.state === "ready", 500)
+  await new Promise<void>((resolve) => setTimeout(resolve, 150))
+  assert.equal(runtime.sessionCalls, 0)
+  assert.equal(repository.getPrimarySession(reservation.reservationId), null)
+})
+
+test("explicit resume stops after post-metadata identity rejection even if the next probe would pass", async (t) => {
+  const { project, runtime, repository, service } = await fixture(t)
+  const inspect = runtime.inspect.bind(runtime)
+  let rejected = false
+  runtime.inspect = async (record) => {
+    const identity = await inspect(record)
+    if (runtime.sessionCalls > 0 && !rejected) {
+      rejected = true
+      return { ...identity, matched: false }
+    }
+    return identity
+  }
+  const clientInvocationId = "10000000-0000-4000-8000-000000000093"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5093, resumedSessionId: "child" })
+  await waitFor(() => rejected, 500)
+  await new Promise<void>((resolve) => setTimeout(resolve, 500))
+  assert.equal(runtime.sessionCalls, 1, "identity rejection is terminal, not a metadata retry")
+  assert.equal((await service.recheck(reservation.reservationId)).state, "ready")
+  await new Promise<void>((resolve) => setTimeout(resolve, 350))
+  assert.equal(runtime.sessionCalls, 1, "recheck must not restart an identity-rejected resume intent")
+  assert.equal(repository.getPrimarySession(reservation.reservationId), null)
+})
+
 test("Local TUI initial registration waits for its exact process listener then observes activity", async (t) => {
   const { project, repository, runtime, service } = await fixture(t)
   runtime.portOwnerMatched = false
