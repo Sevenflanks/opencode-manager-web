@@ -72,6 +72,10 @@ export const managerApi = {
     if (includeHidden) params.set("includeHidden", "true")
     return request<OverviewResponse>(`/api/v1/overview?${params}`, signal ? { signal } : undefined)
   },
+  notificationOverview(signal?: AbortSignal) {
+    // 通知不能沿用畫面搜尋或 filter；已停止追蹤的 Instance 不屬於通知範圍。
+    return request<OverviewResponse>("/api/v1/overview?q=&filter=all", signal ? { signal } : undefined)
+  },
   browse(directory: string) {
     return request<DirectoryListing>(`/api/v1/directories?path=${encodeURIComponent(directory)}`)
   },
