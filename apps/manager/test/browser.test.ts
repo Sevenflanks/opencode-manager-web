@@ -353,6 +353,126 @@ test("primary Session popup shows a safe, responsive waiting page until navigati
   }
 })
 
+test("primary Session tabs follow the Instance binding and preserve previous targets", { skip: !enabled, timeout: 45_000 }, async () => {
+  const executablePath = process.env.OMW_BROWSER_EXECUTABLE
+  assert.ok(executablePath, "OMW_BROWSER_EXECUTABLE is required")
+  const sandbox = await mkdtemp(path.join(tmpdir(), "omw-browser-primary-tabs-"))
+  await Promise.all([
+    mkdir(path.join(sandbox, "browser-profile", "AppData", "Roaming"), { recursive: true }),
+    mkdir(path.join(sandbox, "browser-profile", "AppData", "Local"), { recursive: true }),
+    mkdir(path.join(sandbox, "browser-profile", "Temp"), { recursive: true }),
+  ])
+  const repository = new ManagerRepository(":memory:")
+  const service = new ManagerService(repository, new BrowserRuntime())
+  const port = await freePort()
+  const origin = `http://127.0.0.1:${port}`
+  const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist")
+  const app = buildApp({ service, authority: { hostname: "127.0.0.1", port }, allowedOrigins: new Set([origin]), webRoot })
+  const binding = (sessionId: string) => ({ sessionId, title: sessionId, source: "manual" as const, boundAt: "2026-09-22T00:00:00.000Z" })
+  const instances = [
+    fakeManagedInstance({ id: "inst-a", projectDirectory: "C:\\fixture\\shared", primarySession: binding("ses-shared") }),
+    fakeManagedInstance({ id: "inst-b", projectDirectory: "C:\\fixture\\shared", primarySession: binding("ses-shared") }),
+    fakeManagedInstance({ id: "inst-c", projectDirectory: "C:\\fixture\\other", primarySession: binding("ses-other") }),
+  ]
+  let browser: Browser | undefined
+  try {
+    await app.listen({ host: "127.0.0.1", port })
+    browser = await chromium.launch({ executablePath, headless: true, env: createBrowserEnvironment(sandbox) })
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    const requests: string[] = []
+    let openUrlReply: "valid" | "wrong-instance" | "unsafe-url" = "valid"
+    await page.route("**/api/v1/overview?*", (route) => route.fulfill({ json: { shortcuts: [], instances } }))
+    await page.route("**/api/v1/instances/*/open-url", (route) => {
+      const instanceId = new URL(route.request().url()).pathname.split("/")[4]!
+      const { sessionId } = route.request().postDataJSON() as { sessionId: string }
+      requests.push(`${instanceId}/${sessionId}`)
+      return route.fulfill({ json: {
+        url: openUrlReply === "unsafe-url" ? "javascript:alert(1)" : `http://localhost:${port}/opened/${instanceId}/${sessionId}`,
+        instanceId: openUrlReply === "wrong-instance" ? "inst-b" : instanceId,
+        sessionId,
+      } })
+    })
+    await context.route("**/opened/**", (route) => route.fulfill({ contentType: "text/html", body: "<!doctype html><title>OpenCode Web fixture</title>" }))
+    await page.goto(origin)
+    const enter = page.getByRole("button", { name: "進入主 Session" })
+    const select = async (instanceId: string) => {
+      await page.locator(`.instance-row[data-instance-id="${instanceId}"]`).click()
+      await enter.waitFor()
+    }
+    const open = async (instanceId: string, sessionId: string) => {
+      const popupPromise = page.waitForEvent("popup")
+      await enter.click()
+      const popup = await popupPromise
+      await popup.waitForURL(`http://localhost:${port}/opened/${instanceId}/${sessionId}`)
+      assert.equal(await popup.evaluate(() => window.opener), null)
+      return popup
+    }
+
+    await select("inst-a")
+    const first = await open("inst-a", "ses-shared")
+    assert.equal(page.url(), `${origin}/`, "management tab stays open")
+    assert.equal(context.pages().length, 2)
+    await enter.click()
+    assert.equal(context.pages().length, 2, "re-entering the same primary Session reuses the live tab")
+    assert.equal(first.isClosed(), false)
+    assert.deepEqual(requests, ["inst-a/ses-shared"], "the live tab needs no new Open URL request")
+
+    await select("inst-c")
+    const other = await open("inst-c", "ses-other")
+    assert.equal(context.pages().length, 3)
+    await select("inst-b")
+    const sameSessionOtherInstance = await open("inst-b", "ses-shared")
+    assert.equal(context.pages().length, 4, "a shared Session does not reuse another Instance's tab")
+    assert.deepEqual(requests, ["inst-a/ses-shared", "inst-c/ses-other", "inst-b/ses-shared"])
+
+    await select("inst-a")
+    instances[0] = fakeManagedInstance({ ...instances[0]!, primarySession: binding("ses-other") })
+    await page.locator(".topbar").getByRole("button", { name: "重新整理" }).click()
+    await page.locator(".primary-session-card").getByText("ses-other", { exact: true }).waitFor()
+    for (const [reply, errorText] of [
+      ["wrong-instance", "Manager 回傳的 Open URL 與本次請求不符。"],
+      ["unsafe-url", "Manager 回傳了不安全的 Open URL。"],
+    ] as const) {
+      openUrlReply = reply
+      const rejectedPopupPromise = page.waitForEvent("popup")
+      await enter.click()
+      const rejectedPopup = await rejectedPopupPromise
+      await page.getByRole("alert").getByText(errorText).waitFor()
+      assert.equal(rejectedPopup.isClosed(), true, "invalid new targets close only their waiting popup")
+      assert.equal(first.isClosed(), false, "the previous Session tab belongs to the user")
+      assert.equal(first.url(), `http://localhost:${port}/opened/inst-a/ses-shared`)
+      assert.equal(context.pages().length, 4)
+    }
+    openUrlReply = "valid"
+    const switched = await open("inst-a", "ses-other")
+    assert.equal(context.pages().length, 5, "changing the Primary Session Binding does not overwrite the previous Session tab")
+    assert.equal(first.url(), `http://localhost:${port}/opened/inst-a/ses-shared`, "a binding change must leave the previous target alone")
+    instances[0] = fakeManagedInstance({ ...instances[0]!, primarySession: binding("ses-shared") })
+    await page.locator(".topbar").getByRole("button", { name: "重新整理" }).click()
+    await page.locator(".primary-session-card").getByText("ses-shared", { exact: true }).waitFor()
+    await enter.click()
+    assert.equal(context.pages().length, 5, "returning to the previous binding finds its original Instance tab")
+    assert.equal(switched.isClosed(), false)
+    assert.equal(first.url(), `http://localhost:${port}/opened/inst-a/ses-shared`)
+    await first.close()
+    const reopened = await open("inst-a", "ses-shared")
+    assert.notEqual(reopened, first)
+    assert.equal(context.pages().length, 5, "closing the old tab permits exactly one replacement")
+    assert.equal(other.isClosed(), false)
+    assert.equal(sameSessionOtherInstance.isClosed(), false)
+    assert.deepEqual(requests, [
+      "inst-a/ses-shared", "inst-c/ses-other", "inst-b/ses-shared",
+      "inst-a/ses-other", "inst-a/ses-other", "inst-a/ses-other", "inst-a/ses-shared",
+    ])
+  } finally {
+    await browser?.close()
+    await app.close()
+    repository.close()
+    await rm(sandbox, { recursive: true, force: true })
+  }
+})
+
 test("detail header keeps long project title and state badge on one line", { skip: !enabled, timeout: 45_000 }, async () => {
   const executablePath = process.env.OMW_BROWSER_EXECUTABLE
   assert.ok(executablePath, "OMW_BROWSER_EXECUTABLE is required")
@@ -2605,6 +2725,16 @@ test("mobile UI drives real Manager API Start, official Open URL, and safe Stop"
     const createdDestination = runtime.openUrl(record, createdPrimary.sessionId)
     const createdNavigation = await createdNavigationPromise
     assert.equal(createdNavigation.url(), createdDestination)
+    assert.equal(await popup.evaluate(() => window.opener), null)
+    const createdPageCount = page.context().pages().length
+    const reentryRequests: string[] = []
+    page.on("request", (request) => {
+      if (request.url().endsWith(`/api/v1/instances/${record.id}/open-url`)) reentryRequests.push(request.url())
+    })
+    await page.getByRole("button", { name: "進入主 Session" }).click()
+    assert.equal(page.context().pages().length, createdPageCount, "primary action reuses the New Session tab")
+    assert.equal(popup.isClosed(), false)
+    assert.deepEqual(reentryRequests, [], "reusing the New Session tab does not request another Open URL")
     await popup.close()
 
     const primaryPopupPromise = page.waitForEvent("popup")
@@ -2616,7 +2746,23 @@ test("mobile UI drives real Manager API Start, official Open URL, and safe Stop"
     const primaryPopup = await primaryPopupPromise
     const primaryNavigation = await primaryNavigationPromise
     assert.equal(primaryNavigation.url(), createdDestination)
+    await primaryPopup.waitForURL(createdDestination)
+    assert.equal(await primaryPopup.evaluate(() => window.opener), null)
+    assert.equal(reentryRequests.length, 1, "closed New Session tab requires one fresh Open URL")
+    const pageCount = page.context().pages().length
+    await page.getByRole("button", { name: "進入主 Session" }).waitFor({ state: "visible" })
+    await page.getByRole("button", { name: "進入主 Session" }).click()
+    assert.equal(reentryRequests.length, 1, "focus does not repeat the Open URL request")
+    assert.equal(await page.locator(".toast-error").count(), 0)
+    assert.equal(page.context().pages().length, pageCount, "real OpenCode destination reuses the existing tab")
+    assert.equal(primaryPopup.isClosed(), false)
     await primaryPopup.close()
+    const reopenedPopupPromise = page.waitForEvent("popup")
+    await page.getByRole("button", { name: "進入主 Session" }).click()
+    const reopenedPopup = await reopenedPopupPromise
+    await reopenedPopup.waitForURL(createdDestination)
+    assert.equal(page.context().pages().length, pageCount, "closing a real OpenCode tab allows a new one")
+    await reopenedPopup.close()
 
     await page.getByRole("button", { name: "執行個體操作" }).click()
     await page.getByRole("button", { name: "停止執行個體" }).click()
