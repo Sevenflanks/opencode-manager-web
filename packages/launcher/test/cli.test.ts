@@ -38,9 +38,12 @@ test("root TUI recognizes supported session option forms but not -s=value", () =
     ["--session", "ses_demo", "C:\\work\\project"],
     ["--session=ses_demo", "C:\\work\\project"],
   ]) {
-    assert.deepEqual(planInvocation(args), { managed: true, projectArgument: "C:\\work\\project" })
+    assert.deepEqual(planInvocation(args), { managed: true, projectArgument: "C:\\work\\project", resumedSessionId: "ses_demo" })
   }
   assert.equal(planInvocation(["-s=ses_demo", "C:\\work\\project"]).managed, false)
+  for (const args of [["-s", "ses_demo", "--fork"], ["--session=ses_demo", "-c"], ["-s", "ses_demo", "--session=another"]]) {
+    assert.equal(planInvocation(args).resumedSessionId, undefined, "ambiguous or forked resume cannot bind the original Session")
+  }
 })
 
 test("managed flags stay before the delimiter and delimiter positionals are never parsed as flags", () => {
@@ -140,6 +143,9 @@ test("session TUI reserves before spawn and injects only the reserved port", asy
   })
   assert.deepEqual(fixture.spawns[0]?.args, ["-s", "ses_demo", "C:\\work\\project", "--hostname", "127.0.0.1", "--port", "42004"])
   assert.match(fixture.requests[1]?.pathname ?? "", /\/register$/)
+  assert.deepEqual(fixture.requests[1]?.body, {
+    clientInvocationId: "11111111-1111-4111-8111-111111111111", pid: 4312, resumedSessionId: "ses_demo",
+  })
   assert.match(fixture.requests[2]?.pathname ?? "", /\/finalize$/)
 })
 

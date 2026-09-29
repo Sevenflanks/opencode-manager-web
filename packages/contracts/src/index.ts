@@ -134,6 +134,7 @@ export interface LauncherReservationResponse {
 export interface LauncherRegistrationRequest {
   clientInvocationId: string
   pid: number
+  resumedSessionId?: string
 }
 
 export interface LauncherRegistrationResponse {

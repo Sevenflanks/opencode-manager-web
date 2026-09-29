@@ -49,7 +49,11 @@ file；`$launcher` 的 absolute path 與 project argument 是兩件不同的事�
   `--port <reserved-port>` 後才 spawn。
 - `-s ses_example`、`--session ses_example` 與 `--session=ses_example` 是目前支援的 Session
   syntax；`-s=ses_example` 不在 parser contract 內，會走 fail-open，而不是猜測 native CLI 意義。
-  `-s` 只選 OpenCode TUI 對話，不自動建立或證明 OMW Primary Session Binding。
+  Managed root TUI 的單一明確 `-s` 目標會隨 register 傳給 Manager；Instance 通過 readiness／identity
+  驗證後，Manager 以該 Instance 的 directory-scoped metadata 解析 parent chain 與 root，只有尚未綁定
+  才建立 primary binding。`--fork` 會開新 Session；與 `-c`／`--continue` 同用或重複指定 Session
+  時無法證明原本的 ID 是實際對話，launcher 不傳 resume 目標，原始 argv 仍照常傳給 OpenCode。
+  `-s` 不會 attach 到既有 Instance，也不是單憑命令列即可證明的 ownership。
 - `--port 42001` 與 `--port=42001` 都會保留原形式與數值。explicit port 衝突或不在 fixed pool
   時不會偷偷替換；未提供 port 才附加 `--port <reserved-port>`。
 - 未提供 hostname 時附加 `--hostname 127.0.0.1`。兩種形式的 explicit
@@ -118,14 +122,19 @@ finalize lifecycle 呼叫；它們不是尚未實作的 endpoint，也不提供�
 `POST /api/v1/launcher/reservations/:id/register`
 
 ```json
-{ "clientInvocationId": "同一 UUID", "pid": 1234 }
+{ "clientInvocationId": "同一 UUID", "pid": 1234, "resumedSessionId": "ses_example" }
 ```
 
 launcher 在 foreground child spawn 後呼叫。Manager 從 trusted config 與 reservation 決定
 directory、executable、endpoint 與 port；`Describe` 必須證明 PID、creation time、real
 executable，且 creation time 不得早於 reservation。readiness、`/path` 與 port-owner 查核在背景
 繼續，因此 response 不等待 15 秒 readiness window，也不阻塞 TTY。同一 invocation/PID 重送
-為冪等。
+為冪等。`resumedSessionId` 僅在明確且無歧義的 root TUI resume 時提供；一般 register 可省略，
+finalize 不包含此欄位。首次 ready 後的綁定最多查詢四次 metadata（立即、250、1,000、2,000 ms
+間隔），整體不超過自 ready 起 15 秒。recheck 可接續同一目標，但不重設截止時間或嘗試次數；
+前後任一 identity／port-owner 核對失敗立即停止，不拿 metadata 重試掩蓋失敗。metadata 始終不可用
+或 root 無法驗證時保持未綁定，亦不 fallback 到同 Project 的 busy Session；使用者需手動綁定或
+重新啟動 Instance。此自動綁定寫入既有的 `source: "activity"` 相容值，不新增資料庫 source。
 
 ### Finalize
 

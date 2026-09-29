@@ -34,6 +34,7 @@ const RESERVATION_TTL_MS = 10_000
 const OBSERVER_RETRY_DELAYS_MS = [250, 1_000, 2_000] as const
 const LOCAL_VERIFICATION_DEADLINE_MS = 15_000
 const LOCAL_VERIFICATION_INTERVAL_MS = 200
+const RESUME_BINDING_RETRY_DELAYS_MS = [0, 250, 1_000, 2_000] as const
 
 interface LocalVerification {
   controller: AbortController
@@ -41,12 +42,33 @@ interface LocalVerification {
   timer: NodeJS.Timeout
 }
 
+interface ResumeBinding {
+  controller: AbortController
+  timer: NodeJS.Timeout
+}
+
+interface ResumeIntent {
+  sessionId: string
+  record: InstanceRecord
+  deadline: number | null
+  attempts: number
+}
+
+interface BufferedResumeCandidate {
+  intent: ResumeIntent
+  binding: ResumeBinding
+  connectionToken: object
+  sessionId: string
+  activity: RuntimeActivityEvent | null
+}
+
 interface ActivityObserverState {
   attempts: number
   observer: RuntimeActivityObserver | null
   retryTimer: NodeJS.Timeout | null
   connectionToken: object | null
-  candidate: { sessionId: string; expectedPrimary: PrimarySession } | null
+  candidate: { sessionId: string; expectedPrimary: PrimarySession; resumeBinding?: ResumeBinding } | null
+  pendingResumeCandidate: BufferedResumeCandidate | null
 }
 
 export class ManagerService {
@@ -54,6 +76,8 @@ export class ManagerService {
   private readonly snapshots: InstanceOverview
   private readonly activityObservers = new Map<string, ActivityObserverState>()
   private readonly localVerifications = new Map<string, LocalVerification>()
+  private readonly resumeBindings = new Map<string, ResumeBinding>()
+  private readonly resumeIntents = new Map<string, ResumeIntent>()
   private readonly instanceMutations = new Map<string, Promise<void>>()
   private shuttingDown = false
 
@@ -234,6 +258,10 @@ export class ManagerService {
       if (!raced || raced.id !== reservationId || raced.pid !== input.pid) throw error
       return { instanceId: raced.id, state: localRegistrationState(raced) }
     }
+    // 註冊時先保留 explicit -s；starting 的 recheck 會取消初次驗證，但不可一起遺失使用者指定的 target。
+    if (input.resumedSessionId) this.resumeIntents.set(record.id, {
+      record, sessionId: input.resumedSessionId, deadline: null, attempts: 0,
+    })
     // Local TUI owns the console. Readiness proof runs independently and never grants OMW Stop authority.
     const controller = new AbortController()
     const deadline = Date.now() + LOCAL_VERIFICATION_DEADLINE_MS
@@ -260,6 +288,8 @@ export class ManagerService {
     if (record.pid !== input.pid) throw new ManagerError("PROCESS_IDENTITY_MISMATCH", "Finalize PID 與已登錄 Local TUI 不符。", 409)
     const interrupted = this.localVerifications.has(record.id)
     this.cancelLocalVerification(record.id)
+    this.cancelResumeBinding(record.id)
+    this.resumeIntents.delete(record.id)
     let portAvailable: boolean
     try {
       portAvailable = await loopbackPortAvailable(record.port)
@@ -321,6 +351,7 @@ export class ManagerService {
     record.stoppedAt = new Date().toISOString()
     record.error = null
     this.repository.saveInstance(record)
+    this.resumeIntents.delete(record.id)
     this.closeActivityObserver(record.id)
     if (await loopbackPortAvailable(record.port)) this.repository.releaseAllocationForInstance(record.id)
     return await this.present(record)
@@ -330,6 +361,7 @@ export class ManagerService {
     const interrupted = this.localVerifications.has(id)
     const registration = interrupted ? this.repository.getInstance(id) : null
     this.cancelLocalVerification(id)
+    this.cancelResumeBinding(id)
     return await this.withInstanceMutation(id, async () => {
       try {
         return await this.recheckUnlocked(id)
@@ -342,7 +374,11 @@ export class ManagerService {
 
   async setTrackingHidden(id: string, hidden: boolean): Promise<ManagedInstance> {
     const interruptedRegistration = hidden && this.localVerifications.has(id)
-    if (hidden) this.cancelLocalVerification(id)
+    if (hidden) {
+      this.cancelLocalVerification(id)
+      this.cancelResumeBinding(id)
+      this.resumeIntents.delete(id)
+    }
     return await this.withInstanceMutation(id, async () => {
       let record = this.requireInstance(id)
       if (hidden && record.state !== "unreachable" && record.state !== "failed") {
@@ -375,6 +411,7 @@ export class ManagerService {
         throw new ManagerError("INSTANCE_REMOVAL_UNSAFE", "Instance port allocation 尚未安全釋放；請隱藏追蹤而非刪除。", 409)
       }
       this.closeActivityObserver(id)
+      this.resumeIntents.delete(id)
       const result = this.repository.deleteStoppedInstance(id)
       if (result === "not-found") throw new ManagerError("INSTANCE_NOT_FOUND", "找不到 Instance。", 404)
       if (result === "not-stopped") {
@@ -548,6 +585,8 @@ export class ManagerService {
     if (this.shuttingDown) return
     this.shuttingDown = true
     for (const id of this.localVerifications.keys()) this.cancelLocalVerification(id)
+    for (const id of this.resumeBindings.keys()) this.cancelResumeBinding(id)
+    this.resumeIntents.clear()
     const observers = [...this.activityObservers.values()]
     for (const state of observers) {
       if (state.retryTimer) clearTimeout(state.retryTimer)
@@ -625,6 +664,7 @@ export class ManagerService {
   }
 
   private async recheckUnlocked(id: string): Promise<ManagedInstance> {
+    this.cancelResumeBinding(id)
     const record = this.requireInstance(id)
     if (record.state === "stopped") return await this.present(record)
     record.state = "unreachable"
@@ -632,6 +672,7 @@ export class ManagerService {
     record.error = "INSTANCE_IDENTITY_UNVERIFIED"
 
     if (!hasExactIdentity(record)) {
+      this.rejectResumeBinding(id)
       this.repository.saveInstance(record)
       this.closeActivityObserver(id)
       return await this.present(record)
@@ -641,6 +682,7 @@ export class ManagerService {
     try {
       identity = await this.runtimeFor(record).inspect(record)
     } catch {
+      this.rejectResumeBinding(id)
       record.error = "INSTANCE_IDENTITY_CHECK_FAILED"
       this.repository.saveInstance(record)
       this.closeActivityObserver(id)
@@ -648,6 +690,7 @@ export class ManagerService {
     }
 
     if (identity.processState === "not-found" && !identity.portOwnedByOther) {
+      this.rejectResumeBinding(id)
       if (await loopbackPortAvailable(record.port)) {
         record.state = "stopped"
         record.stoppedAt = new Date().toISOString()
@@ -667,6 +710,7 @@ export class ManagerService {
     }
 
     if (!identity.running || !identity.matched || !identity.portOwnerMatched || identity.portOwnedByOther) {
+      this.rejectResumeBinding(id)
       this.repository.saveInstance(record)
       this.closeActivityObserver(id)
       return await this.present(record)
@@ -678,6 +722,7 @@ export class ManagerService {
       record.healthVersion = health.version
       record.error = null
       this.repository.saveInstance(record)
+      this.continueResumeBinding(id)
       this.ensureActivityObserver(record)
     } catch {
       record.error = "INSTANCE_READINESS_FAILED"
@@ -787,6 +832,24 @@ export class ManagerService {
     verification.controller.abort()
   }
 
+  private cancelResumeBinding(id: string): void {
+    const observerState = this.activityObservers.get(id)
+    // Root 綁定後已重放但還在非同步核對的 /new，也不可跨 recheck 世代繼續換綁。
+    if (observerState?.candidate?.resumeBinding) observerState.candidate = null
+    const binding = this.resumeBindings.get(id)
+    if (!binding) return
+    this.resumeBindings.delete(id)
+    if (observerState?.pendingResumeCandidate?.binding === binding) observerState.pendingResumeCandidate = null
+    clearTimeout(binding.timer)
+    binding.controller.abort()
+  }
+
+  private rejectResumeBinding(id: string): void {
+    const intent = this.resumeIntents.get(id)
+    if (intent) intent.attempts = RESUME_BINDING_RETRY_DELAYS_MS.length
+    this.cancelResumeBinding(id)
+  }
+
   private failInterruptedLocalVerification(id: string, registration: InstanceRecord | null, interrupted: boolean): void {
     if (!interrupted || !registration || this.shuttingDown) return
     const current = this.repository.getInstance(id)
@@ -812,10 +875,18 @@ export class ManagerService {
       if (!record || record.kind !== "local-tui") return
       while (this.localVerificationCurrent(id, record, verification)) {
         if (Date.now() >= verification.deadline) break
-        const identity = await awaitLocalVerification(this.runtimeFor(record).inspect(record), verification.controller.signal)
+        let identity: InspectResult
+        try {
+          identity = await awaitLocalVerification(this.runtimeFor(record).inspect(record), verification.controller.signal)
+        } catch (error) {
+          // 只有當前世代的 inspect 真正失敗才終止 resume；recheck 取消舊 await 不得毒化新驗證。
+          if (this.localVerificationCurrent(id, record, verification)) this.rejectResumeBinding(id)
+          throw error
+        }
         if (!this.localVerificationCurrent(id, record, verification)) return
         if (Date.now() >= verification.deadline) break
         if (!identity.running || !identity.matched || identity.portOwnedByOther) {
+          this.rejectResumeBinding(id)
           throw new ManagerError("INSTANCE_IDENTITY_UNVERIFIED", "Local TUI process identity 或 port owner 無法核對。", 409)
         }
         if (identity.portOwnerMatched) {
@@ -827,6 +898,7 @@ export class ManagerService {
           current.healthVersion = health.version
           current.error = null
           this.repository.saveInstance(current)
+          this.continueResumeBinding(current.id)
           this.ensureActivityObserver(current)
           return
         }
@@ -848,6 +920,95 @@ export class ManagerService {
     }
   }
 
+  private continueResumeBinding(id: string): void {
+    const intent = this.resumeIntents.get(id)
+    if (!intent || this.shuttingDown || this.resumeBindings.has(id) || intent.attempts >= RESUME_BINDING_RETRY_DELAYS_MS.length) return
+    const current = this.repository.getInstance(id)
+    if (!current || current.state !== "ready" || current.trackingHidden || !sameInstanceIdentity(current, intent.record)
+      || this.repository.getPrimarySession(id)) return
+    // 首次核對為 ready 才起算；之後的 recheck 只接續剩餘額度，過期 callback 不得延長期限。
+    const deadline = intent.deadline ?? (intent.deadline = Date.now() + LOCAL_VERIFICATION_DEADLINE_MS)
+    if (Date.now() >= deadline) return
+    const controller = new AbortController()
+    // recheck 僅暫停舊 callback，不能重設原先的時間或嘗試次數上限。
+    const timer = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()))
+    const binding = { controller, timer }
+    this.resumeBindings.set(id, binding)
+    void this.bindExplicitResume(intent, binding)
+  }
+
+  private resumeBindingCurrent(intent: ResumeIntent, binding: ResumeBinding): boolean {
+    const current = this.repository.getInstance(intent.record.id)
+    return !this.shuttingDown && this.resumeIntents.get(intent.record.id) === intent
+      && this.resumeBindings.get(intent.record.id) === binding && intent.deadline !== null && Date.now() < intent.deadline
+      && !binding.controller.signal.aborted && current?.state === "ready" && !current.trackingHidden
+      && sameInstanceIdentity(current, intent.record) && !this.repository.getPrimarySession(intent.record.id)
+  }
+
+  private async bindExplicitResume(intent: ResumeIntent, binding: ResumeBinding): Promise<void> {
+    const { record, sessionId } = intent
+    try {
+      while (intent.attempts < RESUME_BINDING_RETRY_DELAYS_MS.length) {
+        const wait = RESUME_BINDING_RETRY_DELAYS_MS[intent.attempts]!
+        if (wait) await awaitLocalVerification(delay(wait), binding.controller.signal)
+        if (!this.resumeBindingCurrent(intent, binding)) return
+        intent.attempts++
+        // #85: 只以 launcher 明確的 -s 及當前 Instance 的 scoped metadata 找 root；idle 和共用 Project 清單不是歸屬證據。
+        try {
+          await awaitLocalVerification(this.requireFreshEndpointIdentity(record), binding.controller.signal)
+        } catch {
+          if (this.resumeBindingCurrent(intent, binding)) intent.attempts = RESUME_BINDING_RETRY_DELAYS_MS.length
+          return // Identity/owner 失敗不可藉由 metadata retry 放寬。
+        }
+        if (!this.resumeBindingCurrent(intent, binding)) return
+        let root: SessionMetadata | null
+        try {
+          this.requireCapability(record, "sessions")
+          const sessions = await awaitLocalVerification(this.runtimeFor(record).sessions(record), binding.controller.signal)
+          if (!this.resumeBindingCurrent(intent, binding)) return
+          root = resolveActivityRoot([sessionId], sessions)
+        } catch {
+          // 暫時不可讀或解析不完整時僅重試固定次數，絕不猜測最近的 Session。
+          continue
+        }
+        if (!root) continue
+        try {
+          await awaitLocalVerification(this.requireFreshEndpointIdentity(record), binding.controller.signal)
+        } catch {
+          if (this.resumeBindingCurrent(intent, binding)) intent.attempts = RESUME_BINDING_RETRY_DELAYS_MS.length
+          return // Metadata 後的 identity 失敗也必須立即拒絕，不可當成 metadata 暫時失敗重試。
+        }
+        if (!this.resumeBindingCurrent(intent, binding)) return
+        this.requireCapability(record, "sessions")
+        // Await 之後只用 absent CAS；後來的 manual choice 或其他有效綁定都不可被延遲結果覆寫。
+        // 既有持久化 schema 只接受 activity/new-session/manual；resume 也是自動建立的綁定。
+        const primarySession = primarySessionFrom(root, "activity")
+        if (this.repository.bindPrimarySessionIfAbsent(record.id, primarySession)) {
+          const observerState = this.activityObservers.get(record.id)
+          const buffered = observerState?.pendingResumeCandidate
+          this.invalidateOverviewSnapshots()
+          this.primarySessionChanged(record)
+          // #89: -s 的 metadata 查詢期間若收到 /new created，保留同一世代的候選；
+          // busy 已到才重放，否則等真正的後續 activity，兩者都走原 candidate 驗證與 CAS。
+          if (buffered?.intent === intent && buffered.binding === binding
+            && observerState && this.activityObservers.get(record.id) === observerState
+            && observerState.connectionToken === buffered.connectionToken) {
+            observerState.candidate = { sessionId: buffered.sessionId, expectedPrimary: primarySession, resumeBinding: binding }
+            if (buffered.activity) void this.handleActivityEvent(record.id, observerState, buffered.connectionToken, buffered.activity)
+          }
+        }
+        return
+      }
+    } catch {
+      // finalize、shutdown 或後來的明確改選會中止尚在等待的非同步查詢。
+    } finally {
+      if (this.resumeBindings.get(record.id) === binding) this.resumeBindings.delete(record.id)
+      const observerState = this.activityObservers.get(record.id)
+      if (observerState?.pendingResumeCandidate?.binding === binding) observerState.pendingResumeCandidate = null
+      clearTimeout(binding.timer)
+    }
+  }
+
   private ensureActivityObserver(record: InstanceRecord): void {
     if (!supports(this.capabilitiesFor(record), "activity") || !supports(this.capabilitiesFor(record), "sessions")) {
       this.closeActivityObserver(record.id)
@@ -862,6 +1023,7 @@ export class ManagerService {
       retryTimer: null,
       connectionToken: null,
       candidate: null,
+      pendingResumeCandidate: null,
     }
     this.activityObservers.set(record.id, state)
     this.startActivityObserver(record.id, state)
@@ -902,6 +1064,7 @@ export class ManagerService {
     state.connectionToken = null
     state.observer = null
     state.candidate = null
+    state.pendingResumeCandidate = null
     const record = this.repository.getInstance(id)
     if (this.shuttingDown || !record || record.trackingHidden || record.state !== "ready"
       || !supports(this.capabilitiesFor(record), "activity") || !supports(this.capabilitiesFor(record), "sessions")
@@ -932,6 +1095,22 @@ export class ManagerService {
   ): Promise<void> {
     if (this.shuttingDown || this.activityObservers.get(id) !== observerState
       || observerState.connectionToken !== connectionToken) return
+    const intent = this.resumeIntents.get(id)
+    if (intent) {
+      const binding = this.resumeBindings.get(id)
+      if (!binding || !this.resumeBindingCurrent(intent, binding)) return
+      if (event.type === "session-created") {
+        observerState.pendingResumeCandidate = event.sessionId === intent.sessionId ? null
+          : { intent, binding, connectionToken, sessionId: event.sessionId, activity: null }
+      } else {
+        const candidate = observerState.pendingResumeCandidate
+        if (candidate?.intent === intent && candidate.binding === binding
+          && event.sessionIds.includes(candidate.sessionId)) {
+          candidate.activity = { ...event, sessionIds: [...event.sessionIds] }
+        }
+      }
+      return
+    }
     const observed = this.repository.getInstance(id)
     if (!observed || !supports(this.capabilitiesFor(observed), "activity") || !supports(this.capabilitiesFor(observed), "sessions")) {
       this.closeActivityObserver(id)
@@ -1000,8 +1179,13 @@ export class ManagerService {
   }
 
   private primarySessionChanged(record: InstanceRecord): void {
+    this.cancelResumeBinding(record.id)
+    this.resumeIntents.delete(record.id)
     const observerState = this.activityObservers.get(record.id)
-    if (observerState) observerState.candidate = null
+    if (observerState) {
+      observerState.candidate = null
+      observerState.pendingResumeCandidate = null
+    }
     if ((record.kind ?? "headless") === "local-tui") this.ensureActivityObserver(record)
     else this.closeActivityObserver(record.id)
   }
@@ -1011,6 +1195,7 @@ export class ManagerService {
     if (!state) return
     this.activityObservers.delete(id)
     state.connectionToken = null
+    state.pendingResumeCandidate = null
     if (state.retryTimer) clearTimeout(state.retryTimer)
     state.observer?.close()
   }

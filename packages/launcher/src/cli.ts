@@ -65,6 +65,7 @@ export interface InvocationPlan {
   managed: boolean
   requestedPort?: number
   projectArgument?: string
+  resumedSessionId?: string
   reason?: string
 }
 
@@ -117,7 +118,11 @@ export async function runLauncher(
     foregroundOptions(cwd, childEnvironment),
   )
   const origin = configuredManagerOrigin(environment)
-  const registration: LauncherRegistrationRequest = { clientInvocationId: invocationId, pid: child.pid }
+  const finalization = { clientInvocationId: invocationId, pid: child.pid }
+  const registration: LauncherRegistrationRequest = {
+    ...finalization,
+    ...(plan.resumedSessionId === undefined ? {} : { resumedSessionId: plan.resumedSessionId }),
+  }
   const register = dependencies.request(
     origin,
     `/api/v1/launcher/reservations/${encodeURIComponent(reservation.reservationId)}/register`,
@@ -133,7 +138,7 @@ export async function runLauncher(
       origin,
       `/api/v1/launcher/reservations/${encodeURIComponent(reservation.reservationId)}/finalize`,
       credentials.launcherToken,
-      registration,
+      finalization,
     ).catch((error: unknown) => dependencies.diagnostic(`OMW finalization failed: ${safeMessage(error)}`))
   }
 }
@@ -143,6 +148,8 @@ export function planInvocation(argv: string[]): InvocationPlan {
   const rootArguments = delimiterIndex === -1 ? argv : argv.slice(0, delimiterIndex)
   const delimiterPositionals = delimiterIndex === -1 ? [] : argv.slice(delimiterIndex + 1)
   const rootPositionals: string[] = []
+  const explicitSessions: string[] = []
+  let forkOrContinue = false
 
   for (let index = 0; index < rootArguments.length; index++) {
     const argument = rootArguments[index]
@@ -153,14 +160,21 @@ export function planInvocation(argv: string[]): InvocationPlan {
       if (!value || value.startsWith("-")) {
         return { managed: false, reason: `${argument} has no unambiguous value` }
       }
+      if (argument === "-s" || argument === "--session") explicitSessions.push(value)
       index++
       continue
     }
     if (argument.startsWith("--") && argument.includes("=")) {
       const option = argument.slice(0, argument.indexOf("="))
-      if (ROOT_OPTIONS_WITH_VALUE.has(option)) continue
+      if (ROOT_OPTIONS_WITH_VALUE.has(option)) {
+        if (option === "--session") explicitSessions.push(argument.slice(option.length + 1))
+        continue
+      }
     }
-    if (ROOT_BOOLEAN_OPTIONS.has(argument)) continue
+    if (ROOT_BOOLEAN_OPTIONS.has(argument)) {
+      if (argument === "--fork" || argument === "-c" || argument === "--continue") forkOrContinue = true
+      continue
+    }
     if (argument.startsWith("-")) {
       return { managed: false, reason: `unknown root option ${argument} is not parsed by the launcher` }
     }
@@ -179,13 +193,17 @@ export function planInvocation(argv: string[]): InvocationPlan {
   if (hostnames[0] !== undefined && hostnames[0] !== "127.0.0.1") {
     return { managed: false, reason: `hostname ${hostnames[0]} is not managed loopback` }
   }
-  if (ports[0] === undefined) return { managed: true, ...(projectArgument === undefined ? {} : { projectArgument }) }
+  // --fork 會建立另一個 Session；-c 與重複 -s 也無法證明最後實際開啟哪個 ID。
+  const resumedSessionId = !forkOrContinue && explicitSessions.length === 1 && explicitSessions[0]
+    ? explicitSessions[0] : undefined
+  const resumeIntent = resumedSessionId === undefined ? {} : { resumedSessionId }
+  if (ports[0] === undefined) return { managed: true, ...(projectArgument === undefined ? {} : { projectArgument }), ...resumeIntent }
   if (!/^\d+$/.test(ports[0])) return { managed: false, reason: "explicit --port is not an integer" }
   const requestedPort = Number(ports[0])
   if (!Number.isInteger(requestedPort) || requestedPort < 1 || requestedPort > 65_535) {
     return { managed: false, reason: "explicit --port is outside 1-65535" }
   }
-  return { managed: true, requestedPort, ...(projectArgument === undefined ? {} : { projectArgument }) }
+  return { managed: true, requestedPort, ...(projectArgument === undefined ? {} : { projectArgument }), ...resumeIntent }
 }
 
 export function managedArguments(argv: string[], port: number): string[] {

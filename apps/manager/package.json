@@ -9,7 +9,7 @@
     "dev": "npm run build && node ../../scripts/isolated-entry.mjs development node dist/src/server.js",
     "start:configured": "npm run build && node dist/src/server.js",
     "credentials:setup": "npm run build && node dist/src/credential-setup.js",
-    "test": "npm run build && node ../../scripts/isolated-entry.mjs test node --test dist/test/*.test.js",
+    "test": "npm run build && npm run build -w @sevenflanks/omw && node ../../scripts/isolated-entry.mjs test node --test dist/test/*.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
