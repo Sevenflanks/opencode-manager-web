@@ -542,6 +542,60 @@ test("explicit resume retries transient metadata failure without another busy ev
   assert.equal(repository.getPrimarySession(reservation.reservationId)?.source, "activity")
 })
 
+test("explicit resume binds after recheck supersedes starting readiness without busy activity", async (t) => {
+  const { project, runtime, repository, service } = await fixture(t)
+  runtime.blockReadiness()
+  const clientInvocationId = "10000000-0000-4000-8000-000000000094"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5094, resumedSessionId: "child" })
+  await waitFor(() => runtime.readinessCalls === 1, 500)
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "starting")
+  runtime.readinessGate = null // Only the cancelled registration retains the old pending response.
+  assert.equal((await service.recheck(reservation.reservationId)).state, "ready")
+  runtime.releaseReadiness?.()
+  await waitFor(() => repository.getPrimarySession(reservation.reservationId)?.sessionId === "root", 1_500)
+  assert.equal(runtime.sessionCalls, 1)
+  assert.equal(runtime.activityBusySessions.get(reservation.reservationId), undefined)
+})
+
+test("explicit resume waits through failed starting recheck and binds on later verified readiness", async (t) => {
+  const { project, runtime, repository, service } = await fixture(t)
+  runtime.blockReadiness()
+  const clientInvocationId = "10000000-0000-4000-8000-000000000095"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5095, resumedSessionId: "child" })
+  await waitFor(() => runtime.readinessCalls === 1, 500)
+  runtime.readinessGate = null
+  runtime.readinessError = new Error("readiness temporarily unavailable")
+  assert.equal((await service.recheck(reservation.reservationId)).state, "unreachable")
+  runtime.releaseReadiness?.()
+  assert.equal(repository.getPrimarySession(reservation.reservationId), null)
+  assert.equal(runtime.sessionCalls, 0)
+  runtime.readinessError = null
+  assert.equal((await service.recheck(reservation.reservationId)).state, "ready")
+  await waitFor(() => repository.getPrimarySession(reservation.reservationId)?.sessionId === "root", 1_500)
+  assert.equal(runtime.sessionCalls, 1)
+})
+
+test("explicit resume does not revive after starting recheck rejects instance identity", async (t) => {
+  const { project, runtime, repository, service } = await fixture(t)
+  runtime.blockReadiness()
+  const clientInvocationId = "10000000-0000-4000-8000-000000000096"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5096, resumedSessionId: "child" })
+  await waitFor(() => runtime.readinessCalls === 1, 500)
+  runtime.readinessGate = null
+  runtime.portOwnerMatched = false
+  assert.equal((await service.recheck(reservation.reservationId)).state, "unreachable")
+  runtime.releaseReadiness?.()
+  runtime.portOwnerMatched = true
+  assert.equal((await service.recheck(reservation.reservationId)).state, "ready")
+  await waitFor(() => runtime.observers.has(reservation.reservationId), 500)
+  await runtime.emitActivity(reservation.reservationId, { type: "activity", source: "event", sessionIds: ["child"] })
+  assert.equal(runtime.sessionCalls, 0)
+  assert.equal(repository.getPrimarySession(reservation.reservationId), null)
+})
+
 test("explicit resume survives recheck during a pending metadata lookup", async (t) => {
   const { project, runtime, repository, service } = await fixture(t)
   let releaseFirst!: () => void

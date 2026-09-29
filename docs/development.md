@@ -228,8 +228,9 @@ limitation，非待修 bug。
 - 活動 evidence 不是獨佔 ownership 證明。其他 Instance 的活動、同 Project 的歷史 metadata、
   單獨存在的 root，或「看起來像最新」的 Session 都不能自動成為 primary。
 - 沒有明確 `-s` 時，SSE 在首次連線前漏掉，或 observer 用盡 retry budget 後仍沒有可用
-  evidence，binding 保持 `null`。明確恢復的 metadata 最多查詢四次、ready 後最多 15 秒；
-  recheck 只接續原有剩餘額度，identity 核對失敗立即停止。耗盡、無效或跨目錄目標不會 fallback
+  evidence，binding 保持 `null`。明確恢復的目標在 starting 階段就保留；即使 recheck 取消初次驗證，
+  首次核對為 ready 時仍可開始綁定。metadata 最多查詢四次、首次 ready 後最多 15 秒；
+  後續 recheck 只接續原有剩餘額度，identity 核對失敗立即停止。耗盡、無效或跨目錄目標不會 fallback
   到其他 busy Session；仍未綁定時，需在 Advanced 明確選擇 root 建立 `manual` binding，或重新
   啟動 Instance。這不擴充一般無 `-s` 的活動追蹤。
 - OMW New Session 明確呼叫 `POST /api/v1/instances/:id/sessions` 建立新的 root；建立成功且
