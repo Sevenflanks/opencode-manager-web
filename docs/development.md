@@ -230,9 +230,14 @@ limitation，非待修 bug。
 - 沒有明確 `-s` 時，SSE 在首次連線前漏掉，或 observer 用盡 retry budget 後仍沒有可用
   evidence，binding 保持 `null`。明確恢復的目標在 starting 階段就保留；即使 recheck 取消初次驗證，
   首次核對為 ready 時仍可開始綁定。metadata 最多查詢四次、首次 ready 後最多 15 秒；
-  後續 recheck 只接續原有剩餘額度，identity 核對失敗立即停止。耗盡、無效或跨目錄目標不會 fallback
+  後續 recheck 只接續原有剩餘額度，初次 inspect 拋錯或 identity 核對失敗立即停止恢復意圖；
+  取消中的舊 inspect 不算失敗。耗盡、無效或跨目錄目標不會 fallback
   到其他 busy Session；仍未綁定時，需在 Advanced 明確選擇 root 建立 `manual` binding，或重新
   啟動 Instance。這不擴充一般無 `-s` 的活動追蹤。
+- 若原生 TUI 在明確 `-s` 驗證期間執行 `/new`，同一 observer 連線與驗證世代內的
+  `session-created` 可保留一個候選；先綁定已驗證的 `-s` root，收到對應 activity 後才以原有
+  metadata／identity／CAS 規則判斷是否換到新 root。單獨 created、child、多 root 活動或斷線／
+  recheck 後的舊候選不會換綁；manual 選擇與 finalize 會使候選失效。
 - OMW New Session 明確呼叫 `POST /api/v1/instances/:id/sessions` 建立新的 root；建立成功且
   response 是 root 後才設為 `new-session` primary。建立失敗、response 不是 root 或 runtime 不可用
   時，原 binding 保持不變。

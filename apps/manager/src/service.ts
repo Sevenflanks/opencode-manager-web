@@ -54,12 +54,21 @@ interface ResumeIntent {
   attempts: number
 }
 
+interface BufferedResumeCandidate {
+  intent: ResumeIntent
+  binding: ResumeBinding
+  connectionToken: object
+  sessionId: string
+  activity: RuntimeActivityEvent | null
+}
+
 interface ActivityObserverState {
   attempts: number
   observer: RuntimeActivityObserver | null
   retryTimer: NodeJS.Timeout | null
   connectionToken: object | null
-  candidate: { sessionId: string; expectedPrimary: PrimarySession } | null
+  candidate: { sessionId: string; expectedPrimary: PrimarySession; resumeBinding?: ResumeBinding } | null
+  pendingResumeCandidate: BufferedResumeCandidate | null
 }
 
 export class ManagerService {
@@ -824,9 +833,13 @@ export class ManagerService {
   }
 
   private cancelResumeBinding(id: string): void {
+    const observerState = this.activityObservers.get(id)
+    // Root 綁定後已重放但還在非同步核對的 /new，也不可跨 recheck 世代繼續換綁。
+    if (observerState?.candidate?.resumeBinding) observerState.candidate = null
     const binding = this.resumeBindings.get(id)
     if (!binding) return
     this.resumeBindings.delete(id)
+    if (observerState?.pendingResumeCandidate?.binding === binding) observerState.pendingResumeCandidate = null
     clearTimeout(binding.timer)
     binding.controller.abort()
   }
@@ -862,7 +875,14 @@ export class ManagerService {
       if (!record || record.kind !== "local-tui") return
       while (this.localVerificationCurrent(id, record, verification)) {
         if (Date.now() >= verification.deadline) break
-        const identity = await awaitLocalVerification(this.runtimeFor(record).inspect(record), verification.controller.signal)
+        let identity: InspectResult
+        try {
+          identity = await awaitLocalVerification(this.runtimeFor(record).inspect(record), verification.controller.signal)
+        } catch (error) {
+          // 只有當前世代的 inspect 真正失敗才終止 resume；recheck 取消舊 await 不得毒化新驗證。
+          if (this.localVerificationCurrent(id, record, verification)) this.rejectResumeBinding(id)
+          throw error
+        }
         if (!this.localVerificationCurrent(id, record, verification)) return
         if (Date.now() >= verification.deadline) break
         if (!identity.running || !identity.matched || identity.portOwnedByOther) {
@@ -962,9 +982,20 @@ export class ManagerService {
         this.requireCapability(record, "sessions")
         // Await 之後只用 absent CAS；後來的 manual choice 或其他有效綁定都不可被延遲結果覆寫。
         // 既有持久化 schema 只接受 activity/new-session/manual；resume 也是自動建立的綁定。
-        if (this.repository.bindPrimarySessionIfAbsent(record.id, primarySessionFrom(root, "activity"))) {
+        const primarySession = primarySessionFrom(root, "activity")
+        if (this.repository.bindPrimarySessionIfAbsent(record.id, primarySession)) {
+          const observerState = this.activityObservers.get(record.id)
+          const buffered = observerState?.pendingResumeCandidate
           this.invalidateOverviewSnapshots()
           this.primarySessionChanged(record)
+          // #89: -s 的 metadata 查詢期間若收到 /new created，保留同一世代的候選；
+          // busy 已到才重放，否則等真正的後續 activity，兩者都走原 candidate 驗證與 CAS。
+          if (buffered?.intent === intent && buffered.binding === binding
+            && observerState && this.activityObservers.get(record.id) === observerState
+            && observerState.connectionToken === buffered.connectionToken) {
+            observerState.candidate = { sessionId: buffered.sessionId, expectedPrimary: primarySession, resumeBinding: binding }
+            if (buffered.activity) void this.handleActivityEvent(record.id, observerState, buffered.connectionToken, buffered.activity)
+          }
         }
         return
       }
@@ -972,6 +1003,8 @@ export class ManagerService {
       // finalize、shutdown 或後來的明確改選會中止尚在等待的非同步查詢。
     } finally {
       if (this.resumeBindings.get(record.id) === binding) this.resumeBindings.delete(record.id)
+      const observerState = this.activityObservers.get(record.id)
+      if (observerState?.pendingResumeCandidate?.binding === binding) observerState.pendingResumeCandidate = null
       clearTimeout(binding.timer)
     }
   }
@@ -990,6 +1023,7 @@ export class ManagerService {
       retryTimer: null,
       connectionToken: null,
       candidate: null,
+      pendingResumeCandidate: null,
     }
     this.activityObservers.set(record.id, state)
     this.startActivityObserver(record.id, state)
@@ -1030,6 +1064,7 @@ export class ManagerService {
     state.connectionToken = null
     state.observer = null
     state.candidate = null
+    state.pendingResumeCandidate = null
     const record = this.repository.getInstance(id)
     if (this.shuttingDown || !record || record.trackingHidden || record.state !== "ready"
       || !supports(this.capabilitiesFor(record), "activity") || !supports(this.capabilitiesFor(record), "sessions")
@@ -1058,8 +1093,24 @@ export class ManagerService {
     connectionToken: object,
     event: RuntimeActivityEvent,
   ): Promise<void> {
-    if (this.shuttingDown || this.resumeIntents.has(id) || this.activityObservers.get(id) !== observerState
+    if (this.shuttingDown || this.activityObservers.get(id) !== observerState
       || observerState.connectionToken !== connectionToken) return
+    const intent = this.resumeIntents.get(id)
+    if (intent) {
+      const binding = this.resumeBindings.get(id)
+      if (!binding || !this.resumeBindingCurrent(intent, binding)) return
+      if (event.type === "session-created") {
+        observerState.pendingResumeCandidate = event.sessionId === intent.sessionId ? null
+          : { intent, binding, connectionToken, sessionId: event.sessionId, activity: null }
+      } else {
+        const candidate = observerState.pendingResumeCandidate
+        if (candidate?.intent === intent && candidate.binding === binding
+          && event.sessionIds.includes(candidate.sessionId)) {
+          candidate.activity = { ...event, sessionIds: [...event.sessionIds] }
+        }
+      }
+      return
+    }
     const observed = this.repository.getInstance(id)
     if (!observed || !supports(this.capabilitiesFor(observed), "activity") || !supports(this.capabilitiesFor(observed), "sessions")) {
       this.closeActivityObserver(id)
@@ -1131,7 +1182,10 @@ export class ManagerService {
     this.cancelResumeBinding(record.id)
     this.resumeIntents.delete(record.id)
     const observerState = this.activityObservers.get(record.id)
-    if (observerState) observerState.candidate = null
+    if (observerState) {
+      observerState.candidate = null
+      observerState.pendingResumeCandidate = null
+    }
     if ((record.kind ?? "headless") === "local-tui") this.ensureActivityObserver(record)
     else this.closeActivityObserver(record.id)
   }
@@ -1141,6 +1195,7 @@ export class ManagerService {
     if (!state) return
     this.activityObservers.delete(id)
     state.connectionToken = null
+    state.pendingResumeCandidate = null
     if (state.retryTimer) clearTimeout(state.retryTimer)
     state.observer?.close()
   }
