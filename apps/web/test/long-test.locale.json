@@ -1,0 +1,5 @@
+{
+  "ui": { "startInstance": "為這個 Project 啟動一個全新的 Instance，並確認之後可以安心回到列表繼續檢視狀態" },
+  "aria": { "filter": "請選擇需要顯示的 Instance 狀態，必要時向左右捲動這些篩選條件" },
+  "notification": { "body": "共有 {count} 項待處理，請查看 Instance {id}" }
+}

@@ -1,4 +1,5 @@
 import type { ManagedInstance } from "@omw/contracts"
+import type { MessageKey } from "./i18n"
 
 const waitingStyles = `
   :root { color-scheme: dark; font-family: "Segoe UI Variable", "Segoe UI", sans-serif; color: #e7ebed; background: #0d1012; font-synthesis: none; }
@@ -23,14 +24,14 @@ const waitingStyles = `
   @media (prefers-reduced-motion: reduce) { .waiting-signal i { animation: none; opacity: 1; } }
 `
 
-export function renderSessionWaiting(document: Document, instance: ManagedInstance, expectedSessionId?: string): void {
+export function renderSessionWaiting(document: Document, instance: ManagedInstance, expectedSessionId: string | undefined, t: (key: MessageKey, named?: Record<string, string | number>) => string): void {
   const element = (tag: string, className: string, content: string): HTMLElement => {
     const node = document.createElement(tag)
     node.className = className
     node.textContent = content
     return node
   }
-  const known = (value?: string): string => value?.trim() || "尚未取得"
+  const known = (value?: string): string => value?.trim() || t("waiting.unknown")
 
   const viewport = document.createElement("meta")
   viewport.name = "viewport"
@@ -47,16 +48,16 @@ export function renderSessionWaiting(document: Document, instance: ManagedInstan
   const signal = document.createElement("span")
   signal.className = "waiting-signal"
   signal.setAttribute("role", "img")
-  signal.setAttribute("aria-label", "等待中")
+  signal.setAttribute("aria-label", t("waiting.aria"))
   for (let index = 0; index < 3; index++) signal.append(document.createElement("i"))
 
   const context = element("p", "waiting-context", "")
-  context.append(element("span", "", "SESSION"))
+  context.append(element("span", "", t("waiting.session")))
   const title = expectedSessionId && expectedSessionId === instance.primarySession?.sessionId ? instance.primarySession.title : undefined
   context.append(element("strong", "waiting-session", known(title || expectedSessionId)))
   const destination = document.createElement("small")
   destination.append(
-    element("span", "waiting-instance", `Instance ${known(instance.id)}`),
+    element("span", "waiting-instance", t("waiting.instance", { id: known(instance.id) })),
     document.createTextNode(" · "),
     element("span", "waiting-project", known(instance.projectName)),
   )
@@ -64,10 +65,10 @@ export function renderSessionWaiting(document: Document, instance: ManagedInstan
 
   waiting.append(
     signal,
-    element("p", "waiting-eyebrow", "OPENING SESSION"),
-    element("h1", "", "正在為你開啟工作階段"),
-    element("p", "waiting-copy", "正在連線到 OpenCode Web…"),
-    element("p", "waiting-hint", "請稍候，頁面準備好後會前往目的地。"),
+    element("p", "waiting-eyebrow", t("waiting.eyebrow")),
+    element("h1", "", t("waiting.title")),
+    element("p", "waiting-copy", t("popup.connectingWeb")),
+    element("p", "waiting-hint", t("waiting.hint")),
     context,
   )
   stage.append(waiting)

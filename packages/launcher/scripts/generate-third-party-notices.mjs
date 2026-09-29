@@ -9,6 +9,15 @@ const webRoot = path.join(repositoryRoot, "apps/web")
 const outputPath = path.join(packageRoot, "THIRD_PARTY_NOTICES.md")
 const licenseFilePattern = /^(?:licen[cs]e|copying|copyright)(?:[._ -].*)?$/i
 const noticeFilePattern = /^notice(?:[._ -].*)?$/i
+// npm 的 @vue/devtools-api@6.6.4 tarball 未附 LICENSE；只接受這個版本已核對的 upstream 全文。
+// 新版或內容變動必須重新確認來源，其他缺全文的套件仍維持 fail-closed。
+const upstreamLicenseExceptions = new Map([
+  ["@vue/devtools-api@6.6.4", {
+    path: path.join(packageRoot, "licenses/vue-devtools-api-6.6.4-LICENSE"),
+    source: "https://github.com/vuejs/vue-devtools/blob/v6.6.4/LICENSE",
+    sha256: "050bbca6960784db52ff387271bf2ecc5cbed7cf8581b415d528a6ecb6585015",
+  }],
+])
 
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"))
@@ -120,6 +129,18 @@ async function collectLicenseFiles(packageKey, directory) {
     .sort((left, right) => left.localeCompare(right))
 
   if (!names.some((name) => licenseFilePattern.test(name))) {
+    const exception = upstreamLicenseExceptions.get(packageKey)
+    if (exception) {
+      const bytes = await readFile(exception.path)
+      const sha256 = createHash("sha256").update(bytes).digest("hex")
+      if (sha256 !== exception.sha256) throw new Error(`${packageKey} verified upstream license text does not match ${exception.sha256}`)
+      return [{
+        name: "LICENSE",
+        sha256,
+        text: bytes.toString("utf8").replace(/\r\n/g, "\n").trimEnd(),
+        source: exception.source,
+      }]
+    }
     throw new Error(`${packageKey} has no upstream license text file in ${directory}`)
   }
 
@@ -145,7 +166,8 @@ for (const [key, { directory, manifest }] of packages) {
   const fileSections = files.map((file) => [
     `### Upstream \`${file.name}\``,
     "",
-    `SHA-256 of installed upstream file: \`${file.sha256}\``,
+    ...(file.source ? [`Source (verified upstream repository, absent from npm tarball): <${file.source}>`] : []),
+    file.source ? `SHA-256 of verified upstream license text: \`${file.sha256}\`` : `SHA-256 of installed upstream file: \`${file.sha256}\``,
     "",
     "````text",
     file.text,
@@ -168,7 +190,7 @@ const output = [
   "",
   "The OMW Web application bundles third-party code into its browser assets. The packages below are the conservative installed production dependency closure rooted at `apps/web/package.json`: regular dependencies, installed optional dependencies, and required peer dependencies are included recursively. OMW workspace packages and dev-only build dependencies are excluded.",
   "",
-  "These components are not licensed under the OMW Sustainable Use License. Each remains subject to the terms and notices reproduced from the corresponding installed npm package. A package's `NOTICE` file is reproduced when its installed package contains one.",
+  "These components are not licensed under the OMW Sustainable Use License. Each remains subject to the terms and notices reproduced from the corresponding installed npm package, or a version-verified upstream repository license when the npm tarball omitted its text. A package's `NOTICE` file is reproduced when its installed package contains one.",
   "",
   `Generated package count: ${packages.length}`,
   `Included upstream license text files: ${licenseFileCount}`,

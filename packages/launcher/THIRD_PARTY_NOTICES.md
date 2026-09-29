@@ -2,10 +2,10 @@
 
 The OMW Web application bundles third-party code into its browser assets. The packages below are the conservative installed production dependency closure rooted at `apps/web/package.json`: regular dependencies, installed optional dependencies, and required peer dependencies are included recursively. OMW workspace packages and dev-only build dependencies are excluded.
 
-These components are not licensed under the OMW Sustainable Use License. Each remains subject to the terms and notices reproduced from the corresponding installed npm package. A package's `NOTICE` file is reproduced when its installed package contains one.
+These components are not licensed under the OMW Sustainable Use License. Each remains subject to the terms and notices reproduced from the corresponding installed npm package, or a version-verified upstream repository license when the npm tarball omitted its text. A package's `NOTICE` file is reproduced when its installed package contains one.
 
-Generated package count: 49
-Included upstream license text files: 49
+Generated package count: 55
+Included upstream license text files: 55
 Included upstream NOTICE files: 0
 
 ## Covered Packages
@@ -20,6 +20,10 @@ Included upstream NOTICE files: 0
 - `@floating-ui/vue@1.1.11`
 - `@internationalized/date@3.12.4`
 - `@internationalized/number@3.6.8`
+- `@intlify/core-base@11.4.12`
+- `@intlify/devtools-types@11.4.12`
+- `@intlify/message-compiler@11.4.12`
+- `@intlify/shared@11.4.12`
 - `@jridgewell/sourcemap-codec@1.6.0`
 - `@swc/helpers@0.5.23`
 - `@tanstack/virtual-core@3.17.11`
@@ -29,6 +33,7 @@ Included upstream NOTICE files: 0
 - `@vue/compiler-dom@3.5.43`
 - `@vue/compiler-sfc@3.5.43`
 - `@vue/compiler-ssr@3.5.43`
+- `@vue/devtools-api@6.6.4`
 - `@vue/reactivity@3.5.43`
 - `@vue/runtime-core@3.5.43`
 - `@vue/runtime-dom@3.5.43`
@@ -58,6 +63,7 @@ Included upstream NOTICE files: 0
 - `tailwind-merge@3.7.0`
 - `tslib@2.8.1`
 - `vue-demi@0.14.10`
+- `vue-i18n@11.4.12`
 - `vue@3.5.43`
 
 ## `@babel/helper-string-parser@7.29.7`
@@ -738,6 +744,130 @@ SHA-256 of installed upstream file: `7dfe6526888bac51759c99f9a51262ba2711a8c12a0
    See the License for the specific language governing permissions and
    limitations under the License.
 ````
+## `@intlify/core-base@11.4.12`
+
+- Declared license: `MIT`
+- Source: <https://github.com/intlify/vue-i18n>
+
+### Upstream `LICENSE`
+
+SHA-256 of installed upstream file: `403a4d6f9815ae33bd7a613202529f0805045c642f92a169fa673d7fa07dd568`
+
+````text
+The MIT License (MIT)
+
+Copyright (c) 2020 kazuya kawaguchi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+````
+## `@intlify/devtools-types@11.4.12`
+
+- Declared license: `MIT`
+- Source: <https://github.com/intlify/vue-i18n>
+
+### Upstream `LICENSE`
+
+SHA-256 of installed upstream file: `8f431e584baf8dc943c4188a9e3c27cf4b6a5b540b2d0801468023db86345e7d`
+
+````text
+The MIT License (MIT)
+
+Copyright (c) 2024 kazuya kawaguchi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+````
+## `@intlify/message-compiler@11.4.12`
+
+- Declared license: `MIT`
+- Source: <https://github.com/intlify/vue-i18n>
+
+### Upstream `LICENSE`
+
+SHA-256 of installed upstream file: `403a4d6f9815ae33bd7a613202529f0805045c642f92a169fa673d7fa07dd568`
+
+````text
+The MIT License (MIT)
+
+Copyright (c) 2020 kazuya kawaguchi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+````
+## `@intlify/shared@11.4.12`
+
+- Declared license: `MIT`
+- Source: <https://github.com/intlify/vue-i18n>
+
+### Upstream `LICENSE`
+
+SHA-256 of installed upstream file: `403a4d6f9815ae33bd7a613202529f0805045c642f92a169fa673d7fa07dd568`
+
+````text
+The MIT License (MIT)
+
+Copyright (c) 2020 kazuya kawaguchi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+````
 ## `@jridgewell/sourcemap-codec@1.6.0`
 
 - Declared license: `MIT`
@@ -1185,6 +1315,39 @@ SHA-256 of installed upstream file: `1bb85cc9b13b81ef41c81c51866172fc345e0503c86
 The MIT License (MIT)
 
 Copyright (c) 2018-present, Yuxi (Evan) You
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+````
+## `@vue/devtools-api@6.6.4`
+
+- Declared license: `MIT`
+- Source: <https://github.com/vuejs/vue-devtools>
+
+### Upstream `LICENSE`
+
+Source (verified upstream repository, absent from npm tarball): <https://github.com/vuejs/vue-devtools/blob/v6.6.4/LICENSE>
+SHA-256 of verified upstream license text: `050bbca6960784db52ff387271bf2ecc5cbed7cf8581b415d528a6ecb6585015`
+
+````text
+The MIT License (MIT)
+
+Copyright (c) 2014-present Evan You
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -2232,6 +2395,37 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+````
+## `vue-i18n@11.4.12`
+
+- Declared license: `MIT`
+- Source: <https://github.com/intlify/vue-i18n>
+
+### Upstream `LICENSE`
+
+SHA-256 of installed upstream file: `403a4d6f9815ae33bd7a613202529f0805045c642f92a169fa673d7fa07dd568`
+
+````text
+The MIT License (MIT)
+
+Copyright (c) 2020 kazuya kawaguchi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 ## `vue@3.5.43`
 

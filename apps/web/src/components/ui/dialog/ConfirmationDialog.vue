@@ -11,8 +11,10 @@ import {
 } from "reka-ui"
 import { nextTick } from "vue"
 import { Button } from "@/components/ui/button"
+import { useMessages } from "@/i18n"
 
 type ConfirmationTone = "positive" | "caution" | "danger"
+const { t } = useMessages()
 
 const props = withDefaults(defineProps<{
   open: boolean
@@ -94,7 +96,7 @@ function handleAnimationEnd(event: Event): void {
         <AlertDialogDescription class="confirmation-description">{{ description }}</AlertDialogDescription>
         <div class="confirmation-actions">
           <AlertDialogCancel as-child>
-            <Button variant="outline" :disabled="busy">取消</Button>
+            <Button variant="outline" :disabled="busy">{{ t('common.cancel') }}</Button>
           </AlertDialogCancel>
           <AlertDialogAction as-child>
             <Button
@@ -103,7 +105,7 @@ function handleAnimationEnd(event: Event): void {
               :disabled="busy"
               @click.capture="emit('confirm')"
             >
-              {{ busy ? "處理中…" : confirmLabel }}
+              {{ busy ? t('common.busy') : confirmLabel }}
             </Button>
           </AlertDialogAction>
         </div>

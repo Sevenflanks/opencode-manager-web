@@ -4,6 +4,9 @@ import { ChevronRightIcon, ExternalLinkIcon, LoaderCircleIcon } from "lucide-vue
 import { ref, watch } from "vue"
 import { managerApi } from "@/api"
 import { Button } from "@/components/ui/button"
+import ErrorDetails from "@/components/ErrorDetails.vue"
+import { presentError, type PresentedError } from "@/error-presentation"
+import { useMessages } from "@/i18n"
 
 const props = withDefaults(defineProps<{
   instanceId: string
@@ -22,7 +25,8 @@ const expanded = ref(false)
 const loaded = ref(false)
 const loading = ref(false)
 const children = ref<SessionMetadata[]>([])
-const error = ref("")
+const diagnostic = ref<PresentedError | null>(null)
+const { t } = useMessages()
 let scopeVersion = 0
 
 watch(
@@ -33,7 +37,7 @@ watch(
     loaded.value = false
     loading.value = false
     children.value = []
-    error.value = ""
+    diagnostic.value = null
   },
 )
 
@@ -44,7 +48,7 @@ async function toggle(): Promise<void> {
   const instanceId = props.instanceId
   const sessionId = props.session.id
   loading.value = true
-  error.value = ""
+  diagnostic.value = null
   try {
     const response = await managerApi.children(instanceId, sessionId)
     if (requestedScope !== scopeVersion || instanceId !== props.instanceId || sessionId !== props.session.id) return
@@ -52,7 +56,7 @@ async function toggle(): Promise<void> {
     loaded.value = true
   } catch (cause) {
     if (requestedScope !== scopeVersion) return
-    error.value = cause instanceof Error ? cause.message : "無法載入 Child Session。"
+    diagnostic.value = presentError(cause, t)
   } finally {
     if (requestedScope === scopeVersion) loading.value = false
   }
@@ -62,7 +66,7 @@ async function toggle(): Promise<void> {
 <template>
   <li class="session-node" :style="{ '--depth': depth ?? 0 }">
     <div class="session-row">
-      <Button variant="ghost" size="icon" class="tree-toggle" :aria-label="expanded ? '收合 Child Session' : '載入 Child Session'" @click="toggle">
+      <Button variant="ghost" size="icon" class="tree-toggle" :aria-label="expanded ? t('session.collapseChildren') : t('session.loadChildren')" @click="toggle">
         <LoaderCircleIcon v-if="loading" class="spin" />
         <ChevronRightIcon v-else :class="{ rotated: expanded }" />
       </Button>
@@ -70,7 +74,7 @@ async function toggle(): Promise<void> {
         <strong>{{ session.title }}</strong>
         <code>{{ session.id }}</code>
       </button>
-      <Button variant="ghost" size="icon" aria-label="在 OpenCode Web 開啟 Session" :disabled="openDisabled" @click="emit('open', session.id)">
+      <Button variant="ghost" size="icon" :aria-label="t('session.openInWeb')" :disabled="openDisabled" @click="emit('open', session.id)">
         <ExternalLinkIcon />
       </Button>
       <Button
@@ -78,13 +82,13 @@ async function toggle(): Promise<void> {
         variant="outline"
         size="sm"
         class="session-switch-button"
-        :aria-label="`切換為主要 Session：${session.title}`"
+        :aria-label="t('session.chooseAria', { title: session.title })"
         :disabled="switchDisabled"
         @click="emit('switch')"
-      >切換</Button>
+      >{{ t('session.choose') }}</Button>
     </div>
-    <p v-if="error" class="inline-error">{{ error }}</p>
-    <p v-if="expanded && loaded && children.length === 0" class="tree-empty">沒有已載入的 direct children</p>
+    <p v-if="diagnostic" class="inline-error"><ErrorDetails :summary="t(diagnostic.summaryKey)" :code="diagnostic.code" :diagnostic="diagnostic.diagnostic" /></p>
+    <p v-if="expanded && loaded && children.length === 0" class="tree-empty">{{ t('session.noChildren') }}</p>
     <ul v-if="expanded && children.length" class="session-list">
       <SessionTreeNode
         v-for="child in children"

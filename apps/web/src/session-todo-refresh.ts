@@ -2,6 +2,7 @@ import type { PrimaryTodosResponse, SessionTodo } from "@omw/contracts"
 import { ref } from "vue"
 
 interface Target { instanceId: string; sessionId: string }
+export class TodoBindingChangedError extends Error {}
 interface Options {
   read: (instanceId: string) => Promise<PrimaryTodosResponse>
   start?: (callback: () => void, milliseconds: number) => number
@@ -13,7 +14,7 @@ export function createSessionTodoRefresh(options: Options) {
   const loading = ref(false)
   const loaded = ref(false)
   const stale = ref(false)
-  const error = ref("")
+  const error = ref<unknown | null>(null)
   const start = options.start ?? ((callback, milliseconds) => window.setInterval(callback, milliseconds))
   const stop = options.stop ?? ((timer) => window.clearInterval(timer))
   let target: Target | null = null
@@ -40,15 +41,15 @@ export function createSessionTodoRefresh(options: Options) {
         const response = await options.read(current.instanceId)
         if (requestGeneration !== generation || disposed) return
         if (response.instanceId !== current.instanceId || response.sessionId !== current.sessionId) {
-          throw new Error("主要 Session 綁定已變更，請重新載入。")
+          throw new TodoBindingChangedError()
         }
         todos.value = response.todos
         loaded.value = true
         stale.value = false
-        error.value = ""
+        error.value = null
       } catch (cause) {
         if (requestGeneration !== generation || disposed) return
-        error.value = cause instanceof Error ? cause.message : "讀取失敗"
+        error.value = cause
         stale.value = loaded.value
       } finally {
         if (requestGeneration === generation && !disposed) loading.value = false
@@ -77,7 +78,7 @@ export function createSessionTodoRefresh(options: Options) {
     loading.value = false
     loaded.value = false
     stale.value = false
-    error.value = ""
+    error.value = null
     if (next) {
       reload()
       timer = start(reload, 5_000)

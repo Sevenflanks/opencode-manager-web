@@ -1,5 +1,6 @@
 import type { OverviewFilter, OverviewResponse } from "@omw/contracts"
 import { ref } from "vue"
+import type { PresentedError } from "./error-presentation"
 
 type Source = "user" | "background"
 type Query = { query: string; filter: OverviewFilter; includeHidden: boolean }
@@ -20,7 +21,8 @@ interface RefreshOptions<Route> {
   prepare: (overview: OverviewResponse, query: Query, route: Route, signal: AbortSignal, current: () => boolean) => Promise<PreparedOverview>
   applied: (result: PreparedOverview, query: Query, route: Route, source: Source, current: () => boolean) => Promise<void>
   userAction: () => void
-  errorMessage: (cause: unknown) => string
+  errorMessage: (cause: unknown) => PresentedError
+  timeoutMessage: () => PresentedError
 }
 
 const OVERVIEW_WAIT_MS = 15_000
@@ -28,7 +30,8 @@ const OVERVIEW_WAIT_MS = 15_000
 export function createOverviewRefresh<Route>(options: RefreshOptions<Route>) {
   const overview = ref<OverviewResponse>({ shortcuts: [], instances: [] })
   const loading = ref(true)
-  const error = ref("")
+  // 摘要與詳細資訊同一筆更新，避免 timeout/成功後沿用上次 API code。
+  const error = ref<PresentedError | null>(null)
   const lastSucceededAt = ref("")
   const stale = ref(false)
   const refreshing = ref(false)
@@ -60,7 +63,7 @@ export function createOverviewRefresh<Route>(options: RefreshOptions<Route>) {
     if (source === "user") {
       options.userAction()
       refreshing.value = true
-      error.value = ""
+      error.value = null
       if (lastSucceededAt.value) stale.value = true
     }
     if (source === "user" && obsoleteRequest && !foregroundRefresh) foreground()
@@ -100,13 +103,13 @@ export function createOverviewRefresh<Route>(options: RefreshOptions<Route>) {
       // 操作期間起始的 snapshot 即使在操作結束後才回來，也不能替代操作後的驗證。
       stale.value = !afterMutation && (startedDuringMutation || options.mutationPending())
       refreshing.value = false
-      error.value = ""
+      error.value = null
       await options.applied(prepared, query, route, source, current)
       return current()
     } catch (cause) {
       if (!current()) return false
       if (controller.signal.aborted) needsDrain = true
-      error.value = controller.signal.aborted ? "更新逾時，請重試。" : options.errorMessage(cause)
+      error.value = controller.signal.aborted ? options.timeoutMessage() : options.errorMessage(cause)
       stale.value = Boolean(lastSucceededAt.value)
       refreshing.value = false
       return false
