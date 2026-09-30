@@ -29,24 +29,28 @@ import {
   WifiIcon,
   XIcon,
 } from "lucide-vue-next"
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { ApiError, managerApi } from "@/api"
 import { createNotificationPreference, createPendingTracker } from "@/browser-notifications"
 import { createOverviewRefresh } from "@/overview-refresh"
-import { createSessionTodoRefresh } from "@/session-todo-refresh"
+import { createSessionTodoRefresh, TodoBindingChangedError } from "@/session-todo-refresh"
 import { renderSessionWaiting } from "@/session-waiting"
 import { createSwipeDismiss } from "@/swipe-dismiss"
 import SessionTreeNode from "@/components/SessionTreeNode.vue"
 import { Button } from "@/components/ui/button"
 import ConfirmationDialog from "@/components/ui/dialog/ConfirmationDialog.vue"
 import { Input } from "@/components/ui/input"
+import ErrorDetails from "@/components/ErrorDetails.vue"
+import { LocalError, presentError, presentRegistrationError, presentStatusError, safeDiagnostic, type PresentedError } from "@/error-presentation"
+import { useMessages, type MessageKey } from "@/i18n"
 
-const filters: Array<{ value: OverviewFilter; label: string }> = [
-  { value: "all", label: "全部" },
-  { value: "active", label: "有執行中" },
-  { value: "attention", label: "需處理" },
-  { value: "unreachable", label: "已失聯" },
-]
+const { t, date: formatDate, number } = useMessages()
+const filters = computed<Array<{ value: OverviewFilter; label: string }>>(() => [
+  { value: "all", label: t("filter.all") },
+  { value: "active", label: t("filter.active") },
+  { value: "attention", label: t("filter.attention") },
+  { value: "unreachable", label: t("filter.unreachable") },
+])
 const SESSION_PAGE_SIZE = 10
 const STOPPED_HISTORY_KEY = "stopped"
 type LifecycleAction = "start" | "stop" | "recheck" | "resume" | "tracking" | "remove"
@@ -54,9 +58,10 @@ type RecoveryAction = "recheck" | "resume" | "tracking" | "remove"
 type ConfirmationTone = "positive" | "caution" | "danger"
 type InstanceStatusCategory = "operable" | "attention" | "unknown" | "stopped"
 interface ConfirmationRequest {
-  title: string
-  description: string
-  confirmLabel: string
+  titleKey: MessageKey
+  descriptionKey: MessageKey
+  descriptionParams?: Record<string, string | number>
+  confirmLabelKey: MessageKey
   tone: ConfirmationTone
   requiresFreshOverview?: boolean
   freshnessErrorTarget?: "lifecycle" | "action"
@@ -69,13 +74,11 @@ const recoveryActionKeys = {
   tracking: "hideAllowed",
   remove: "removeAllowed",
 } as const
-const recoveryActionNames: Record<RecoveryAction, string> = {
-  recheck: "重新檢查",
-  resume: "接續",
-  tracking: "停止追蹤",
-  remove: "移除紀錄",
-}
-const recoveryDiagnosticMessage = "操作資訊尚未取得。可能是前後端版本不一致；請重啟 OMW 並重新整理。"
+type ErrorArea = "action" | "connectivity" | "remote" | "sessions" | "browse" | "lifecycle" | "settings"
+const errorDetails = reactive<Record<ErrorArea, PresentedError | null>>({
+  action: null, connectivity: null, remote: null,
+  sessions: null, browse: null, lifecycle: null, settings: null,
+})
 
 const connectivity = ref<ConnectivityInfo | null>(null)
 const connectivityLoading = ref(false)
@@ -84,7 +87,7 @@ const connectivityError = ref("")
 const connectivityStale = ref(false)
 const connectivityFallbackOpen = ref(false)
 const connectivityFallback = ref<HTMLElement | null>(null)
-const connectivityCopyMessage = ref("")
+const connectivityCopyMessage = ref<MessageKey | "">("")
 const remoteEnableOpen = ref(false)
 const remoteEnableUsername = ref("")
 const remoteEnablePassword = ref("")
@@ -100,7 +103,7 @@ const mobileDetailOpen = ref(false)
 const historyOpen = ref<Set<string>>(new Set())
 const mutating = ref(false)
 const actionError = ref("")
-const notice = ref("")
+const notice = ref<{ key: MessageKey; params?: Record<string, string | number> } | null>(null)
 const filtersRail = ref<HTMLElement | null>(null)
 const filterCanLeft = ref(false)
 const filterCanRight = ref(false)
@@ -150,7 +153,7 @@ const managerSettingsOpen = ref(false)
 const managerSettingsDialog = ref<HTMLElement | null>(null)
 const managerSettingsBusy = ref(false)
 const managerSettingsError = ref("")
-const managerSettingsSuccess = ref("")
+const managerSettingsSuccess = ref<MessageKey | "">("")
 const managerUsername = ref("omw")
 const currentManagerPassword = ref("")
 const nextManagerPassword = ref("")
@@ -167,7 +170,7 @@ const notificationPreference = createNotificationPreference({
   requestPermission: () => Notification.requestPermission(),
 })
 const notificationStatus = ref(notificationPreference.status())
-const notificationError = ref("")
+const notificationError = ref<MessageKey | "">("")
 const notificationBusy = ref(false)
 const pendingTracker = createPendingTracker()
 let notificationRegistration: ServiceWorkerRegistration | null = null
@@ -252,7 +255,7 @@ const refresh = createOverviewRefresh({
       resetSelectedScope()
       mobileDetailOpen.value = false
       replaceMobileHistory("list")
-      showNotice("原執行個體已不存在，已返回列表。")
+      showNotice("notice.instanceMissing")
       void restoreListContext()
     } else if ((!isMobileViewport() || route.historyGeneration === mobileHistoryGeneration)
       && selectedId.value && !next.instances.some((item) => item.id === selectedId.value)) {
@@ -267,20 +270,30 @@ const refresh = createOverviewRefresh({
     if (current() && source === "user") persistMobileListHistory()
   },
   userAction: beginUserAction,
-  errorMessage: message,
+  errorMessage: (cause) => presentError(cause, t),
+  timeoutMessage: () => ({ summary: t("error.overviewTimeout"), summaryKey: "error.overviewTimeout", code: null, diagnostic: null }),
 })
 const {
-  overview, loading, error: overviewError, lastSucceededAt: overviewLastSucceededAt,
+  overview, loading, error: overviewFailure, lastSucceededAt: overviewLastSucceededAt,
   stale: overviewStale, refreshing: overviewRefreshing,
   invalidate: invalidateOverview, refreshAfterMutation, load: loadOverview,
 } = refresh
+const overviewError = computed(() => overviewFailure.value ? t(overviewFailure.value.summaryKey) : "")
 watch(() => Boolean(mutating.value || lifecyclePending.value || switchingSessionId.value), (pending) => {
   if (pending) suspendNotifications()
 }, { flush: "sync" })
 
 const selected = computed(() => overview.value.instances.find((instance) => instance.id === selectedId.value) ?? null)
+const selectedSummaryFailure = computed(() => selected.value?.primarySummary.activity === "unknown"
+  ? presentStatusError(selected.value.primarySummary.error, t, "session.summaryUnknown") : null)
+const selectedFailure = computed(() => selected.value?.error ? presentStatusError(selected.value.error, t, "error.unknown") : null)
 const todoRefresh = createSessionTodoRefresh({ read: (id) => managerApi.primaryTodos(id) })
 const { todos: primaryTodos, loading: todosLoading, loaded: todosLoaded, stale: todosStale, error: todosError } = todoRefresh
+const todoFailure = computed(() => {
+  if (!todosError.value) return null
+  if (todosError.value instanceof TodoBindingChangedError) return { summary: t("error.todoBindingChanged"), summaryKey: "error.todoBindingChanged" as const, code: null, diagnostic: null }
+  return presentError(todosError.value, t)
+})
 const todoCompletedCount = computed(() => primaryTodos.value.filter((todo) => todo.status === "completed").length)
 const todoActiveCount = computed(() => primaryTodos.value.filter((todo) => todo.status !== "cancelled").length)
 const todoCancelledCount = computed(() => primaryTodos.value.filter((todo) => todo.status === "cancelled").length)
@@ -310,9 +323,9 @@ watch(todoMeasuredContent, (content, _, onCleanup) => {
   observer.observe(content)
   onCleanup(() => observer.disconnect())
 }, { flush: "post" })
-const todoStatusLabels: Record<SessionTodo["status"], string> = {
-  pending: "待處理", in_progress: "執行中", completed: "已完成", cancelled: "已取消",
-}
+const todoStatusLabels = computed<Record<SessionTodo["status"], string>>(() => ({
+  pending: t("todo.pending"), in_progress: t("todo.inProgress"), completed: t("todo.completed"), cancelled: t("todo.cancelled"),
+}))
 function syncPrimaryTodos(): void {
   const instance = selected.value
   const sessionId = instance?.primarySession?.sessionId
@@ -358,46 +371,48 @@ const canRegisterConnectivity = computed(() => {
     && !connectivityRegistering.value
     && (state === "failed" || (state === "idle" && !remoteUrl.value))
 })
-const localUrl = computed(() => safeManagerUrl(connectivity.value?.manager.localUrl) ?? "未知")
+const localUrl = computed(() => safeManagerUrl(connectivity.value?.manager.localUrl) ?? t("common.unknown"))
 const connectivityTone = computed(() => {
   if (connectivityStale.value || !connectivity.value) return "unknown"
   if (tailscaleState.value !== "connected" || serveState.value === "mismatch" || connectivity.value.serve.funnel === "enabled") return "warning"
   return serveState.value === "verified" ? "ready" : "unknown"
 })
 const connectivityHeadline = computed(() => {
-  if (connectivityStale.value) return "連線資料已過期"
-  if (!connectivity.value) return connectivityLoading.value ? "正在檢查連線" : "連線狀態未知"
-  if (connectivityRegistering.value || connectivity.value.registration.state === "registering") return "正在連線 Tailscale"
+  if (connectivityStale.value) return t("connectivity.stale")
+  if (!connectivity.value) return connectivityLoading.value ? t("connectivity.pending") : t("connectivity.unknown")
+  if (connectivityRegistering.value || connectivity.value.registration.state === "registering") return t("connectivity.registering")
   if (connectivity.value.registration.state === "failed") {
-    return connectivity.value.registration.trigger === "manual" ? "連線 Tailscale 失敗" : "尚未連線 Tailscale"
+    return connectivity.value.registration.trigger === "manual" ? t("connectivity.registrationFailed") : t("connectivity.notRegistered")
   }
-  if (connectivity.value.registration.state === "verified") return "遠端入口已連線"
+  if (connectivity.value.registration.state === "verified") return t("connectivity.verified")
   return {
-    connected: "本機 Tailscale 在線",
-    offline: "本機 Tailscale 離線",
-    "needs-login": "Tailscale 需要登入",
-    unavailable: "Tailscale 無法使用",
-    unknown: "Tailscale 狀態未知",
+    connected: t("connectivity.online"),
+    offline: t("connectivity.offline"),
+    "needs-login": t("connectivity.needsLogin"),
+    unavailable: t("connectivity.unavailable"),
+    unknown: t("connectivity.unknownState"),
   }[tailscaleState.value]
 })
 const serveLabel = computed(() => ({
-  verified: "Serve 映射吻合",
-  mismatch: "Serve 映射不符",
-  unknown: "Serve 映射未知",
-  "not-configured": "尚未設定 Serve",
+  verified: t("connectivity.serveVerified"),
+  mismatch: t("connectivity.serveMismatch"),
+  unknown: t("connectivity.serveUnknown"),
+  "not-configured": t("connectivity.serveNotConfigured"),
 })[serveState.value])
+const registrationFailure = computed(() => {
+  const registration = connectivity.value?.registration
+  return registration?.state === "failed" && registration.trigger === "manual" && registration.diagnostic
+    ? presentRegistrationError(registration.diagnostic.code, t)
+    : null
+})
 const connectivityWarnings = computed(() => {
   const warnings: string[] = []
-  if (connectivityStale.value) warnings.push("無法取得最新連線狀態；以下為上次成功檢查結果。")
-  if (tailscaleState.value === "offline") warnings.push("本機 Tailscale 目前離線，遠端入口可能無法連線。")
-  if (tailscaleState.value === "needs-login") warnings.push("本機 Tailscale 需要登入後才能使用 Tailnet 入口。")
-  if (tailscaleState.value === "unavailable") warnings.push("找不到可用的本機 Tailscale 狀態。")
-  if (serveState.value === "mismatch") warnings.push("Serve 映射與目前 OMW 設定不符，遠端入口目前不可用。")
-  if (connectivity.value?.serve.funnel === "enabled") warnings.push("偵測到 Funnel，請核對公開範圍")
-  const registration = connectivity.value?.registration
-  if (registration?.state === "failed" && registration.trigger === "manual" && registration.diagnostic) {
-    warnings.push(`${registration.diagnostic.message} ${registration.diagnostic.nextStep}（${registration.diagnostic.code}）`)
-  }
+  if (connectivityStale.value) warnings.push(t("connectivity.warningStale"))
+  if (tailscaleState.value === "offline") warnings.push(t("connectivity.warningOffline"))
+  if (tailscaleState.value === "needs-login") warnings.push(t("connectivity.warningLogin"))
+  if (tailscaleState.value === "unavailable") warnings.push(t("connectivity.warningUnavailable"))
+  if (serveState.value === "mismatch") warnings.push(t("connectivity.warningMismatch"))
+  if (connectivity.value?.serve.funnel === "enabled") warnings.push(t("connectivity.warningFunnel"))
   return warnings
 })
 const recoveryMetadataValid = computed(() => {
@@ -405,7 +420,7 @@ const recoveryMetadataValid = computed(() => {
   return typeof recovery === "object" && recovery !== null
     && Object.values(recoveryActionKeys).every((key) => typeof recovery[key] === "boolean")
 })
-const recoveryDiagnostic = computed(() => selected.value && !recoveryMetadataValid.value ? recoveryDiagnosticMessage : "")
+const recoveryDiagnostic = computed(() => selected.value && !recoveryMetadataValid.value ? t("error.unknown") : "")
 const overviewMutationsBlocked = computed(() => overviewStale.value)
 const overviewFreshnessState = computed<"initial" | "unavailable" | "refreshing" | "changed" | "failed" | "fresh">(() => {
   if (!overviewLastSucceededAt.value) return overviewError.value ? "unavailable" : "initial"
@@ -510,9 +525,7 @@ async function loadConnectivity(source: "user" | "background" = "user"): Promise
     if (generation !== connectivityReadGeneration) return
     // 保留最後一次成功結果供診斷，但一定降級為 stale，避免舊的綠色狀態被當成目前可用。
     connectivityStale.value = connectivity.value !== null
-    connectivityError.value = connectivity.value
-      ? `更新失敗：${message(cause)}`
-      : "暫時無法取得連線狀態。"
+    connectivityError.value = message(cause, "connectivity")
   } finally {
     if (generation === connectivityReadGeneration) connectivityLoading.value = false
   }
@@ -533,7 +546,7 @@ async function registerConnectivity(): Promise<void> {
   } catch (cause) {
     if (generation !== connectivityMutationGeneration) return
     connectivityStale.value = connectivity.value !== null
-    connectivityError.value = `連線 Tailscale 失敗：${message(cause)}`
+    connectivityError.value = message(cause, "connectivity")
   } finally {
     if (generation === connectivityMutationGeneration) connectivityRegistering.value = false
   }
@@ -562,14 +575,14 @@ async function enableRemoteAccess(): Promise<void> {
     connectivityError.value = ""
     remoteEnableOpen.value = false
   } catch (cause) {
-    if (generation === connectivityMutationGeneration) remoteEnableError.value = message(cause)
+    if (generation === connectivityMutationGeneration) remoteEnableError.value = message(cause, "remote")
   } finally {
     remoteEnablePassword.value = ""
     if (generation === connectivityMutationGeneration) connectivityRegistering.value = false
   }
 }
 
-async function copyPhoneUrl(successMessage = "遠端入口已複製。"): Promise<boolean> {
+async function copyPhoneUrl(successMessage: MessageKey = "notice.remoteCopied"): Promise<boolean> {
   const url = remoteUrl.value
   if (!url) return false
   connectivityFallbackOpen.value = false
@@ -581,7 +594,7 @@ async function copyPhoneUrl(successMessage = "遠端入口已複製。"): Promis
     return true
   } catch {
     connectivityFallbackOpen.value = true
-    connectivityCopyMessage.value = "無法自動複製，請選取網址手動複製。"
+    connectivityCopyMessage.value = "connectivity.copyFailed"
     await nextTick()
     const input = connectivityFallback.value?.querySelector<HTMLInputElement>("input")
     input?.focus()
@@ -601,13 +614,13 @@ function sharePhoneUrl(): void {
     void handleShareFailure(cause)
     return
   }
-  void result.then(() => showNotice("系統分享已完成。"), handleShareFailure)
+  void result.then(() => showNotice("notice.shareComplete"), handleShareFailure)
 }
 
 async function handleShareFailure(cause: unknown): Promise<void> {
   if (cause instanceof DOMException && cause.name === "AbortError") return
-  const copied = await copyPhoneUrl("分享失敗，已改為複製網址。")
-  if (!copied) connectivityCopyMessage.value = "分享失敗，請選取網址手動分享。"
+  const copied = await copyPhoneUrl("notice.shareCopied")
+  if (!copied) connectivityCopyMessage.value = "connectivity.shareFailed"
 }
 
 async function choose(instance: ManagedInstance): Promise<void> {
@@ -699,7 +712,7 @@ function applyMobileHistoryContext(): boolean {
   const historyScroll = Reflect.get(state, "omwListScroll")
   const historyDisclosure = Reflect.get(state, "omwHistoryOpen")
   const nextQuery = typeof historyQuery === "string" ? historyQuery : ""
-  const nextFilter = filters.some((item) => item.value === historyFilter) ? historyFilter as OverviewFilter : "all"
+  const nextFilter = filters.value.some((item) => item.value === historyFilter) ? historyFilter as OverviewFilter : "all"
   const nextIncludeHidden = historyIncludeHidden === true
   const changed = query.value !== nextQuery || filter.value !== nextFilter || includeHidden.value !== nextIncludeHidden
   query.value = nextQuery
@@ -783,7 +796,7 @@ async function startNotifications(): Promise<void> {
           new Promise<never>((_, reject) => { timer = window.setTimeout(() => reject(new Error("Service Worker timeout")), 15_000) }),
         ])
       } finally { window.clearTimeout(timer) }
-      if (typeof notificationRegistration.showNotification !== "function") throw new Error("無法使用系統通知")
+      if (typeof notificationRegistration.showNotification !== "function") throw new Error(t("notification.unsupported"))
     }
     if (generation !== notificationGeneration || !notificationPageActive || !notificationPreference.enabled()) return
     notificationReady = true
@@ -795,7 +808,7 @@ async function startNotifications(): Promise<void> {
     notificationReady = false
     notificationPreference.fail()
     notificationStatus.value = notificationPreference.status()
-    notificationError.value = "此瀏覽器目前無法顯示通知；請確認 HTTPS、系統通知設定及手機安裝條件。"
+    notificationError.value = "notification.failed"
   } finally {
     if (generation === notificationGeneration || !notificationReady) notificationBusy.value = false
   }
@@ -819,7 +832,7 @@ async function toggleNotifications(event: Event): Promise<void> {
   if (allowed) await startNotifications()
   else {
     notificationBusy.value = false
-    if (notificationStatus.value === "off") notificationError.value = "尚未取得瀏覽器通知權限；通知未啟用。"
+    if (notificationStatus.value === "off") notificationError.value = "notification.permissionDenied"
   }
 }
 
@@ -848,8 +861,8 @@ async function pollNotifications(): Promise<void> {
       notificationError.value = ""
       for (const event of pendingTracker.observe(response.instances)) {
         if (generation !== notificationGeneration || !notificationPageActive || !notificationPreference.enabled()) break
-        const title = "有待回答或待授權事項"
-        const body = `執行個體 ${event.instanceId}：${event.count} 筆待處理`
+        const title = t("notification.title")
+        const body = t("notification.body", { id: event.instanceId, count: number(event.count) })
         const url = `${window.location.origin}/#instance=${encodeURIComponent(event.instanceId)}`
         try {
           if (notificationRegistration) {
@@ -862,7 +875,7 @@ async function pollNotifications(): Promise<void> {
           notificationPreference.fail()
           notificationReady = false
           notificationStatus.value = notificationPreference.status()
-          notificationError.value = "瀏覽器無法顯示通知；請檢查網站權限、Service Worker 或手機安裝條件。"
+          notificationError.value = "notification.displayFailed"
           pendingTracker.reset()
           return
         }
@@ -871,7 +884,7 @@ async function pollNotifications(): Promise<void> {
       if (generation !== notificationGeneration) return
       pendingTracker.reset()
       if (controller.signal.aborted) notificationNeedsDrain = true
-      notificationError.value = "通知監測暫時無法取得最新資料；恢復後會重新建立基準。"
+      notificationError.value = "notification.pollFailed"
     } finally {
       window.clearTimeout(timeout)
     }
@@ -900,7 +913,7 @@ async function revealNotificationTarget(instances: ManagedInstance[]): Promise<v
       void loadOverview(false, "background")
     } else if (!overviewStale.value) {
       window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search)
-      showNotice("通知對應的執行個體已不存在。")
+      showNotice("notice.notificationMissing")
     }
     return
   }
@@ -1006,7 +1019,7 @@ async function loadSessions(): Promise<void> {
     if (generation !== sessionsGeneration || selectedId.value !== instanceId) return
     sessions.value = { roots: [], unknownParent: [] }
     sessionsLoaded.value = true
-    sessionsError.value = message(cause)
+    sessionsError.value = message(cause, "sessions")
     sessionPage.value = 1
   } finally {
     if (generation === sessionsGeneration && selectedId.value === instanceId) sessionsLoading.value = false
@@ -1036,16 +1049,17 @@ async function saveShortcut(): Promise<void> {
     if (shortcutId.value) await managerApi.updateShortcut(shortcutId.value, payload)
     else await managerApi.createShortcut(payload)
     clearShortcutForm()
-    showNotice("目錄捷徑已儲存。")
+    showNotice("notice.shortcutSaved")
     await refreshAfterMutation()
   })
 }
 
 function removeShortcut(shortcut: DirectoryShortcut): void {
   requestConfirmation({
-    title: "移除目錄捷徑？",
-    description: `將移除「${shortcut.name}」；既有執行個體不會被停止。`,
-    confirmLabel: "移除捷徑",
+    titleKey: "confirm.shortcutRemoveTitle",
+    descriptionKey: "confirm.shortcutRemoveDescription",
+    descriptionParams: { name: shortcut.name },
+    confirmLabelKey: "confirm.shortcutRemoveAction",
     tone: "danger",
     accept: () => deleteShortcut(shortcut),
   })
@@ -1054,7 +1068,7 @@ function removeShortcut(shortcut: DirectoryShortcut): void {
 async function deleteShortcut(shortcut: DirectoryShortcut): Promise<void> {
   await mutate(async () => {
     await managerApi.deleteShortcut(shortcut.id)
-    showNotice("目錄捷徑已移除；執行個體未受影響。")
+    showNotice("notice.shortcutRemoved")
     await refreshAfterMutation()
   })
 }
@@ -1071,7 +1085,7 @@ async function browse(directory: string): Promise<void> {
     listing.value = result
     browserPath.value = result.current
   } catch (cause) {
-    if (generation === browseGeneration) browseError.value = message(cause)
+    if (generation === browseGeneration) browseError.value = message(cause, "browse")
   } finally {
     if (generation === browseGeneration) browsingPath.value = ""
   }
@@ -1094,9 +1108,7 @@ async function start(directory: string): Promise<void> {
     const instance = await managerApi.start(directory)
     await selectNewInstance(instance)
     lifecycleError.value = ""
-    showNotice(instance.state === "ready"
-      ? `執行個體已啟動（${shortId(instance.id)}）。`
-      : `執行個體已啟動，目前無法連線，請查看狀態（${shortId(instance.id)}）。`)
+    showNotice(instance.state === "ready" ? "notice.started" : "notice.startedUnreachable", { id: shortId(instance.id) })
     revealDetailAfterStartPanelClose = true
     closeStartPanel(false, true)
   })
@@ -1125,9 +1137,10 @@ async function selectNewInstance(target: ManagedInstance | string): Promise<bool
 
 function stopInstance(instance: ManagedInstance): void {
   requestConfirmation({
-    title: "停止整個執行個體？",
-    description: `將停止 ${shortId(instance.id)} 的整個程序與所有進行中的工作，但不會刪除 OpenCode Sessions 或專案檔案。`,
-    confirmLabel: "停止執行個體",
+    titleKey: "confirm.stopTitle",
+    descriptionKey: "confirm.stopDescription",
+    descriptionParams: { id: shortId(instance.id) },
+    confirmLabelKey: "confirm.stopAction",
     tone: "danger",
     requiresFreshOverview: true,
     accept: () => performStopInstance(instance),
@@ -1137,16 +1150,16 @@ function stopInstance(instance: ManagedInstance): void {
 async function performStopInstance(instance: ManagedInstance): Promise<void> {
   await lifecycleMutation("stop", async () => {
     replaceInstance(await managerApi.stop(instance.id))
-    showNotice("背景執行個體已停止。")
+    showNotice("notice.stopped")
     await refreshAfterMutation()
   })
 }
 
 function startFreshInstance(instance: ManagedInstance): void {
   requestConfirmation({
-    title: "啟動新的執行個體？",
-    description: "將在相同專案目錄啟動新的背景程序與 PID；不建立 Session，也不變更這筆已停止的舊紀錄。",
-    confirmLabel: "啟動",
+    titleKey: "confirm.startTitle",
+    descriptionKey: "confirm.startDescription",
+    confirmLabelKey: "confirm.startAction",
     tone: "positive",
     requiresFreshOverview: true,
     accept: () => performFreshStart(instance),
@@ -1157,23 +1170,23 @@ async function performFreshStart(instance: ManagedInstance): Promise<void> {
   await lifecycleMutation("start", async () => {
     const started = await managerApi.start(instance.projectDirectory)
     await selectNewInstance(started)
-    showNotice(`已啟動新的背景執行個體（${shortId(started.id)}）；尚未建立或綁定 Session。`)
+    showNotice("notice.freshStart", { id: shortId(started.id) })
   })
 }
 
 async function recheckInstance(instance: ManagedInstance): Promise<void> {
   await lifecycleMutation("recheck", async () => {
     replaceInstance(await managerApi.recheck(instance.id))
-    showNotice("執行個體狀態已重新檢查。")
+    showNotice("notice.rechecked")
     await refreshAfterMutation()
   })
 }
 
 function resumeInstance(instance: ManagedInstance): void {
   requestConfirmation({
-    title: "接續主要對話？",
-    description: "將啟動新的背景程序與 PID 接續已綁定的主要 Session；不會停止舊程序，也不會傳送模型訊息。",
-    confirmLabel: "接續對話",
+    titleKey: "confirm.resumeTitle",
+    descriptionKey: "confirm.resumeDescription",
+    confirmLabelKey: "confirm.resumeAction",
     tone: "positive",
     requiresFreshOverview: true,
     accept: () => performResumeInstance(instance),
@@ -1184,22 +1197,22 @@ async function performResumeInstance(instance: ManagedInstance): Promise<void> {
   await lifecycleMutation("resume", async () => {
     const resumed = await managerApi.resume(instance.id)
     await selectNewInstance(resumed)
-    showNotice(`已啟動新的背景執行個體（${shortId(resumed.id)}）；請確認後再進入主 Session。`)
+    showNotice("notice.resumed", { id: shortId(resumed.id) })
   }, async (cause) => {
     const newInstanceId = errorNewInstanceId(cause)
-    if (!newInstanceId) return message(cause)
+    if (!newInstanceId) return message(cause, "lifecycle")
     const visible = await selectNewInstance(newInstanceId)
     if (visible) {
-      return `新的背景執行個體 ${shortId(newInstanceId)} 已啟動，但尚未完成主要 Session 綁定。列表已顯示並選取新的執行個體；不要重複接續。`
+      return localError("lifecycle", "notice.resumePartial", { id: shortId(newInstanceId) })
     }
-    return `新的背景執行個體 ${shortId(newInstanceId)} 已啟動，但重新整理後尚未出現在列表。請稍後再重新整理；不要重複接續。`
+    return localError("lifecycle", "notice.resumePartialNotVisible", { id: shortId(newInstanceId) })
   })
 }
 
 async function setInstanceTracking(instance: ManagedInstance, hidden: boolean): Promise<void> {
   await lifecycleMutation("tracking", async () => {
     replaceInstance(await managerApi.setTracking(instance.id, hidden))
-    showNotice(hidden ? "已從主列表隱藏；程序與保留的連線埠不受影響。" : "已恢復追蹤此執行個體。")
+    showNotice(hidden ? "notice.hidden" : "notice.restored")
     if (hidden && selectedId.value === instance.id && isMobileViewport()) {
       selectedId.value = ""
       resetSelectedScope()
@@ -1212,9 +1225,10 @@ async function setInstanceTracking(instance: ManagedInstance, hidden: boolean): 
 
 function removeInstance(instance: ManagedInstance): void {
   requestConfirmation({
-    title: "移除 OMW 紀錄與綁定？",
-    description: `將移除執行個體 ${shortId(instance.id)} 的 OMW 追蹤紀錄與綁定；不會刪除 OpenCode Sessions、專案檔案或其他資料。`,
-    confirmLabel: "移除紀錄",
+    titleKey: "confirm.removeTitle",
+    descriptionKey: "confirm.removeDescription",
+    descriptionParams: { id: shortId(instance.id) },
+    confirmLabelKey: "confirm.removeAction",
     tone: "danger",
     requiresFreshOverview: true,
     accept: () => performRemoveInstance(instance),
@@ -1233,7 +1247,7 @@ async function performRemoveInstance(instance: ManagedInstance): Promise<void> {
         replaceMobileHistory("list")
       }
     }
-    showNotice("OMW 追蹤紀錄與綁定已移除；OpenCode Sessions 與檔案未受影響。")
+    showNotice("notice.removed")
     await refreshAfterMutation()
     if (removedSelection && isMobileViewport()) await restoreListContext()
   })
@@ -1253,7 +1267,7 @@ async function lifecycleMutation(
   try {
     await operation()
   } catch (cause) {
-    lifecycleError.value = onError ? await onError(cause) : message(cause)
+    lifecycleError.value = onError ? await onError(cause) : message(cause, "lifecycle")
   } finally {
     lifecyclePending.value = null
   }
@@ -1281,11 +1295,11 @@ async function openWithPopup(
   request: () => Promise<OpenUrlResponse>,
   expectedSessionId?: string,
 ): Promise<OpenUrlResponse> {
-  if (opening.value) throw new Error("已有連線請求正在進行中。")
+  if (opening.value) throw new LocalError("popup.busy")
   const instanceId = instance.id
   // 必須在 click 的 user activation 內、任何 await 之前取得 handle，否則瀏覽器可能封鎖延遲開啟的分頁。
   const popup = window.open("about:blank", "_blank")
-  if (!popup) throw new Error("瀏覽器封鎖了彈出視窗，請允許此網站開啟新分頁後再試。")
+  if (!popup) throw new LocalError("popup.blocked")
 
   opening.value = true
   try {
@@ -1294,11 +1308,11 @@ async function openWithPopup(
     referrerPolicy.name = "referrer"
     referrerPolicy.content = "no-referrer"
     popup.document.head.append(referrerPolicy)
-    popup.document.title = "連線中…"
+    popup.document.title = t("popup.connecting")
     if (expectedSessionId && expectedSessionId === instance.primarySession?.sessionId) {
-      renderSessionWaiting(popup.document, instance, expectedSessionId)
+      renderSessionWaiting(popup.document, instance, expectedSessionId, t)
     } else {
-      popup.document.body.textContent = "正在連線到 OpenCode Web…"
+      popup.document.body.textContent = t("popup.connectingWeb")
     }
 
     const response = await request()
@@ -1306,11 +1320,11 @@ async function openWithPopup(
       ? typeof response.sessionId === "string" && response.sessionId.length > 0
       : response.sessionId === expectedSessionId
     if (response.instanceId !== instanceId || !sessionMatches) {
-      throw new Error("Manager 回傳的 Open URL 與本次請求不符。")
+      throw new LocalError("popup.mismatch")
     }
     const destination = new URL(response.url)
     if ((destination.protocol !== "http:" && destination.protocol !== "https:") || destination.username || destination.password) {
-      throw new Error("Manager 回傳了不安全的 Open URL。")
+      throw new LocalError("popup.unsafe")
     }
     popup.location.replace(destination.href)
     // New Session 建立並開啟的頁也能由進入主 Session 重用；只有通過回應驗證的頁才登記。
@@ -1329,7 +1343,7 @@ async function openWeb(instance: ManagedInstance, sessionId: string): Promise<vo
   try {
     await openWithPopup(instance, () => managerApi.openUrl(instance.id, sessionId), sessionId)
   } catch (cause) {
-    actionError.value = message(cause)
+    actionError.value = message(cause, "action")
   }
 }
 
@@ -1360,9 +1374,9 @@ async function refreshSelectedInstance(instanceId: string): Promise<void> {
 
 function openNewSession(instance: ManagedInstance): void {
   requestConfirmation({
-    title: "建立 New Session？",
-    description: "將建立新的 Session、綁定為此執行個體的主要 Session，並在 OpenCode Web 開啟。",
-    confirmLabel: "建立並開啟",
+    titleKey: "confirm.createTitle",
+    descriptionKey: "confirm.createDescription",
+    confirmLabelKey: "confirm.createAction",
     tone: "caution",
     requiresFreshOverview: true,
     freshnessErrorTarget: "action",
@@ -1377,25 +1391,26 @@ async function createNewSession(instance: ManagedInstance): Promise<void> {
   try {
     const response = await openWithPopup(instance, () => managerApi.createSession(instance.id))
     await refreshSelectedInstance(instance.id)
-    showNotice(`New Session ${shortId(response.sessionId ?? "")} 已建立並綁定為主要 Session。`)
+    showNotice("notice.newSession", { id: shortId(response.sessionId ?? "") })
   } catch (cause) {
     if (cause instanceof ApiError && cause.code === "SESSION_CREATED_URL_FAILED") {
       const createdSessionId = errorSessionId(cause.details)
       await refreshSelectedInstance(instance.id)
       actionError.value = createdSessionId
-        ? `Session ${createdSessionId} 已建立並綁定，但 URL 產生失敗。請重新整理綁定後使用「進入主 Session」開啟，不要再次建立 New Session。`
-        : `${cause.message} 請重新整理綁定後使用「進入主 Session」開啟，不要再次建立 New Session。`
+        ? localError("action", "notice.sessionCreatedUrlFailed", { id: createdSessionId })
+        : message(cause, "action")
       return
     }
-    actionError.value = message(cause)
+    actionError.value = message(cause, "action")
   }
 }
 
 function selectPrimarySession(instance: ManagedInstance, session: SessionMetadata): void {
   requestConfirmation({
-    title: "切換主要 Session？",
-    description: `只會將 ${session.title}（${session.id}）綁定為此執行個體的主要 Session，不會開啟或跳轉 OpenCode Web。`,
-    confirmLabel: "切換",
+    titleKey: "confirm.switchTitle",
+    descriptionKey: "confirm.switchDescription",
+    descriptionParams: { title: session.title, id: session.id },
+    confirmLabelKey: "confirm.switchAction",
     tone: "caution",
     requiresFreshOverview: true,
     freshnessErrorTarget: "action",
@@ -1410,11 +1425,11 @@ async function performSelectPrimarySession(instance: ManagedInstance, sessionId:
   switchingSessionId.value = sessionId
   try {
     const response = await managerApi.selectPrimarySession(instance.id, sessionId)
-    if (response.instanceId !== instance.id || response.sessionId !== sessionId) throw new Error("Manager 回傳的主要 Session 綁定與本次請求不符。")
+    if (response.instanceId !== instance.id || response.sessionId !== sessionId) throw new Error(t("session.bindingMismatch"))
     await refreshSelectedInstance(instance.id)
-    showNotice(`主要 Session 已切換為 ${shortId(sessionId)}。`)
+    showNotice("notice.switchPrimary", { id: shortId(sessionId) })
   } catch (cause) {
-    actionError.value = message(cause)
+    actionError.value = message(cause, "action")
   } finally {
     switchingSessionId.value = ""
   }
@@ -1517,7 +1532,7 @@ async function mutate(operation: () => Promise<void>): Promise<void> {
   try {
     await operation()
   } catch (cause) {
-    actionError.value = message(cause)
+    actionError.value = message(cause, "action")
   } finally {
     mutating.value = false
   }
@@ -1554,7 +1569,7 @@ async function updateManagerCredentials(): Promise<void> {
   managerSettingsError.value = ""
   managerSettingsSuccess.value = ""
   if (nextManagerPassword.value !== confirmManagerPassword.value) {
-    managerSettingsError.value = "兩次輸入的新密碼不一致。"
+    managerSettingsError.value = localError("settings", "settings.passwordMismatch")
     return
   }
   managerSettingsBusy.value = true
@@ -1567,10 +1582,10 @@ async function updateManagerCredentials(): Promise<void> {
     currentManagerPassword.value = ""
     nextManagerPassword.value = ""
     confirmManagerPassword.value = ""
-    managerSettingsSuccess.value = "OMW 帳密已更新；後續請求將使用新帳密，遠端瀏覽器可能要求重新登入。"
+    managerSettingsSuccess.value = "settings.updated"
     showNotice(managerSettingsSuccess.value)
   } catch (cause) {
-    managerSettingsError.value = message(cause)
+    managerSettingsError.value = message(cause, "settings")
   } finally {
     managerSettingsBusy.value = false
   }
@@ -1578,9 +1593,9 @@ async function updateManagerCredentials(): Promise<void> {
 
 function stopManager(): void {
   requestConfirmation({
-    title: "停止 OMW Manager？",
-    description: "管理介面將立即中斷，但所有 OpenCode TUI、背景執行個體、Sessions 與 Project 工作都會繼續運作。這不是停止執行個體，也不是停止追蹤。",
-    confirmLabel: "只停止 OMW",
+    titleKey: "confirm.stopManagerTitle",
+    descriptionKey: "confirm.stopManagerDescription",
+    confirmLabelKey: "confirm.stopManagerAction",
     tone: "danger",
     accept: performStopManager,
   })
@@ -1597,7 +1612,7 @@ async function performStopManager(): Promise<void> {
     closeManagerSettings(true)
     managerStopped.value = true
   } catch (cause) {
-    managerSettingsError.value = message(cause)
+    managerSettingsError.value = message(cause, "settings")
   } finally {
     managerSettingsBusy.value = false
   }
@@ -1605,20 +1620,21 @@ async function performStopManager(): Promise<void> {
 
 function beginUserAction(): void {
   actionError.value = ""
+  errorDetails.action = null
   clearNotice()
 }
 
-function showNotice(value: string): void {
+function showNotice(key: MessageKey, params?: Record<string, string | number>): void {
   if (activeSwipe?.kind === "notice") cancelSwipe()
   window.clearTimeout(noticeTimer)
-  notice.value = value
-  noticeTimer = window.setTimeout(() => { notice.value = "" }, 6_000)
+  notice.value = { key, ...(params ? { params } : {}) }
+  noticeTimer = window.setTimeout(() => { notice.value = null }, 6_000)
 }
 
 function clearNotice(): void {
   if (activeSwipe?.kind === "notice") cancelSwipe()
   window.clearTimeout(noticeTimer)
-  notice.value = ""
+  notice.value = null
 }
 
 watch(actionError, () => {
@@ -1840,37 +1856,37 @@ function statusCategory(instance: ManagedInstance): InstanceStatusCategory {
 }
 
 function statusCategoryLabel(instance: ManagedInstance): string {
-  return { operable: "可操作", attention: "需處理", unknown: "無法確認", stopped: "已停止" }[statusCategory(instance)]
+  return { operable: t("state.operable"), attention: t("state.attention"), unknown: t("state.unknown"), stopped: t("state.stopped") }[statusCategory(instance)]
 }
 
 function attentionSummary(instance: ManagedInstance): string {
-  if (instance.primarySummary.scope === "unbound") return "需處理 · 未綁定主 Session"
+  if (instance.primarySummary.scope === "unbound") return t("session.unboundAttention")
   const items: string[] = []
-  if ((instance.primarySummary.pendingQuestions ?? 0) > 0) items.push(`${instance.primarySummary.pendingQuestions} 項待回答`)
-  if ((instance.primarySummary.pendingPermissions ?? 0) > 0) items.push(`${instance.primarySummary.pendingPermissions} 項待授權`)
-  return items.length ? `需處理 · ${items.join("、")}` : "需處理 · 無執行中 Session"
+  if ((instance.primarySummary.pendingQuestions ?? 0) > 0) items.push(t("session.questions", { count: number(instance.primarySummary.pendingQuestions!) }))
+  if ((instance.primarySummary.pendingPermissions ?? 0) > 0) items.push(t("session.permissions", { count: number(instance.primarySummary.pendingPermissions!) }))
+  return items.length ? t("session.attention", { items: items.join("、") }) : t("session.noActive")
 }
 
 function statusHeadline(instance: ManagedInstance): string {
-  if (instance.state === "stopped") return "已停止"
+  if (instance.state === "stopped") return t("state.stopped")
   if (instance.state === "starting" || instance.state === "failed" || instance.state === "unreachable") {
-    return `無法確認 · ${stateLabel(instance.state)}`
+    return t("session.unknownState", { state: stateLabel(instance.state) })
   }
   if (statusCategory(instance) === "attention") return attentionSummary(instance)
   const disposition = primarySessionDisposition(instance.primarySummary)
   if (disposition === "unknown") {
-    return instance.primarySummary.scope === "unknown" ? "無法確認 · 主 Session 範圍未知" : "無法確認 · 活動未知"
+    return t(instance.primarySummary.scope === "unknown" ? "session.unknownScope" : "session.unknownActivity")
   }
-  return disposition === "retry" ? "重試中" : "執行中"
+  return t(disposition === "retry" ? "state.retry" : "state.working")
 }
 
 function stateLabel(state: ManagedInstance["state"]): string {
-  return { starting: "啟動中", ready: "可連線", failed: "啟動失敗", unreachable: "已失聯", stopped: "已停止" }[state]
+  return { starting: t("state.starting"), ready: t("state.ready"), failed: t("state.failed"), unreachable: t("state.unreachable"), stopped: t("state.stopped") }[state]
 }
 function primarySourceLabel(source: NonNullable<ManagedInstance["primarySession"]>["source"]): string {
-  return { activity: "首次活動", "new-session": "New Session", manual: "手動切換" }[source]
+  return { activity: t("session.sourceActivity"), "new-session": t("session.sourceNew"), manual: t("session.sourceManual") }[source]
 }
-function count(value: number | null): string { return value == null ? "未知" : String(value) }
+function count(value: number | null): string { return value == null ? t("common.unknown") : number(value) }
 function safeManagerUrl(value: string | null | undefined): string | null {
   if (!value) return null
   try {
@@ -1882,12 +1898,12 @@ function safeManagerUrl(value: string | null | undefined): string | null {
   }
 }
 function checkedAtLabel(value: string | undefined): string {
-  if (!value) return "未知"
+  if (!value) return t("common.unknown")
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? "未知" : new Intl.DateTimeFormat("zh-TW", { dateStyle: "medium", timeStyle: "medium" }).format(date)
+  return Number.isNaN(date.getTime()) ? t("common.unknown") : formatDate(date)
 }
 function managerMappingLabel(value: boolean | null | undefined): string {
-  return value === true ? "吻合" : value === false ? "不吻合" : "未知"
+  return value === true ? t("settings.matched") : value === false ? t("settings.mismatched") : t("common.unknown")
 }
 function shortId(value: string): string { return value.slice(0, 8) }
 function projectFolderName(directory: string): string {
@@ -1895,24 +1911,23 @@ function projectFolderName(directory: string): string {
   return normalized.split(/[\\/]/).at(-1) || directory
 }
 function instanceTitle(instance: ManagedInstance): string {
-  return instance.primarySession?.title ?? "尚未綁定主 Session"
+  return instance.primarySession?.title ?? t("session.unbound")
 }
 function detailTitle(instance: ManagedInstance): string {
   return instance.primarySession?.title ?? projectFolderName(instance.projectDirectory)
 }
 function instancePid(instance: ManagedInstance): string {
-  return instance.pid == null ? "PID 未知" : `#${instance.pid}`
+  return instance.pid == null ? t("settings.pidUnknown") : `#${instance.pid}`
 }
 function instanceRowLabel(instance: ManagedInstance): string {
   const identity = instance.pid == null ? `${instancePid(instance)} · ${shortId(instance.id)}` : instancePid(instance)
-  return `${instance.projectName || projectFolderName(instance.projectDirectory)}，${instance.projectDirectory}，${instanceTitle(instance)}，${statusHeadline(instance)}，${stateLabel(instance.state)}，${identity}${selectedId.value === instance.id ? '，目前選取' : ''}`
+  return t("aria.instanceRow", { project: instance.projectName || projectFolderName(instance.projectDirectory), path: instance.projectDirectory, title: instanceTitle(instance), headline: statusHeadline(instance), state: stateLabel(instance.state), identity, selection: selectedId.value === instance.id ? t("aria.selected") : "" })
 }
 function actionPending(action: LifecycleAction): boolean { return lifecyclePending.value === action }
 function ensureFreshOverviewMutation(target: "lifecycle" | "action" = "lifecycle"): boolean {
   if (!overviewMutationsBlocked.value) return true
-  const staleMessage = "執行個體資料已過期；請先重試更新，成功後再執行此操作。"
-  if (target === "action") actionError.value = staleMessage
-  else lifecycleError.value = staleMessage
+  if (target === "action") actionError.value = localError("action", "error.stale")
+  else lifecycleError.value = localError("lifecycle", "error.stale")
   return false
 }
 function recoveryActionAllowed(action: RecoveryAction): boolean {
@@ -1921,26 +1936,28 @@ function recoveryActionAllowed(action: RecoveryAction): boolean {
   return recoveryMetadataValid.value && recovery?.[key] === true
 }
 function recoveryActionLabel(instance: ManagedInstance, action: RecoveryAction): string {
-  return action === "tracking" && instance.trackingHidden ? "恢復追蹤" : recoveryActionNames[action]
+  return action === "tracking" && instance.trackingHidden ? t("ui.trackResume") : {
+    recheck: t("ui.recheck"), resume: t("ui.resume"), tracking: t("ui.trackStop"), remove: t("ui.remove"),
+  }[action]
 }
 function lifecycleReason(instance: ManagedInstance, action: RecoveryAction): string {
   if (action === "recheck") {
-    if (instance.state === "ready") return "目前可連線"
-    if (instance.state === "stopped") return "已停止不需檢查"
-    return "目前狀態不允許重新檢查"
+    if (instance.state === "ready") return t("recovery.currentlyReady")
+    if (instance.state === "stopped") return t("recovery.stopped")
+    return t("recovery.recheckUnavailable")
   }
   if (action === "resume") {
-    if (instance.state === "ready") return "目前可連線無需接續"
-    if (!instance.primarySession) return "尚未綁定主要 Session，無對話可接續"
-    return "state未符合"
+    if (instance.state === "ready") return t("recovery.resumeReady")
+    if (!instance.primarySession) return t("session.unboundCannotResume")
+    return t("session.stateNotEligible")
   }
   if (action === "tracking") {
-    if (instance.state === "ready") return "目前可連線"
-    if (instance.state === "stopped") return instance.recovery.removeAllowed === false ? "不適用停止追蹤" : "可用移除紀錄"
-    return "目前狀態不允許停止追蹤"
+    if (instance.state === "ready") return t("recovery.currentlyReady")
+    if (instance.state === "stopped") return t(instance.recovery.removeAllowed === false ? "recovery.trackingStopped" : "recovery.useRemove")
+    return t("recovery.trackingUnavailable")
   }
-  if (instance.state !== "stopped") return "尚未確認停止"
-  return "仍有保留連線埠未安全釋放"
+  if (instance.state !== "stopped") return t("recovery.notStopped")
+  return t("recovery.portReserved")
 }
 function errorSessionId(details: unknown): string | null {
   if (typeof details !== "object" || details === null || !("sessionId" in details)) return null
@@ -1952,7 +1969,20 @@ function errorNewInstanceId(cause: unknown): string | null {
   const instanceId = Reflect.get(cause.details, "newInstanceId")
   return typeof instanceId === "string" && instanceId ? instanceId : null
 }
-function message(cause: unknown): string { return cause instanceof Error ? cause.message : "發生未知錯誤。" }
+function message(cause: unknown, area: ErrorArea): string {
+  const presented = presentError(cause, t)
+  errorDetails[area] = presented
+  return presented.summary
+}
+function localError(area: ErrorArea, key: MessageKey, params?: Record<string, string | number>): string {
+  const summary = t(key, params)
+  errorDetails[area] = { summary, summaryKey: key, ...(params ? { params } : {}), code: null, diagnostic: null }
+  return summary
+}
+function displayedError(area: ErrorArea, current: string): string {
+  const presented = errorDetails[area]
+  return presented && current === presented.summary ? t(presented.summaryKey, presented.params) : current
+}
 </script>
 
 <template>
@@ -1960,122 +1990,123 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
   <div class="shell" :inert="startPanelBlocking || managerSettingsOpen || undefined">
     <header class="topbar">
       <div class="topbar-brand">
-        <p class="eyebrow">WINDOWS · CONNECTIVITY CONSOLE</p>
+        <p class="eyebrow">{{ t('ui.eyebrow') }}</p>
         <div class="topbar-title">
-          <h1>OMW Manager</h1>
+          <h1>{{ t('ui.productName') }}</h1>
           <small v-if="connectivity?.manager.version" class="version-chip">{{ connectivity.manager.version }}</small>
         </div>
       </div>
       <div class="topbar-actions">
-        <Button variant="success" data-dialog-focus-fallback @click="openStartPanel"><PlusIcon />啟動執行個體</Button>
-        <Button variant="outline" size="sm" class="no-press-transform" @click="openManagerSettings"><Settings2Icon />OMW 設定</Button>
+        <Button variant="success" data-dialog-focus-fallback @click="openStartPanel"><PlusIcon />{{ t('ui.startInstance') }}</Button>
+        <Button variant="outline" size="sm" class="no-press-transform" @click="openManagerSettings"><Settings2Icon />{{ t('ui.managerSettings') }}</Button>
         <Button variant="outline" size="sm" class="no-press-transform" :disabled="loading || overviewRefreshing" @click="loadOverview(true, 'user')">
-          <RefreshCwIcon />重新整理
+          <RefreshCwIcon />{{ t('common.reload') }}
         </Button>
       </div>
     </header>
 
     <section v-if="managerStopped" class="manager-stopped" role="status">
       <PowerIcon />
-      <div><strong>OMW Manager 已停止</strong><p>OpenCode TUI、背景執行個體、Sessions 與 Project 工作仍繼續運作。重新執行 <code>omw</code> 可恢復管理介面。</p></div>
+      <div><strong>{{ t('ui.managerStopped') }}</strong><p>{{ t('ui.managerStoppedDescription') }}</p></div>
     </section>
 
     <section class="connectivity" :data-tone="connectivityTone" aria-labelledby="connectivity-title" :aria-busy="connectivityLoading">
       <div class="connectivity-status">
         <span class="connectivity-signal"><WifiIcon /></span>
         <div class="connectivity-status-copy">
-          <p class="eyebrow">TAILNET / SERVE</p>
+          <p class="eyebrow">{{ t('connectivity.eyebrow') }}</p>
           <h2 id="connectivity-title">{{ connectivityHeadline }}</h2>
-          <p class="connectivity-qualifier">{{ serveLabel }} · 遠端裝置仍須連上 Tailnet</p>
+          <p class="connectivity-qualifier">{{ serveLabel }} · {{ t('ui.tailnetNotice') }}</p>
         </div>
         <Button v-if="canRegisterConnectivity" variant="outline" size="sm" class="connectivity-register no-press-transform" :disabled="connectivityLoading" @click="registerConnectivity">
-          <RefreshCwIcon />自動註冊
+          <RefreshCwIcon />{{ t('ui.register') }}
         </Button>
-        <Button v-if="connectivity?.remoteAccess === 'available'" variant="outline" size="sm" :disabled="connectivityRegistering" @click="remoteEnableOpen = true">啟用遠端存取</Button>
+        <Button v-if="connectivity?.remoteAccess === 'available'" variant="outline" size="sm" :disabled="connectivityRegistering" @click="remoteEnableOpen = true">{{ t('ui.remoteEnable') }}</Button>
       </div>
       <div class="connectivity-access">
         <div class="connectivity-entry">
-          <span>遠端入口<span v-if="remoteUrl">（已驗證）</span></span>
-          <code :title="remoteUrl ?? undefined">{{ remoteUrl ?? '尚未驗證遠端入口' }}</code>
+          <span>{{ t('ui.remoteEntry') }}<span v-if="remoteUrl">{{ t('ui.verified') }}</span></span>
+          <code :title="remoteUrl ?? undefined">{{ remoteUrl ?? t('ui.remoteNotVerified') }}</code>
         </div>
         <div class="connectivity-actions">
-          <Button variant="outline" size="sm" class="no-press-transform" :disabled="!remoteUrl" @click="copyPhoneUrl()"><CopyIcon />複製網址</Button>
-          <Button v-if="shareSupported" variant="outline" size="sm" class="no-press-transform" :disabled="!remoteUrl" @click="sharePhoneUrl"><Share2Icon />分享</Button>
+          <Button variant="outline" size="sm" class="no-press-transform" :disabled="!remoteUrl" @click="copyPhoneUrl()"><CopyIcon />{{ t('ui.copyUrl') }}</Button>
+          <Button v-if="shareSupported" variant="outline" size="sm" class="no-press-transform" :disabled="!remoteUrl" @click="sharePhoneUrl"><Share2Icon />{{ t('ui.share') }}</Button>
         </div>
       </div>
-      <div v-if="connectivityWarnings.length || connectivityError" class="connectivity-warnings" aria-live="polite">
+      <div v-if="connectivityWarnings.length || registrationFailure || connectivityError" class="connectivity-warnings" aria-live="polite">
         <p v-for="warning in connectivityWarnings" :key="warning"><AlertTriangleIcon />{{ warning }}</p>
-        <p v-if="connectivityError"><AlertTriangleIcon />{{ connectivityError }}</p>
+        <p v-if="registrationFailure"><AlertTriangleIcon /><ErrorDetails :summary="registrationFailure.summary" :code="registrationFailure.code" /></p>
+        <p v-if="connectivityError"><AlertTriangleIcon /><ErrorDetails :summary="displayedError('connectivity', connectivityError)" :code="errorDetails.connectivity?.code" :diagnostic="errorDetails.connectivity?.diagnostic" /></p>
       </div>
-      <p v-if="connectivity?.remoteAccess === 'disabled'" class="connectivity-warnings">OMW_REMOTE_ACCESS=0 已明確停用遠端存取；請移除此停用設定並重新啟動 OMW 後再啟用。</p>
-      <form v-if="remoteEnableOpen" class="credential-form connectivity-warnings" aria-label="確認啟用遠端存取" @submit.prevent="enableRemoteAccess">
-        <h3>確認啟用遠端存取</h3>
-        <p>將透過 Tailscale Serve 開放 OMW 與目前 Instance port 範圍給 Tailnet policy 允許的裝置。OpenCode ports 沒有額外帳密保護，請確認 Tailnet 裝置存取政策。OMW 會要求 Basic 登入，並保存非機密設定，下次啟動自動註冊。</p>
-        <p>請使用目前 OMW 帳號與密碼確認。只使用已安裝且已登入的 Tailscale，不會啟用 Funnel。</p>
-        <label><span>目前 OMW 帳號</span><Input v-model="remoteEnableUsername" autocomplete="username" required :disabled="connectivityRegistering" /></label>
-        <label><span>目前 OMW 密碼</span><Input v-model="remoteEnablePassword" type="password" autocomplete="current-password" required :disabled="connectivityRegistering" /></label>
-        <p v-if="remoteEnableError" role="alert">{{ remoteEnableError }}</p>
+      <p v-if="connectivity?.remoteAccess === 'disabled'" class="connectivity-warnings">{{ t('ui.remoteDisabled') }}</p>
+      <form v-if="remoteEnableOpen" class="credential-form connectivity-warnings" :aria-label="t('ui.confirmRemote')" @submit.prevent="enableRemoteAccess">
+        <h3>{{ t('ui.confirmRemote') }}</h3>
+        <p>{{ t('ui.remotePrivacy') }}</p>
+        <p>{{ t('ui.remoteCredentials') }}</p>
+        <label><span>{{ t('ui.currentUsername') }}</span><Input v-model="remoteEnableUsername" autocomplete="username" required :disabled="connectivityRegistering" /></label>
+        <label><span>{{ t('ui.currentPassword') }}</span><Input v-model="remoteEnablePassword" type="password" autocomplete="current-password" required :disabled="connectivityRegistering" /></label>
+        <p v-if="remoteEnableError" role="alert"><ErrorDetails :summary="displayedError('remote', remoteEnableError)" :code="errorDetails.remote?.code" :diagnostic="errorDetails.remote?.diagnostic" /></p>
         <div class="connectivity-actions">
-          <Button type="button" variant="outline" :disabled="connectivityRegistering" @click="cancelRemoteEnable">取消</Button>
-          <Button type="submit" :disabled="connectivityRegistering">{{ connectivityRegistering ? '啟用中…' : '同意並啟用' }}</Button>
+          <Button type="button" variant="outline" :disabled="connectivityRegistering" @click="cancelRemoteEnable">{{ t('common.cancel') }}</Button>
+          <Button type="submit" :disabled="connectivityRegistering">{{ connectivityRegistering ? t('ui.enabling') : t('ui.consent') }}</Button>
         </div>
       </form>
       <div v-if="connectivityFallbackOpen && remoteUrl" ref="connectivityFallback" class="connectivity-copy-fallback" role="status">
-        <label for="connectivity-copy-url">{{ connectivityCopyMessage }}</label>
-        <Input id="connectivity-copy-url" :model-value="remoteUrl" readonly aria-label="手動複製遠端入口" @focus="($event.target as HTMLInputElement).select()" />
+        <label for="connectivity-copy-url">{{ connectivityCopyMessage ? t(connectivityCopyMessage) : '' }}</label>
+        <Input id="connectivity-copy-url" :model-value="remoteUrl" readonly :aria-label="t('aria.remoteCopy')" @focus="($event.target as HTMLInputElement).select()" />
       </div>
       <details class="connectivity-details">
-        <summary>連線詳細資料</summary>
+        <summary>{{ t('ui.connectionDetails') }}</summary>
         <dl>
-          <div><dt>Local endpoint</dt><dd><code>{{ localUrl }}</code></dd></div>
-          <div><dt>Tailscale version</dt><dd><code>{{ connectivity?.tailscale.version ?? '未知' }}</code></dd></div>
-          <div><dt>Node version</dt><dd><code>{{ connectivity?.nodeVersion ?? '未知' }}</code></dd></div>
-          <div><dt>Serve manager match</dt><dd>{{ managerMappingLabel(connectivity?.serve.managerMapped) }}</dd></div>
-          <div><dt>Instance ports matched</dt><dd><code>{{ connectivity?.serve.mappedInstancePorts ?? '未知' }} / {{ connectivity?.serve.expectedInstancePorts ?? '未知' }}</code></dd></div>
-          <div><dt>checkedAt</dt><dd><time :datetime="connectivity?.checkedAt">{{ checkedAtLabel(connectivity?.checkedAt) }}</time></dd></div>
+          <div><dt>{{ t('ui.localEndpoint') }}</dt><dd><code>{{ localUrl }}</code></dd></div>
+          <div><dt>{{ t('ui.tailscaleVersion') }}</dt><dd><code>{{ connectivity?.tailscale.version ?? t('common.unknown') }}</code></dd></div>
+          <div><dt>{{ t('ui.nodeVersion') }}</dt><dd><code>{{ connectivity?.nodeVersion ?? t('common.unknown') }}</code></dd></div>
+          <div><dt>{{ t('ui.serveMatch') }}</dt><dd>{{ managerMappingLabel(connectivity?.serve.managerMapped) }}</dd></div>
+          <div><dt>{{ t('ui.portsMatched') }}</dt><dd><code>{{ connectivity?.serve.mappedInstancePorts ?? t('common.unknown') }} / {{ connectivity?.serve.expectedInstancePorts ?? t('common.unknown') }}</code></dd></div>
+          <div><dt>{{ t('ui.checkedAt') }}</dt><dd><time :datetime="connectivity?.checkedAt">{{ checkedAtLabel(connectivity?.checkedAt) }}</time></dd></div>
         </dl>
-        <p>本機 Tailscale 在線只代表這台電腦，不代表手機已連上 Tailnet。Serve 映射吻合也僅代表設定一致，不保證手機目前可達。</p>
+        <p>{{ t('ui.serveNote') }}</p>
       </details>
     </section>
 
-    <section class="overview-freshness" :data-state="overviewFreshnessState" aria-label="執行個體資料狀態">
+    <section class="overview-freshness" :data-state="overviewFreshnessState" :aria-label="t('aria.freshness')">
       <AlertTriangleIcon v-if="overviewFreshnessState === 'failed' || overviewFreshnessState === 'unavailable'" />
       <RefreshCwIcon v-else />
       <div :tabindex="overviewError ? 0 : -1">
-        <strong v-if="overviewFreshnessState === 'unavailable'">尚未取得執行個體資料</strong>
-        <strong v-else-if="overviewFreshnessState === 'initial'">正在取得執行個體資料</strong>
-        <strong v-else-if="overviewFreshnessState === 'refreshing'" role="status">正在更新，先顯示上次資料</strong>
-        <strong v-else-if="overviewFreshnessState === 'changed'">條件已變更，請更新資料</strong>
-        <strong v-else-if="overviewFreshnessState === 'failed'" role="alert">資料已過期，最後更新失敗</strong>
-        <span v-else>資料已是最新</span>
-        <small v-if="overviewLastSucceededAt">最後成功更新 <time :datetime="overviewLastSucceededAt">{{ checkedAtLabel(overviewLastSucceededAt) }}</time></small>
-        <small v-else-if="overviewError">{{ overviewError }}</small>
-        <small v-if="overviewError && overviewLastSucceededAt">{{ overviewError }}</small>
+        <strong v-if="overviewFreshnessState === 'unavailable'">{{ t('ui.overviewUnavailable') }}</strong>
+        <strong v-else-if="overviewFreshnessState === 'initial'">{{ t('ui.overviewInitial') }}</strong>
+        <strong v-else-if="overviewFreshnessState === 'refreshing'" role="status">{{ t('ui.overviewRefreshing') }}</strong>
+        <strong v-else-if="overviewFreshnessState === 'changed'">{{ t('ui.overviewChanged') }}</strong>
+        <strong v-else-if="overviewFreshnessState === 'failed'" role="alert">{{ t('ui.overviewFailed') }}</strong>
+        <span v-else>{{ t('ui.overviewFresh') }}</span>
+        <small v-if="overviewLastSucceededAt"><time :datetime="overviewLastSucceededAt">{{ t('ui.lastSuccess', { time: checkedAtLabel(overviewLastSucceededAt) }) }}</time></small>
+        <small v-else-if="overviewError"><ErrorDetails :summary="overviewError" :code="overviewFailure?.code" :diagnostic="overviewFailure?.diagnostic" /></small>
+        <small v-if="overviewError && overviewLastSucceededAt"><ErrorDetails :summary="overviewError" :code="overviewFailure?.code" :diagnostic="overviewFailure?.diagnostic" /></small>
       </div>
       <Button variant="outline" size="sm" class="overview-retry no-press-transform" :class="{ 'retry-hidden': !overviewError && overviewFreshnessState !== 'changed' }" :tabindex="overviewError || overviewFreshnessState === 'changed' ? 0 : -1" :disabled="overviewRefreshing || (!overviewError && overviewFreshnessState !== 'changed')" @click="loadOverview(true, 'user')">
-        {{ overviewError ? '重試更新' : '更新資料' }}
+        {{ overviewError ? t('ui.retryUpdate') : t('ui.updateData') }}
       </Button>
     </section>
 
     <section class="workspace">
       <aside class="instance-pane">
         <form class="search-row" @submit.prevent="loadOverview(true, 'user')">
-          <Input v-model="query" placeholder="搜尋 Project、path、Instance、Session" aria-label="搜尋" />
-          <Button type="submit" variant="outline" size="icon" class="no-press-transform" aria-label="執行搜尋"><SearchIcon /></Button>
+          <Input v-model="query" :placeholder="t('ui.searchPlaceholder')" :aria-label="t('aria.search')" />
+          <Button type="submit" variant="outline" size="icon" class="no-press-transform" :aria-label="t('aria.searchAction')"><SearchIcon /></Button>
         </form>
-        <div ref="filtersRail" class="filters" role="group" aria-label="Instance 篩選" @scroll.passive="updateFilterHints">
+        <div ref="filtersRail" class="filters" role="group" :aria-label="t('aria.filter')" @scroll.passive="updateFilterHints">
           <button v-for="item in filters" :key="item.value" type="button" :class="{ active: filter === item.value }" :aria-pressed="filter === item.value" @click="setFilter(item.value)">{{ item.label }}</button>
         </div>
         <p v-if="filterCanLeft || filterCanRight" class="filter-hint">
-          <span v-if="filterCanLeft">← 向左捲動</span><span v-if="filterCanRight">向右捲動 →</span>
+          <span v-if="filterCanLeft">{{ t('ui.scrollLeft') }}</span><span v-if="filterCanRight">{{ t('ui.scrollRight') }}</span>
         </p>
         <label class="hidden-toggle">
           <input v-model="includeHidden" type="checkbox" @change="loadOverview(true, 'user')">
-          <span>顯示已停止追蹤</span>
+          <span>{{ t('ui.includeHidden') }}</span>
         </label>
-        <div v-if="loading && !overviewLastSucceededAt" class="loading-copy"><LoaderCircleIcon class="spin" />讀取 Manager API…</div>
+        <div v-if="loading && !overviewLastSucceededAt" class="loading-copy"><LoaderCircleIcon class="spin" />{{ t('ui.loadingApi') }}</div>
         <div class="instance-list" tabindex="-1">
-          <header v-if="overview.instances.length" class="instance-list-heading"><span>Session / Instance</span><b>{{ currentInstances.length }} 個未停止</b></header>
+          <header v-if="overview.instances.length" class="instance-list-heading"><span>{{ t('ui.listHeading') }}</span><b>{{ t('ui.notStopped', { count: number(currentInstances.length) }) }}</b></header>
           <button
             v-for="instance in currentInstances"
             :key="instance.id"
@@ -2097,7 +2128,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
           </button>
           <section v-if="stoppedInstances.length" class="stopped-history">
             <button type="button" class="history-toggle" :aria-expanded="historyExpanded()" aria-controls="instance-history" @click="toggleHistory">
-              <ChevronDownIcon :class="{ rotated: historyExpanded() }" />已停止紀錄 ({{ stoppedInstances.length }})
+              <ChevronDownIcon :class="{ rotated: historyExpanded() }" />{{ t('ui.historyCount', { count: number(stoppedInstances.length) }) }}
             </button>
             <div v-show="historyExpanded()" id="instance-history" class="history-list">
               <button
@@ -2124,25 +2155,25 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
         </div>
         <div v-if="!loading && !overviewError && overview.instances.length === 0" class="instance-empty">
           <template v-if="appliedQuery.trim() || appliedFilter !== 'all'">
-            <p>沒有符合目前搜尋或篩選條件的執行個體。</p>
-            <Button variant="outline" @click="clearOverviewFilters">清除篩選</Button>
+            <p>{{ t('ui.filterEmpty') }}</p>
+            <Button variant="outline" @click="clearOverviewFilters">{{ t('ui.clearFilter') }}</Button>
           </template>
           <template v-else>
-            <p>目前還沒有執行個體。</p>
-            <Button variant="success" @click="openStartPanel"><PlusIcon />啟動執行個體</Button>
+            <p>{{ t('ui.noInstances') }}</p>
+            <Button variant="success" @click="openStartPanel"><PlusIcon />{{ t('ui.startInstance') }}</Button>
           </template>
         </div>
       </aside>
 
       <main ref="detailPane" class="detail-pane" tabindex="-1">
         <template v-if="selected">
-          <Button variant="ghost" class="mobile-back no-press-transform" @click="returnToList"><ChevronLeftIcon />返回列表</Button>
+          <Button variant="ghost" class="mobile-back no-press-transform" @click="returnToList"><ChevronLeftIcon />{{ t('ui.backToList') }}</Button>
           <div class="detail-head">
             <div>
-              <p class="eyebrow">PROJECT / INSTANCE</p>
+              <p class="eyebrow">{{ t('ui.projectInstance') }}</p>
               <h2>{{ detailTitle(selected) }}</h2>
               <p v-if="selected.primarySession" class="detail-folder">{{ projectFolderName(selected.projectDirectory) }}</p>
-              <p v-else class="detail-unbound">尚未綁定主 Session</p>
+              <p v-else class="detail-unbound">{{ t('session.unbound') }}</p>
               <code class="detail-path">{{ selected.projectDirectory }}</code>
             </div>
             <div class="detail-head-controls">
@@ -2155,7 +2186,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
                 :aria-expanded="lifecycleOpen"
                 @click="lifecycleOpen = !lifecycleOpen; lifecycleError = ''"
               >
-                <Settings2Icon />執行個體操作<ChevronDownIcon :class="{ rotated: lifecycleOpen }" />
+                <Settings2Icon />{{ t('ui.instanceActions') }}<ChevronDownIcon :class="{ rotated: lifecycleOpen }" />
               </Button>
             </div>
           </div>
@@ -2167,65 +2198,65 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
             :aria-busy="Boolean(lifecyclePending)"
           >
             <div class="lifecycle-copy">
-              <p id="instance-lifecycle-title">執行個體操作</p>
-              <span>{{ selected.kind === 'local-tui' ? '來源：Local TUI' : '來源：背景執行個體' }} · {{ instancePid(selected) }}</span>
+              <p id="instance-lifecycle-title">{{ t('ui.instanceActions') }}</p>
+              <span>{{ selected.kind === 'local-tui' ? t('ui.localSource') : t('ui.backgroundSource') }} · {{ instancePid(selected) }}</span>
             </div>
-            <p class="lifecycle-note">接續對話會啟動新的背景程序與 PID，並接續已綁定的主要 Session；不停止舊程序，也不傳送模型訊息。</p>
+            <p class="lifecycle-note">{{ t('ui.resumeNote') }}</p>
             <p v-if="recoveryDiagnostic" class="lifecycle-diagnostic" role="alert"><AlertTriangleIcon />{{ recoveryDiagnostic }}</p>
             <div class="lifecycle-actions">
               <Button variant="destructive" size="sm" :disabled="overviewMutationsBlocked || Boolean(lifecyclePending) || !selected.stopAllowed" @click="stopInstance(selected)">
-                <CircleStopIcon />{{ actionPending('stop') ? '停止中…' : '停止執行個體' }}
+                <CircleStopIcon />{{ actionPending('stop') ? t('ui.stopping') : t('ui.stop') }}
               </Button>
               <Button variant="outline" size="sm" :disabled="overviewMutationsBlocked || Boolean(lifecyclePending) || !recoveryActionAllowed('recheck')" @click="recheckInstance(selected)">
-                <RefreshCwIcon :class="{ spin: actionPending('recheck') }" />{{ actionPending('recheck') ? '重新檢查中…' : '重新檢查' }}
+                <RefreshCwIcon :class="{ spin: actionPending('recheck') }" />{{ actionPending('recheck') ? t('ui.rechecking') : t('ui.recheck') }}
               </Button>
               <Button v-if="selected.state === 'stopped' && !selected.primarySession" variant="success" size="sm" :disabled="overviewMutationsBlocked || Boolean(lifecyclePending)" @click="startFreshInstance(selected)">
-                <PlayIcon />{{ actionPending('start') ? '啟動中…' : '啟動' }}
+                <PlayIcon />{{ actionPending('start') ? t('ui.starting') : t('ui.start') }}
               </Button>
               <Button variant="success" size="sm" :disabled="overviewMutationsBlocked || Boolean(lifecyclePending) || !recoveryActionAllowed('resume')" @click="resumeInstance(selected)">
-                <PlayIcon />{{ actionPending('resume') ? '接續中…' : '接續對話' }}
+                <PlayIcon />{{ actionPending('resume') ? t('ui.resuming') : t('ui.resume') }}
               </Button>
               <Button variant="outline" size="sm" :disabled="overviewMutationsBlocked || Boolean(lifecyclePending) || !recoveryActionAllowed('tracking')" @click="setInstanceTracking(selected, !selected.trackingHidden)">
-                <EyeIcon v-if="selected.trackingHidden" /><EyeOffIcon v-else />{{ actionPending('tracking') ? '更新中…' : selected.trackingHidden ? '恢復追蹤' : '停止追蹤' }}
+                <EyeIcon v-if="selected.trackingHidden" /><EyeOffIcon v-else />{{ actionPending('tracking') ? t('ui.tracking') : selected.trackingHidden ? t('ui.trackResume') : t('ui.trackStop') }}
               </Button>
               <Button variant="outline" size="sm" class="remove-instance-button" :disabled="overviewMutationsBlocked || Boolean(lifecyclePending) || !recoveryActionAllowed('remove')" @click="removeInstance(selected)">
-                <Trash2Icon />{{ actionPending('remove') ? '移除中…' : '移除紀錄' }}
+                <Trash2Icon />{{ actionPending('remove') ? t('ui.removing') : t('ui.remove') }}
               </Button>
             </div>
-            <p v-if="lifecyclePending" class="lifecycle-reason" role="status">不可用原因：正在處理操作，請稍候</p>
+            <p v-if="lifecyclePending" class="lifecycle-reason" role="status">{{ t('ui.unavailableBusy') }}</p>
             <p v-else-if="lifecycleUnavailableReasons.length" class="lifecycle-reason">
-              不可用原因：<span v-for="item in lifecycleUnavailableReasons" :key="item.label">{{ item.label }}：{{ item.reason }}</span>
+              {{ t('ui.unavailableReason') }}<span v-for="item in lifecycleUnavailableReasons" :key="item.label">{{ item.label }}：{{ item.reason }}</span>
             </p>
-            <p v-if="lifecycleError" class="lifecycle-error" role="alert"><AlertTriangleIcon />{{ lifecycleError }}</p>
+            <p v-if="lifecycleError" class="lifecycle-error" role="alert"><AlertTriangleIcon /><ErrorDetails :summary="displayedError('lifecycle', lifecycleError)" :code="errorDetails.lifecycle?.code" :diagnostic="errorDetails.lifecycle?.diagnostic" /></p>
           </section>
           <div class="primary-session-card" :class="{ unbound: !selected.primarySession }">
-            <span class="primary-session-label">主要 Session</span>
+            <span class="primary-session-label">{{ t('session.primaryTitle') }}</span>
             <template v-if="selected.primarySession">
               <strong>{{ selected.primarySession.title }}</strong>
               <code class="primary-session-id">{{ shortId(selected.primarySession.sessionId) }}</code>
-              <small>{{ primarySourceLabel(selected.primarySession.source) }}綁定</small>
+              <small>{{ t('session.sourceBinding', { source: primarySourceLabel(selected.primarySession.source) }) }}</small>
             </template>
-            <strong v-else>尚未綁定主 Session</strong>
+            <strong v-else>{{ t('session.unbound') }}</strong>
           </div>
           <p v-if="statusCategory(selected) === 'attention'" class="status-attention primary-session-attention"><AlertTriangleIcon />{{ attentionSummary(selected) }}</p>
-          <p v-else-if="selected.state === 'ready' && selected.primarySummary.scope === 'unknown'" class="inline-error primary-session-attention"><AlertTriangleIcon />無法確認主 Session 工作範圍。</p>
+          <p v-else-if="selected.state === 'ready' && selected.primarySummary.scope === 'unknown'" class="inline-error primary-session-attention"><AlertTriangleIcon />{{ t('session.unknownWorkScope') }}</p>
           <div class="detail-actions primary-actions">
-            <Button :disabled="opening || selected.state !== 'ready' || !selected.primarySession" @click="openPrimarySession(selected)"><ExternalLinkIcon />{{ opening ? '連線中…' : '進入主 Session' }}</Button>
-            <Button variant="outline" class="new-session-button" :disabled="overviewMutationsBlocked || opening || selected.state !== 'ready'" @click="openNewSession(selected)"><PlusIcon />{{ opening ? '連線中…' : 'New Session' }}</Button>
+            <Button :disabled="opening || selected.state !== 'ready' || !selected.primarySession" @click="openPrimarySession(selected)"><ExternalLinkIcon />{{ opening ? t('ui.connecting') : t('session.openPrimary') }}</Button>
+            <Button variant="outline" class="new-session-button" :disabled="overviewMutationsBlocked || opening || selected.state !== 'ready'" @click="openNewSession(selected)"><PlusIcon />{{ opening ? t('ui.connecting') : t('terms.newSession') }}</Button>
           </div>
-          <section class="primary-todos" aria-label="主 Session 待辦事項" :aria-busy="todosLoading">
+          <section class="primary-todos" :aria-label="t('todo.heading')" :aria-busy="todosLoading">
             <div class="primary-todos-head">
-              <h3>主 Session 待辦事項</h3>
-              <span v-if="todosLoaded" class="primary-todos-count" :aria-label="`已完成 ${todoCompletedCount} 項，未取消總計 ${todoActiveCount} 項；已取消 ${todoCancelledCount} 項`">
-                已完成 {{ todoCompletedCount }} / {{ todoActiveCount }} · 已取消 {{ todoCancelledCount }}
+              <h3>{{ t('todo.heading') }}</h3>
+              <span v-if="todosLoaded" class="primary-todos-count" :aria-label="t('todo.countsAria', { completed: number(todoCompletedCount), total: number(todoActiveCount), cancelled: number(todoCancelledCount) })">
+                {{ t('todo.counts', { completed: number(todoCompletedCount), total: number(todoActiveCount), cancelled: number(todoCancelledCount) }) }}
               </span>
             </div>
             <div class="primary-todos-content">
               <div ref="todoMeasuredContent">
-                <p v-if="!selected.primarySession" class="primary-todos-note">尚未綁定主 Session，沒有可讀取的待辦事項。</p>
-                <p v-else-if="todosLoading && !todosLoaded" class="primary-todos-note" role="status">正在載入主 Session 待辦事項…</p>
-                <p v-else-if="todosError" class="primary-todos-error" role="alert">讀取失敗：{{ todosError }}<span v-if="todosStale">（下列為上次讀取結果，已過期）</span></p>
-                <p v-if="selected.primarySession && todosLoaded && primaryTodos.length === 0 && !todosError" class="primary-todos-note">此主 Session 目前沒有待辦事項。</p>
+                <p v-if="!selected.primarySession" class="primary-todos-note">{{ t('todo.unbound') }}</p>
+                <p v-else-if="todosLoading && !todosLoaded" class="primary-todos-note" role="status">{{ t('todo.loading') }}</p>
+                 <p v-else-if="todoFailure" class="primary-todos-error" role="alert"><ErrorDetails :summary="todoFailure.summary" :code="todoFailure.code" :diagnostic="todoFailure.diagnostic" /><span v-if="todosStale">{{ t('todo.stale') }}</span></p>
+                <p v-if="selected.primarySession && todosLoaded && primaryTodos.length === 0 && !todosError" class="primary-todos-note">{{ t('todo.empty') }}</p>
                 <ol v-if="selected.primarySession && todosLoaded && primaryTodos.length" class="primary-todos-timeline" :class="{ 'is-stale': todosStale }">
                   <li v-for="(todo, index) in primaryTodos" :key="`${todo.content}:${index}`" :data-status="todo.status">
                     <span class="primary-todo-step" role="img" :aria-label="todoStatusLabels[todo.status]" :title="todoStatusLabels[todo.status]">
@@ -2237,39 +2268,39 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
                     <p>{{ todo.content }}</p>
                   </li>
                 </ol>
-                <p v-if="selected.primarySession && !todosLoaded && !todosLoading && !todosError" class="primary-todos-note">尚未取得待辦事項。</p>
+                <p v-if="selected.primarySession && !todosLoaded && !todosLoading && !todosError" class="primary-todos-note">{{ t('todo.notLoaded') }}</p>
               </div>
             </div>
           </section>
           <details class="main-session-details">
-            <summary>主要 Session 綁定說明</summary>
-            <p>主要 Session 固定綁定於這個 Instance；一般活動與 Project 共用歷史不會自動改綁。只有 New Session 或進階手動切換會更新。</p>
+            <summary>{{ t('session.bindingInfo') }}</summary>
+            <p>{{ t('session.bindingDescription') }}</p>
           </details>
           <details :key="`technical-${selected.id}`" class="technical-info">
-            <summary>Technical info</summary>
+            <summary>{{ t('terms.technicalInfo') }}</summary>
             <div class="identity-strip">
-              <span><small>INSTANCE</small><code>{{ selected.id }}</code></span>
-              <span><small>ENDPOINT</small><code>127.0.0.1:{{ selected.port }}</code></span>
-              <span><small>PID</small><code>{{ selected.pid ?? '未知' }}</code></span>
-              <span><small>VERSION</small><code>{{ selected.healthVersion ?? '未知' }}</code></span>
+              <span><small>{{ t('ui.technicalInstance') }}</small><code>{{ selected.id }}</code></span>
+              <span><small>{{ t('ui.technicalEndpoint') }}</small><code>127.0.0.1:{{ selected.port }}</code></span>
+              <span><small>{{ t('ui.technicalPid') }}</small><code>{{ selected.pid ?? t('common.unknown') }}</code></span>
+              <span><small>{{ t('ui.technicalVersion') }}</small><code>{{ selected.healthVersion ?? t('common.unknown') }}</code></span>
             </div>
           </details>
           <div class="summary-grid">
-            <article><ActivityIcon /><span><small>主 Session 範圍</small><strong>{{ count(selected.primarySummary.busySessions) }}</strong><b>執行中 Session</b></span></article>
-            <article><span class="summary-mark">Q</span><span><small>主 Session request</small><strong>{{ count(selected.primarySummary.pendingQuestions) }}</strong><b>待回答</b></span></article>
-            <article><span class="summary-mark">P</span><span><small>主 Session request</small><strong>{{ count(selected.primarySummary.pendingPermissions) }}</strong><b>待授權</b></span></article>
+            <article><ActivityIcon /><span><small>{{ t('session.scope') }}</small><strong>{{ count(selected.primarySummary.busySessions) }}</strong><b>{{ t('session.busy') }}</b></span></article>
+            <article><span class="summary-mark">Q</span><span><small>{{ t('session.request') }}</small><strong>{{ count(selected.primarySummary.pendingQuestions) }}</strong><b>{{ t('session.pendingQuestion') }}</b></span></article>
+            <article><span class="summary-mark">P</span><span><small>{{ t('session.request') }}</small><strong>{{ count(selected.primarySummary.pendingPermissions) }}</strong><b>{{ t('session.pendingPermission') }}</b></span></article>
           </div>
-          <p v-if="selected.primarySummary.scope === 'known' && selected.primarySummary.busySessions === 0 && selected.primarySummary.retrySessions === 0" class="status-note">主 Session 工作範圍目前沒有執行中的 Session；請查看對話並決定下一步。</p>
-          <p v-if="selected.primarySummary.scope === 'known' && selected.primarySummary.busySessions === 0 && (selected.primarySummary.retrySessions ?? 0) > 0" class="status-note">主 Session 工作範圍正在重試。</p>
-          <p v-if="selected.primarySummary.activity === 'unknown'" class="inline-error">主 Session 摘要未知：{{ selected.primarySummary.error ?? 'endpoint 無法連線' }}</p>
-          <p v-if="selected.remoteUrlUnavailableReason" class="inline-error">Remote URL unavailable：{{ selected.remoteUrlUnavailableReason }}</p>
-          <p v-if="selected.error" class="inline-error">{{ selected.error }}</p>
+          <p v-if="selected.primarySummary.scope === 'known' && selected.primarySummary.busySessions === 0 && selected.primarySummary.retrySessions === 0" class="status-note">{{ t('session.noBusy') }}</p>
+          <p v-if="selected.primarySummary.scope === 'known' && selected.primarySummary.busySessions === 0 && (selected.primarySummary.retrySessions ?? 0) > 0" class="status-note">{{ t('session.retrying') }}</p>
+           <p v-if="selectedSummaryFailure" class="inline-error"><ErrorDetails :summary="selectedSummaryFailure.summary" :code="selectedSummaryFailure.code" /></p>
+          <p v-if="selected.remoteUrlUnavailableReason" class="inline-error"><ErrorDetails :summary="t('ui.remoteUnavailable')" :diagnostic="safeDiagnostic(selected.remoteUrlUnavailableReason)" /></p>
+           <p v-if="selectedFailure" class="inline-error"><ErrorDetails :summary="selectedFailure.summary" :code="selectedFailure.code" /></p>
 
           <details :key="selected.id" class="advanced-sessions">
-            <summary>Main / Child Session 歷史</summary>
+            <summary>{{ t('session.history') }}</summary>
             <section class="sessions-panel">
-              <div class="section-heading"><div><p class="eyebrow">PROJECT METADATA</p><h3>Main Session</h3></div><Button variant="ghost" size="sm" class="no-press-transform" @click="loadSessions"><RefreshCwIcon :class="{ spin: sessionsLoading }" />重新載入</Button></div>
-              <p class="scope-note">Session metadata 可由同 Project 多個 Instance 共用，不代表主要 Session 綁定或執行 ownership。</p>
+              <div class="section-heading"><div><p class="eyebrow">{{ t('session.projectInfo') }}</p><h3>{{ t('terms.mainSession') }}</h3></div><Button variant="ghost" size="sm" class="no-press-transform" @click="loadSessions"><RefreshCwIcon :class="{ spin: sessionsLoading }" />{{ t('common.reload') }}</Button></div>
+              <p class="scope-note">{{ t('session.sharedMetadata') }}</p>
               <ul class="session-list main-session-list">
                 <SessionTreeNode
                   v-for="session in visibleSessionRoots"
@@ -2283,15 +2314,15 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
                   @switch="selectPrimarySession(selected, session)"
                 />
               </ul>
-              <nav v-if="sessions.roots.length" class="session-pagination" aria-label="Main Session 分頁">
-                <Button variant="outline" size="sm" :disabled="sessionPage === 1" @click="sessionPage--">上一頁</Button>
-                <span>第 {{ sessionPage }} / {{ sessionPageCount }} 頁</span>
-                <Button variant="outline" size="sm" :disabled="sessionPage === sessionPageCount" @click="sessionPage++">下一頁</Button>
+              <nav v-if="sessions.roots.length" class="session-pagination" :aria-label="t('session.pagination')">
+                <Button variant="outline" size="sm" :disabled="sessionPage === 1" @click="sessionPage--">{{ t('session.previous') }}</Button>
+                <span>{{ t('common.page', { page: number(sessionPage), total: number(sessionPageCount) }) }}</span>
+                <Button variant="outline" size="sm" :disabled="sessionPage === sessionPageCount" @click="sessionPage++">{{ t('session.next') }}</Button>
               </nav>
-              <p v-if="sessionsError" class="inline-error">Main Session 載入失敗：{{ sessionsError }}</p>
-              <p v-else-if="sessionsLoaded && !sessionsLoading && sessions.roots.length === 0" class="empty-copy">此 Project 尚無 Main Session。</p>
+              <p v-if="sessionsError" class="inline-error"><ErrorDetails :summary="displayedError('sessions', sessionsError)" :code="errorDetails.sessions?.code" :diagnostic="errorDetails.sessions?.diagnostic" /></p>
+              <p v-else-if="sessionsLoaded && !sessionsLoading && sessions.roots.length === 0" class="empty-copy">{{ t('session.noRoots') }}</p>
               <div v-if="sessions.unknownParent.length" class="unknown-parent">
-                <h4><AlertTriangleIcon />父 Session 尚未載入</h4>
+                <h4><AlertTriangleIcon />{{ t('session.parentMissing') }}</h4>
                 <ul class="session-list">
                   <SessionTreeNode v-for="session in sessions.unknownParent" :key="`${selected.id}:${session.id}`" :instance-id="selected.id" :session="session" :open-disabled="selected.state !== 'ready' || opening" @open="openWeb(selected, $event)" />
                 </ul>
@@ -2299,7 +2330,7 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
             </section>
           </details>
         </template>
-        <div v-else class="detail-empty"><ServerIcon /><p>選擇執行個體以查看詳細狀態。</p></div>
+        <div v-else class="detail-empty"><ServerIcon /><p>{{ t('ui.emptyDetail') }}</p></div>
       </main>
     </section>
   </div>
@@ -2323,15 +2354,15 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
       tabindex="-1"
     >
       <header class="start-panel-head">
-        <div><p class="eyebrow">START INSTANCE</p><h2 id="start-panel-title">啟動執行個體</h2></div>
+        <div><p class="eyebrow">{{ t('ui.startEyebrow') }}</p><h2 id="start-panel-title">{{ t('ui.startInstance') }}</h2></div>
         <div class="panel-drag-area" aria-hidden="true" @pointerdown="startSwipe($event, 'panel')" @pointermove="moveSwipe($event, 'panel')" @pointerup="endSwipe($event, 'panel')" @pointercancel="cancelSwipe" @lostpointercapture="cancelSwipe" />
-        <Button variant="ghost" size="icon" aria-label="關閉啟動面板" :disabled="mutating" @click="closeStartPanel()"><XIcon /></Button>
+        <Button variant="ghost" size="icon" :aria-label="t('aria.closeStart')" :disabled="mutating" @click="closeStartPanel()"><XIcon /></Button>
       </header>
       <div class="start-panel-body">
         <section class="shortcut-rail" aria-labelledby="shortcuts-title">
           <div class="section-heading">
-            <div><p class="eyebrow">QUICK ACCESS</p><h3 id="shortcuts-title">目錄捷徑</h3></div>
-            <span>{{ overview.shortcuts.length }} 個</span>
+            <div><p class="eyebrow">{{ t('ui.shortcutEyebrow') }}</p><h3 id="shortcuts-title">{{ t('terms.directoryShortcut') }}</h3></div>
+            <span>{{ t('common.count', { count: number(overview.shortcuts.length) }) }}</span>
           </div>
           <div class="shortcut-list">
             <article v-for="shortcut in overview.shortcuts" :key="shortcut.id" class="shortcut-card">
@@ -2339,39 +2370,39 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
                 <FolderIcon /><span><strong>{{ shortcut.name }}</strong><code>{{ shortcut.directory }}</code></span>
               </button>
               <div class="shortcut-actions">
-                <Button variant="ghost" size="icon" aria-label="編輯 Shortcut" @click="editShortcut(shortcut)"><PencilIcon /></Button>
-                <Button variant="ghost" size="icon" aria-label="移除 Shortcut" @click="removeShortcut(shortcut)"><Trash2Icon /></Button>
+                <Button variant="ghost" size="icon" :aria-label="t('aria.editShortcut')" @click="editShortcut(shortcut)"><PencilIcon /></Button>
+                <Button variant="ghost" size="icon" :aria-label="t('aria.removeShortcut')" @click="removeShortcut(shortcut)"><Trash2Icon /></Button>
               </div>
             </article>
-            <p v-if="overview.shortcuts.length === 0" class="empty-copy">尚無目錄捷徑，仍可直接瀏覽既有目錄。</p>
+            <p v-if="overview.shortcuts.length === 0" class="empty-copy">{{ t('ui.shortcutEmpty') }}</p>
           </div>
           <form class="shortcut-form" @submit.prevent="saveShortcut">
-            <Input v-model="shortcutName" placeholder="捷徑名稱" aria-label="Shortcut 名稱" />
-            <Input v-model="shortcutDirectory" placeholder="既有目錄路徑" aria-label="Shortcut 目錄" />
-            <Button type="submit" :disabled="mutating" :aria-label="shortcutId ? '更新捷徑' : '新增目錄'"><FolderPlusIcon /><span class="button-label">{{ shortcutId ? '更新捷徑' : '新增目錄' }}</span></Button>
-            <Button v-if="shortcutId" type="button" variant="ghost" @click="clearShortcutForm">取消</Button>
+            <Input v-model="shortcutName" :placeholder="t('ui.shortcutName')" :aria-label="t('aria.shortcutName')" />
+            <Input v-model="shortcutDirectory" :placeholder="t('ui.shortcutPath')" :aria-label="t('aria.shortcutDirectory')" />
+            <Button type="submit" :disabled="mutating" :aria-label="shortcutId ? t('ui.shortcutUpdate') : t('ui.shortcutAdd')"><FolderPlusIcon /><span class="button-label">{{ shortcutId ? t('ui.shortcutUpdate') : t('ui.shortcutAdd') }}</span></Button>
+            <Button v-if="shortcutId" type="button" variant="ghost" @click="clearShortcutForm">{{ t('common.cancel') }}</Button>
           </form>
         </section>
 
         <section class="browser-panel">
-          <div class="section-heading"><div><p class="eyebrow">DIRECTORY</p><h3>瀏覽並啟動</h3></div></div>
+          <div class="section-heading"><div><p class="eyebrow">{{ t('ui.directoryEyebrow') }}</p><h3>{{ t('ui.browseAndStart') }}</h3></div></div>
           <form class="browse-form" @submit.prevent="browse(browserPath)">
-            <Input :model-value="browserPath" placeholder="輸入 OMW 程序可存取的目錄" aria-label="瀏覽目錄" @update:model-value="updateBrowserPath" />
-            <Button type="submit" variant="outline" aria-label="瀏覽"><SearchIcon /><span class="button-label">瀏覽</span></Button>
+            <Input :model-value="browserPath" :placeholder="t('ui.browsePlaceholder')" :aria-label="t('ui.browseAndStart')" @update:model-value="updateBrowserPath" />
+            <Button type="submit" variant="outline" :aria-label="t('ui.browse')"><SearchIcon /><span class="button-label">{{ t('ui.browse') }}</span></Button>
           </form>
-          <p v-if="browsingPath" class="browse-status" role="status">正在讀取目錄：<code>{{ browsingPath }}</code></p>
+          <p v-if="browsingPath" class="browse-status" role="status">{{ t('ui.browsing', { path: browsingPath }) }}</p>
           <div v-else-if="browseError" class="browse-error" role="alert">
-            <p>無法讀取目錄：<code>{{ browserPath }}</code> · {{ browseError }}</p>
-            <Button type="button" variant="outline" size="sm" @click="browse(browserPath)">重試瀏覽</Button>
+            <p><ErrorDetails :summary="t('ui.browseFailed', { path: browserPath })" :code="errorDetails.browse?.code" :diagnostic="errorDetails.browse?.diagnostic" /></p>
+            <Button type="button" variant="outline" size="sm" @click="browse(browserPath)">{{ t('ui.retryBrowse') }}</Button>
           </div>
           <template v-if="listing">
             <div class="current-directory">
               <code>{{ listing.current }}</code>
-              <Button variant="success" :disabled="mutating || Boolean(browsingPath) || browserPath !== listing.current" @click="start(listing.current)"><PlusIcon />啟動全新 Instance</Button>
+              <Button variant="success" :disabled="mutating || Boolean(browsingPath) || browserPath !== listing.current" @click="start(listing.current)"><PlusIcon />{{ t('ui.startFresh') }}</Button>
             </div>
-            <button v-if="listing.parent" type="button" class="directory-row" @click="browse(listing.parent)"><ChevronLeftIcon />上層目錄</button>
+            <button v-if="listing.parent" type="button" class="directory-row" @click="browse(listing.parent)"><ChevronLeftIcon />{{ t('ui.parentDirectory') }}</button>
             <button v-for="child in listing.children" :key="child.path" type="button" class="directory-row" @click="browse(child.path)"><FolderIcon />{{ child.name }}</button>
-            <p v-for="item in listing.errors" :key="item.path" class="inline-error">{{ item.path }}：{{ item.message }}</p>
+            <p v-for="item in listing.errors" :key="item.path" class="inline-error"><ErrorDetails :summary="t('ui.browseFailed', { path: item.path })" :diagnostic="safeDiagnostic(item.message)" /></p>
           </template>
         </section>
       </div>
@@ -2382,49 +2413,49 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
   <div v-if="managerSettingsOpen" class="start-panel-overlay manager-settings-overlay" @click.self="handleSettingsBackdropClick()">
     <section ref="managerSettingsDialog" class="manager-settings" role="dialog" aria-modal="true" aria-labelledby="manager-settings-title" :style="settingsDrag ? { transform: `translateY(${settingsDrag}px)` } : undefined">
       <header class="start-panel-head">
-        <div><p class="eyebrow">MANAGER SETTINGS</p><h2 id="manager-settings-title">OMW 設定</h2></div>
+        <div><p class="eyebrow">{{ t('ui.settingsEyebrow') }}</p><h2 id="manager-settings-title">{{ t('ui.managerSettings') }}</h2></div>
         <div class="panel-drag-area" aria-hidden="true" @pointerdown="startSwipe($event, 'settings')" @pointermove="moveSwipe($event, 'settings')" @pointerup="endSwipe($event, 'settings')" @pointercancel="cancelSwipe" @lostpointercapture="cancelSwipe" />
-        <Button variant="ghost" size="icon" aria-label="關閉 OMW 設定" :disabled="managerSettingsBusy" @click="closeManagerSettings()"><XIcon /></Button>
+        <Button variant="ghost" size="icon" :aria-label="t('aria.closeSettings')" :disabled="managerSettingsBusy" @click="closeManagerSettings()"><XIcon /></Button>
       </header>
       <div class="manager-settings-body">
-        <section class="notification-settings" aria-label="瀏覽器通知設定">
-          <label><input type="checkbox" :checked="notificationStatus === 'on'" :disabled="notificationBusy || notificationStatus === 'unsupported' || notificationStatus === 'blocked' || notificationStatus === 'unavailable'" @change="toggleNotifications">頁面開啟期間通知所有執行個體的待回答與待授權</label>
-          <p v-if="notificationBusy">正在確認通知是否可用…</p>
-          <p v-else-if="notificationStatus === 'on' && !notificationError">已在此瀏覽器啟用；僅於頁面開啟、前景可見且可讀取資料時監測。</p>
-          <p v-else-if="notificationStatus === 'on'">偏好已啟用，但目前無法監測最新資料。</p>
-          <p v-else-if="notificationStatus === 'blocked'">瀏覽器已封鎖通知；請到網站或系統通知設定允許後重新整理。</p>
-          <p v-else-if="notificationStatus === 'unsupported'">此瀏覽器或目前連線不支援通知；請使用 HTTPS 與支援通知的瀏覽器。</p>
-          <p v-else-if="notificationStatus === 'unavailable'">通知目前不可用；請確認瀏覽器儲存空間、Service Worker 與系統通知設定。</p>
-          <p v-else>通知已關閉；設定僅保存在此瀏覽器。</p>
-          <p v-if="notificationError" role="alert">{{ notificationError }}</p>
-          <small>透過約 5 秒輪詢，短暫出現又消失的事項可能漏報；背景節流或裝置休眠時無法保證即時或鎖屏通知。手機須支援網站通知，部分平台須先將網站加入主畫面。</small>
+        <section class="notification-settings" :aria-label="t('ui.notificationSettings')">
+          <label><input type="checkbox" :checked="notificationStatus === 'on'" :disabled="notificationBusy || notificationStatus === 'unsupported' || notificationStatus === 'blocked' || notificationStatus === 'unavailable'" @change="toggleNotifications">{{ t('ui.notifyToggle') }}</label>
+          <p v-if="notificationBusy">{{ t('ui.notifyBusy') }}</p>
+          <p v-else-if="notificationStatus === 'on' && !notificationError">{{ t('ui.notifyOn') }}</p>
+          <p v-else-if="notificationStatus === 'on'">{{ t('ui.notifyOnUnavailable') }}</p>
+          <p v-else-if="notificationStatus === 'blocked'">{{ t('ui.notifyBlocked') }}</p>
+          <p v-else-if="notificationStatus === 'unsupported'">{{ t('ui.notifyUnsupported') }}</p>
+          <p v-else-if="notificationStatus === 'unavailable'">{{ t('ui.notifyUnavailable') }}</p>
+          <p v-else>{{ t('ui.notifyOff') }}</p>
+          <p v-if="notificationError" role="alert">{{ t(notificationError) }}</p>
+          <small>{{ t('ui.notifyCaveat') }}</small>
         </section>
         <form class="credential-form" @submit.prevent="updateManagerCredentials">
-          <div><p class="eyebrow">ACCOUNT</p><h3>修改 OMW 帳號與密碼</h3></div>
-          <p>本機與遠端模式都必須驗證目前密碼。更新不會變更 launcher token、資料目錄、SQLite 或 OpenCode Sessions。</p>
-          <label><span>帳號</span><Input v-model="managerUsername" autocomplete="username" required /></label>
-          <label><span>目前密碼</span><Input v-model="currentManagerPassword" type="password" autocomplete="current-password" required /></label>
-          <label><span>新密碼（至少 16 字元）</span><Input v-model="nextManagerPassword" type="password" autocomplete="new-password" minlength="16" required /></label>
-          <label><span>再次輸入新密碼</span><Input v-model="confirmManagerPassword" type="password" autocomplete="new-password" minlength="16" required /></label>
-          <Button type="submit" :disabled="managerSettingsBusy">{{ managerSettingsBusy ? '更新中…' : '更新帳密' }}</Button>
+          <div><p class="eyebrow">{{ t('ui.account') }}</p><h3>{{ t('ui.accountHeading') }}</h3></div>
+          <p>{{ t('ui.accountDescription') }}</p>
+          <label><span>{{ t('ui.account') }}</span><Input v-model="managerUsername" autocomplete="username" required /></label>
+          <label><span>{{ t('ui.passwordCurrent') }}</span><Input v-model="currentManagerPassword" type="password" autocomplete="current-password" required /></label>
+          <label><span>{{ t('ui.passwordNew') }}</span><Input v-model="nextManagerPassword" type="password" autocomplete="new-password" minlength="16" required /></label>
+          <label><span>{{ t('ui.passwordConfirm') }}</span><Input v-model="confirmManagerPassword" type="password" autocomplete="new-password" minlength="16" required /></label>
+          <Button type="submit" :disabled="managerSettingsBusy">{{ managerSettingsBusy ? t('ui.updating') : t('ui.updateCredentials') }}</Button>
           <!-- 對話框開啟時 toast-region 為 inert，成功訊息需留在對話框內供讀屏讀取。 -->
-          <p v-if="managerSettingsSuccess" role="status">{{ managerSettingsSuccess }}</p>
+          <p v-if="managerSettingsSuccess" role="status">{{ t(managerSettingsSuccess) }}</p>
         </form>
         <section class="manager-shutdown-panel">
-          <div><p class="eyebrow">MANAGER LIFECYCLE</p><h3>停止 OMW</h3></div>
-          <p>只停止管理介面。OpenCode TUI、背景執行個體、Sessions 與 Project 工作不會被停止或刪除。</p>
-          <Button variant="destructive" :disabled="managerSettingsBusy" @click="stopManager"><PowerIcon />停止 OMW</Button>
+          <div><p class="eyebrow">{{ t('ui.managerLifecycle') }}</p><h3>{{ t('ui.stopManager') }}</h3></div>
+          <p>{{ t('ui.stopManagerDescription') }}</p>
+          <Button variant="destructive" :disabled="managerSettingsBusy" @click="stopManager"><PowerIcon />{{ t('ui.stopManager') }}</Button>
         </section>
-        <p v-if="managerSettingsError" class="lifecycle-error" role="alert"><AlertTriangleIcon />{{ managerSettingsError }}</p>
+        <p v-if="managerSettingsError" class="lifecycle-error" role="alert"><AlertTriangleIcon /><ErrorDetails :summary="displayedError('settings', managerSettingsError)" :code="errorDetails.settings?.code" :diagnostic="errorDetails.settings?.diagnostic" /></p>
       </div>
     </section>
   </div>
 
   <ConfirmationDialog
     :open="Boolean(confirmation)"
-    :title="confirmationDisplay?.title ?? ''"
-    :description="confirmationDisplay?.description ?? ''"
-    :confirm-label="confirmationDisplay?.confirmLabel ?? ''"
+     :title="confirmationDisplay ? t(confirmationDisplay.titleKey) : ''"
+     :description="confirmationDisplay ? t(confirmationDisplay.descriptionKey, confirmationDisplay.descriptionParams) : ''"
+     :confirm-label="confirmationDisplay ? t(confirmationDisplay.confirmLabelKey) : ''"
     :tone="confirmationDisplay?.tone ?? 'positive'"
     :busy="confirmationAccepting"
     :motion="currentStartPanelMotion()"
@@ -2437,10 +2468,10 @@ function message(cause: unknown): string { return cause instanceof Error ? cause
 
   <div class="toast-region" :inert="managerSettingsOpen || undefined" aria-live="polite">
     <Transition name="toast"><div v-if="notice" class="toast toast-success" role="status" :style="noticeDrag ? { transform: `translateX(${noticeDrag}px)` } : undefined" @pointerdown="startSwipe($event, 'notice')" @pointermove="moveSwipe($event, 'notice')" @pointerup="endSwipe($event, 'notice')" @pointercancel="cancelSwipe" @lostpointercapture="cancelSwipe">
-      <span>{{ notice }}</span><button type="button" aria-label="關閉成功通知" @click="clearNotice"><XIcon /></button>
+       <span>{{ t(notice.key, notice.params) }}</span><button type="button" :aria-label="t('common.closeNotice')" @click="clearNotice"><XIcon /></button>
     </div></Transition>
     <Transition name="toast"><div v-if="actionError" class="toast toast-error" role="alert" :style="errorDrag ? { transform: `translateX(${errorDrag}px)` } : undefined" @pointerdown="startSwipe($event, 'error')" @pointermove="moveSwipe($event, 'error')" @pointerup="endSwipe($event, 'error')" @pointercancel="cancelSwipe" @lostpointercapture="cancelSwipe">
-      <AlertTriangleIcon /><span>{{ actionError }}</span><button type="button" aria-label="關閉錯誤通知" @click="actionError = ''"><XIcon /></button>
+      <AlertTriangleIcon /><ErrorDetails :summary="displayedError('action', actionError)" :code="errorDetails.action?.code" :diagnostic="errorDetails.action?.diagnostic" /><button type="button" :aria-label="t('common.closeError')" @click="actionError = ''"><XIcon /></button>
     </div></Transition>
   </div>
   </div>

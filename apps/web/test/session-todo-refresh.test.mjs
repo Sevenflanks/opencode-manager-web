@@ -58,10 +58,34 @@ test("switch clears prior todos and late response cannot replace a new binding; 
   await tick()
   assert.equal(refresh.todos.value[0].content, "新")
   assert.equal(refresh.stale.value, true)
-  assert.equal(refresh.error.value, "read failed")
+  assert.equal(refresh.error.value.message, "read failed")
   refresh.focus({ instanceId: "two", sessionId: "other" })
   assert.deepEqual(refresh.todos.value, [])
   assert.equal(refresh.stale.value, false)
+  refresh.dispose()
+})
+
+test("todo refresh retains structured API code across failure and clears it on success or binding change", async () => {
+  const requests = []
+  const refresh = createSessionTodoRefresh({
+    read: () => { const request = deferred(); requests.push(request); return request.promise },
+    start: () => 1, stop: () => {},
+  })
+  refresh.focus({ instanceId: "one", sessionId: "root" })
+  const cause = Object.assign(new Error("untrusted diagnostic"), { code: "INSTANCE_START_TIMEOUT", status: 504 })
+  requests[0].reject(cause)
+  await tick()
+  assert.equal(refresh.error.value, cause)
+  refresh.reload()
+  requests[1].resolve({ instanceId: "one", sessionId: "root", todos: [] })
+  await tick()
+  assert.equal(refresh.error.value, null)
+  refresh.focus({ instanceId: "two", sessionId: "other" })
+  requests[2].reject(cause)
+  await tick()
+  assert.equal(refresh.error.value, cause)
+  refresh.focus(null)
+  assert.equal(refresh.error.value, null)
   refresh.dispose()
 })
 

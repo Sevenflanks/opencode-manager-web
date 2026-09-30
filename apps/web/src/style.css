@@ -201,6 +201,9 @@ h3 { font-size: .95rem; }
 .status-attention { display: flex; align-items: center; gap: 7px; margin-top: 10px; border-left: 2px solid #d59b4c; padding: 8px 10px; color: #f0c77f; background: #211b13; font-size: .74rem; }
 .status-attention svg { width: 16px; flex: 0 0 16px; }
 .inline-error { margin: 9px 0; color: #ffaaa0; font-size: .75rem; overflow-wrap: anywhere; }
+.error-details { margin-top: 4px; font-size: .72rem; overflow-wrap: anywhere; }
+.error-details > summary { cursor: pointer; min-height: 24px; width: fit-content; }
+.error-details > code, .error-details > p { display: block; margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .diagnostic { margin: 10px 0; color: #9aa5aa; font-size: .72rem; }
 .diagnostic pre { max-height: 140px; overflow: auto; padding: 10px; border: 1px solid #3b3030; background: #171313; white-space: pre-wrap; }
 .detail-actions { flex-wrap: wrap; justify-content: flex-start; margin: 14px 0 20px; }
@@ -209,7 +212,7 @@ h3 { font-size: .95rem; }
 .primary-session-card strong { min-width: 0; overflow-wrap: anywhere; font-size: .9rem; }
 .primary-session-card code { color: #9ce3e0; font-size: .7rem; }
 .primary-session-card small { grid-column: 1 / -1; color: #76868d; font-size: .67rem; }
-.primary-session-label { grid-column: 1 / -1; color: #68757c; font: 700 .62rem "Cascadia Code", monospace; letter-spacing: .08em; text-transform: uppercase; }
+.primary-session-label { grid-column: 1 / -1; color: #68757c; font: 700 .62rem "Cascadia Code", monospace; letter-spacing: .08em; }
 .primary-todos { margin-top: 10px; border: 1px solid #36545a; padding: 10px 12px; background: #142023; }
 .primary-todos-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
 .primary-todos-head h3 { color: #d9e3e4; font-size: .8rem; }
@@ -343,9 +346,8 @@ h3 { font-size: .95rem; }
 @media (max-width: 860px) {
   .shell { padding: 10px; }
   .topbar { min-height: 60px; flex-wrap: wrap; padding-bottom: 10px; }
-  .topbar-actions { width: 100%; }
-  .topbar-actions > :first-child { flex: 1; }
-  .topbar-actions { flex-wrap: wrap; }
+  .topbar-actions { display: grid; width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  .topbar-actions > .ui-button:first-child { grid-column: 1 / -1; width: 100%; height: auto; min-height: 44px; padding-block: 10px; white-space: normal; overflow-wrap: anywhere; }
   .connectivity { grid-template-columns: minmax(0, 1fr); padding: 9px 10px; }
   .connectivity-status h2 { white-space: normal; }
   .connectivity-access { border-top: 1px solid #30383d; border-left: 0; padding: 8px 0 0; }
