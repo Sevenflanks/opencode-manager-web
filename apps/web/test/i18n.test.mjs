@@ -8,7 +8,7 @@ import { createServer } from "vite"
 const server = await createServer({ server: { middlewareMode: true, hmr: false }, optimizeDeps: { noDiscovery: true }, appType: "custom" })
 try {
   const { i18n, useMessages } = await server.ssrLoadModule("/src/i18n.ts")
-  const { LocalError, presentError, presentStatusError, safeDiagnostic } = await server.ssrLoadModule("/src/error-presentation.ts")
+  const { LocalError, presentError, presentRegistrationError, presentStatusError, safeDiagnostic } = await server.ssrLoadModule("/src/error-presentation.ts")
   const { ApiError } = await server.ssrLoadModule("/src/api.ts")
   const longLocale = JSON.parse(await readFile(new URL("./long-test.locale.json", import.meta.url), "utf8"))
   const base = i18n.global.getLocaleMessage("zh-TW")
@@ -62,6 +62,17 @@ try {
     assert.equal(status.summary, "error.startTimeout")
     assert.equal(status.code, "INSTANCE_START_TIMEOUT")
     assert.equal(presentStatusError("Basic dXNlcjpwYXNz", t, "error.unknown").summary, "error.unknown")
+  })
+
+  await test("registration diagnostics only expose allowlisted codes and local recovery text", () => {
+    const t = (key) => key
+    assert.deepEqual(presentRegistrationError("SERVE_WRITE_FAILED", t), {
+      summary: "connectivity.serveWriteFailed", summaryKey: "connectivity.serveWriteFailed", code: "SERVE_WRITE_FAILED", diagnostic: null,
+    })
+    assert.deepEqual(presentRegistrationError("UNKNOWN_PRIVATE_CODE", t), {
+      summary: "connectivity.registrationUnknown", summaryKey: "connectivity.registrationUnknown", code: null, diagnostic: null,
+    })
+    assert.equal(presentRegistrationError("__proto__", t).code, null)
   })
 
   await test("only typed local popup failures have actionable summaries; ordinary Error messages remain private", () => {

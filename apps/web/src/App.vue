@@ -41,7 +41,7 @@ import { Button } from "@/components/ui/button"
 import ConfirmationDialog from "@/components/ui/dialog/ConfirmationDialog.vue"
 import { Input } from "@/components/ui/input"
 import ErrorDetails from "@/components/ErrorDetails.vue"
-import { LocalError, presentError, presentStatusError, safeDiagnostic, type PresentedError } from "@/error-presentation"
+import { LocalError, presentError, presentRegistrationError, presentStatusError, safeDiagnostic, type PresentedError } from "@/error-presentation"
 import { useMessages, type MessageKey } from "@/i18n"
 
 const { t, date: formatDate, number } = useMessages()
@@ -398,6 +398,12 @@ const serveLabel = computed(() => ({
   unknown: t("connectivity.serveUnknown"),
   "not-configured": t("connectivity.serveNotConfigured"),
 })[serveState.value])
+const registrationFailure = computed(() => {
+  const registration = connectivity.value?.registration
+  return registration?.state === "failed" && registration.trigger === "manual" && registration.diagnostic
+    ? presentRegistrationError(registration.diagnostic.code, t)
+    : null
+})
 const connectivityWarnings = computed(() => {
   const warnings: string[] = []
   if (connectivityStale.value) warnings.push(t("connectivity.warningStale"))
@@ -406,10 +412,6 @@ const connectivityWarnings = computed(() => {
   if (tailscaleState.value === "unavailable") warnings.push(t("connectivity.warningUnavailable"))
   if (serveState.value === "mismatch") warnings.push(t("connectivity.warningMismatch"))
   if (connectivity.value?.serve.funnel === "enabled") warnings.push(t("connectivity.warningFunnel"))
-  const registration = connectivity.value?.registration
-  if (registration?.state === "failed" && registration.trigger === "manual" && registration.diagnostic) {
-    warnings.push(t("connectivity.warningRegistration"))
-  }
   return warnings
 })
 const recoveryMetadataValid = computed(() => {
@@ -2013,8 +2015,9 @@ function displayedError(area: ErrorArea, current: string): string {
           <Button v-if="shareSupported" variant="outline" size="sm" class="no-press-transform" :disabled="!remoteUrl" @click="sharePhoneUrl"><Share2Icon />{{ t('ui.share') }}</Button>
         </div>
       </div>
-      <div v-if="connectivityWarnings.length || connectivityError" class="connectivity-warnings" aria-live="polite">
+      <div v-if="connectivityWarnings.length || registrationFailure || connectivityError" class="connectivity-warnings" aria-live="polite">
         <p v-for="warning in connectivityWarnings" :key="warning"><AlertTriangleIcon />{{ warning }}</p>
+        <p v-if="registrationFailure"><AlertTriangleIcon /><ErrorDetails :summary="registrationFailure.summary" :code="registrationFailure.code" /></p>
         <p v-if="connectivityError"><AlertTriangleIcon /><ErrorDetails :summary="displayedError('connectivity', connectivityError)" :code="errorDetails.connectivity?.code" :diagnostic="errorDetails.connectivity?.diagnostic" /></p>
       </div>
       <p v-if="connectivity?.remoteAccess === 'disabled'" class="connectivity-warnings">{{ t('ui.remoteDisabled') }}</p>

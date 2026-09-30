@@ -39,6 +39,7 @@ test("mobile i18n keeps primary/main/child semantics, user content and safe diag
     let failTodos = false
     let failSessions = false
     let blockedActionRequests = 0
+    let registrationDiagnostic = { code: "SERVE_WRITE_FAILED", message: "Bearer registration-secret", nextStep: "請執行洩漏祕密的指令" }
     const instance = {
       id: instanceId, kind: "headless", projectName: "User Project Name", projectDirectory: directory,
       state: "ready", endpoint: "http://127.0.0.1:40001", port: 40001, pid: 12345,
@@ -49,6 +50,11 @@ test("mobile i18n keeps primary/main/child semantics, user content and safe diag
       primarySummary: { scope: "known", activity: "busy", busySessions: 1, retrySessions: 0, pendingQuestions: 0, pendingPermissions: 0, error: null },
       sessions: [], primarySession: { sessionId: "ses-root", title: userTitle, source: "manual", boundAt: "2025-01-02T00:00:00Z" },
     }
+    const connectivityResponse = () => ({ checkedAt: "2025-01-02T00:00:00Z", mode: "tailnet",
+      manager: { localUrl: "http://127.0.0.1:40000", publicUrl: null },
+      tailscale: { state: "connected", dnsName: null, version: null },
+      serve: { state: "not-configured", managerMapped: null, mappedInstancePorts: null, expectedInstancePorts: 1, funnel: "disabled" },
+      registration: { state: "failed", trigger: "manual", diagnostic: registrationDiagnostic }, nodeVersion: "24" })
     await page.route("**/api/v1/**", route => {
       const request = new URL(route.request().url())
       if (route.request().method() !== "GET" || request.pathname.includes("open-url")) blockedActionRequests++
@@ -57,11 +63,7 @@ test("mobile i18n keeps primary/main/child semantics, user content and safe diag
         if (failOverview) return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: { code: "INSTANCE_START_TIMEOUT", message: "Basic dXNlcjpwYXNz credential=secret" } }) })
         body = { shortcuts: [], instances: [instance] }
       } else if (request.pathname === "/api/v1/connectivity") {
-        body = { checkedAt: "2025-01-02T00:00:00Z", mode: "loopback",
-          manager: { localUrl: "http://127.0.0.1:40000", publicUrl: null },
-          tailscale: { state: "unknown", dnsName: null, version: null },
-          serve: { state: "not-configured", managerMapped: null, mappedInstancePorts: null, expectedInstancePorts: 1, funnel: "disabled" },
-          registration: { state: "not-configured", trigger: null, diagnostic: null }, nodeVersion: "24" }
+        body = connectivityResponse()
       } else if (request.pathname === `/api/v1/instances/${instanceId}/sessions`) {
         if (failSessions) return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: { code: "INSTANCE_START_TIMEOUT", message: "Basic c2VjcmV0" } }) })
         body = { roots: [{ id: "ses-root", title: userTitle }], unknownParent: [] }
@@ -73,8 +75,27 @@ test("mobile i18n keeps primary/main/child semantics, user content and safe diag
       } else return route.fulfill({ status: 404 })
       return route.fulfill({ contentType: "application/json", body: JSON.stringify(body) })
     })
+    await page.route("**/api/v1/connectivity/register", route => route.fulfill({ json: connectivityResponse() }))
     await page.goto(origin)
     await page.locator(`.instance-row[data-instance-id="${instanceId}"]`).waitFor()
+    const registrationWarning = page.locator(".connectivity-warnings").first()
+    await registrationWarning.getByText("無法寫入 Tailscale Serve 設定，請確認目前使用者可管理 Serve，然後重試。").waitFor()
+    assert.equal(await registrationWarning.locator("details").count(), 1, "HTTP 200 failed registration exposes expandable code")
+    await registrationWarning.locator("details summary").click()
+    await registrationWarning.getByText("錯誤代碼：SERVE_WRITE_FAILED").waitFor()
+    assert.doesNotMatch(await registrationWarning.textContent() ?? "", /registration-secret|洩漏祕密/)
+    await page.evaluate(async () => {
+      const { i18n } = await import("/src/i18n.ts")
+      i18n.global.setLocaleMessage("en-US", { connectivity: { serveWriteFailed: "Check Serve permission, then retry." } })
+      i18n.global.locale.value = "en-US"
+    })
+    await registrationWarning.getByText("Check Serve permission, then retry.").waitFor()
+    await page.evaluate(async () => { const { i18n } = await import("/src/i18n.ts"); i18n.global.locale.value = "zh-TW" })
+    registrationDiagnostic = { code: "UNKNOWN_PRIVATE_CODE", message: "Bearer registration-secret", nextStep: "請執行洩漏祕密的指令" }
+    await page.getByRole("button", { name: "自動註冊", exact: true }).click()
+    await registrationWarning.getByText("遠端入口註冊未完成，請在本機確認 Tailscale 與 Serve 狀態後重試。").waitFor()
+    assert.equal(await registrationWarning.locator("details").count(), 0, "unknown code is not expanded or exposed")
+    assert.doesNotMatch(await registrationWarning.textContent() ?? "", /UNKNOWN_PRIVATE_CODE|registration-secret|洩漏祕密/)
     const normalButton = await page.locator(".topbar-actions .ui-button:first-child").boundingBox()
     assert.ok(normalButton && normalButton.width >= 320 && normalButton.height >= 44 && normalButton.height <= 80,
       `390px zh-TW launch action needs a readable row: ${JSON.stringify(normalButton)}`)

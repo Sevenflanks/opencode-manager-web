@@ -29,6 +29,23 @@ const knownCodes: Record<string, MessageKey> = {
   SHUTDOWN_UNAVAILABLE: "error.shutdownUnavailable", MUTATION_ORIGIN_REJECTED: "error.originRejected",
 }
 
+// Registration diagnostic 與 HTTP error 來源不同；僅依已確認的 code 提供操作指引，不顯示自由文字。
+const registrationCodes: Record<string, MessageKey> = {
+  SERVE_WRITE_FAILED: "connectivity.serveWriteFailed",
+  COMMAND_FAILED: "connectivity.serveWriteFailed",
+  TAILSCALE_UNAVAILABLE: "connectivity.registrationUnavailable",
+  TAILSCALE_NEEDS_LOGIN: "error.tailscaleLogin",
+  TAILSCALE_OFFLINE: "error.tailscaleOffline",
+  TAILSCALE_UNKNOWN: "connectivity.registrationStateUnknown",
+  DNS_MISMATCH: "connectivity.registrationDnsMismatch",
+  SERVE_STATUS_UNKNOWN: "connectivity.serveStatusUnknown",
+  FUNNEL_ENABLED: "connectivity.registrationFunnel",
+  TARGET_CONFLICT: "connectivity.registrationConflict",
+  VERIFICATION_FAILED: "connectivity.registrationVerificationFailed",
+  REGISTRATION_TIMEOUT: "connectivity.registrationTimeout",
+  REGISTRATION_STOPPED: "connectivity.registrationStopped",
+}
+
 export interface PresentedError { summary: string; summaryKey: MessageKey; params?: Record<string, string | number>; diagnostic: string | null; code: string | null }
 
 type LocalErrorKey = "popup.busy" | "popup.blocked" | "popup.mismatch" | "popup.unsafe"
@@ -57,4 +74,10 @@ export function presentStatusError(value: string | null, t: (key: MessageKey) =>
   const known = value !== null && Object.hasOwn(knownCodes, value) ? knownCodes[value] : null
   const summaryKey = known ?? fallback
   return { summary: t(summaryKey), summaryKey, code: known ? value : null, diagnostic: safeDiagnostic(value) }
+}
+
+export function presentRegistrationError(code: unknown, t: (key: MessageKey) => string): PresentedError {
+  const known = typeof code === "string" && Object.hasOwn(registrationCodes, code) ? registrationCodes[code] : null
+  const summaryKey = known ?? "connectivity.registrationUnknown"
+  return { summary: t(summaryKey), summaryKey, code: known ? code as string : null, diagnostic: null }
 }

@@ -31,3 +31,26 @@
 - [安全錯誤詳細資訊（390px）](safe-error-details-390.png)：親自讀取 PNG；Todo、Session 的已知 `INSTANCE_START_TIMEOUT` 轉為使用者可讀訊息且展開後只顯示 allowlisted 錯誤代碼。mock 的任意 free-form diagnostic 在 DOM 中不存在，符合 `docs/development.md:321-323`；原有 browser test 也驗證 overview/Instance 等錯誤視圖。不能以此代替真 backend/redaction 測試。
 
 初次執行 **截圖專用** `capture.mjs` 曾 exit 1，因證據 runner 選到沒有直接 text node 的按鈕，量得 `lines:0`，不是產品測試失敗；修正 runner 只改用 accessible name 尋找正確按鈕與遍歷文字節點，第二次通過。此次手機 header 修正後沿用相同 runner 加入寬高／首屏斷言並重拍上述三張 PNG；每張都已重新讀取確認。完整 `npm test` 此輪未重跑。
+
+## 2026-09-30 未提交修正後的增量證據
+
+工作目錄 `C:\develop\projects\omw-87-88-i18n`；`git rev-parse HEAD` = `c55dcc5d964760678ea8fb287856a4167ffb1cc0`，`gh pr view 94 --json state,headRefOid,headRefName,url` 顯示 PR #94 `OPEN`、head `feat/87-88-ui-i18n` / `c55dcc5d964760678ea8fb287856a4167ffb1cc0`。目前 `apps/web/src/App.vue`、`apps/web/src/error-presentation.ts`、`apps/web/src/locales/zh-TW.json` 及兩份 i18n 測試尚未提交；本節結果包含這些工作樹修正，並非只驗證 PR head。
+
+這輪修正使手動註冊 HTTP 200 卻回報 `registration.state=failed` 時，依 allowlisted diagnostic code 顯示本地化指引及可展開的安全 code；未知 code 不顯示原始 code 或任意 message/nextStep。`apps/web/src/locales/zh-TW.json` 同時完成格式整理。交接來源：general 先前回報 focused i18n unit **6/6 pass**、headless browser **1/1 pass**（涵蓋註冊失敗的安全顯示及 locale 更新）；本輪未重跑這兩項，未取得其原始命令輸出或耗時，故不列為本輪實測。上述 2026-09-29 `npm test` 的 **350 tests / 303 pass / 47 skip** 亦只適用於先前的檔案版本，不能視為修正後完整 suite 成績。
+
+本輪在 repo root 實際執行的命令及終端結果：
+
+| 實際命令 | 結果 |
+| --- | --- |
+| `node --version; npm --version; git status --short --untracked-files=normal` | exit 0；Node `v24.15.0`、npm `11.12.1`；原有五份未提交檔案如上。 |
+| `npm run build -w @omw/web` | exit 0；`vue-tsc --noEmit && vite build`，Vite 7.3.6、**2210 modules transformed**、`built in 3.02s`；`dist/index.html` 0.52/0.32 kB、`dist/assets/index-BUnxKwMW.css` 45.10/9.90 kB、`dist/assets/index-Cb3vP4rQ.js` 318.35/105.86 kB（Vite 顯示 raw/gzip 的四捨五入值）。同步 build 完成，無本輪需保留的 process。 |
+| 下方 `node --input-type=module -e '…'` 精確量測／排除測試 locale | exit 0；`index.html` **521/318 bytes**、CSS **45,099/9,901 bytes**、JS **318,345/105,864 bytes**（raw/gzip）；比先前 [i18n-proof.md](../../../apps/web/test/i18n-proof.md) 測量的 JS **+2,394/+576 bytes**、CSS **+40/+10 bytes**。檢查三份 `long-test.locale.json` 字串及檔名／長字串 sentinel，`leaked=[]`、`references=[]`；掃描 `dist/index.html` 與 `dist/assets` 中的 JS/CSS，非 runtime bundle audit。 |
+| `git diff --check` | exit 0；更新本證據後再次執行，僅 Git 的 LF→CRLF 工作樹提示，無 diff whitespace error。 |
+
+上表量測命令全文（於 repo root 執行；`output` 中 `raw` 為 `Buffer.length`、`gzip` 為 `zlib.gzipSync(buffer).length`）：
+
+```powershell
+node --input-type=module -e 'import { readFileSync, readdirSync } from "node:fs"; import { gzipSync } from "node:zlib"; import { join } from "node:path"; const root = "apps/web/dist"; const long = JSON.parse(readFileSync("apps/web/test/long-test.locale.json", "utf8")); const values = Object.values(long).flatMap(Object.values); const assets = readdirSync(join(root, "assets")).filter(name => /\.(js|css)$/.test(name)); const files = ["index.html", ...assets.map(name => `assets/${name}`)]; const output = files.map(file => { const buf = readFileSync(join(root, file)); return { file, raw: buf.length, gzip: gzipSync(buf).length }; }); const bundled = files.map(file => readFileSync(join(root, file), "utf8")).join("\n"); const leaked = values.filter(value => bundled.includes(value)); const references = ["long-test.locale.json", "test/long-test.locale", "為這個 Project 啟動一個全新的 Instance"].filter(value => bundled.includes(value)); console.log(JSON.stringify({ output, testLocaleValues: values.length, leaked, references }, null, 2)); if (leaked.length || references.length || assets.length !== 2) process.exitCode = 1;'
+```
+
+實際輸出：`testLocaleValues: 3`、`leaked: []`、`references: []`；各檔案精確 bytes 如上。未重跑完整 suite、Manager/launcher/release、真 backend 或截圖流程；先前截圖與既有 full-suite 證據均不聲稱涵蓋此輪修正。
