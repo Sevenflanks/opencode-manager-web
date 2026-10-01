@@ -52,6 +52,7 @@ try {
   const runtime = new OpenCodeRuntime({
     executable: process.env.OMW_OPENCODE_EXECUTABLE ?? "",
     dataDirectory,
+    readinessDiagnostics: (details) => diagnostics.recordReadiness(details),
     ...(process.env.OMW_POWERSHELL_EXECUTABLE ? { powershell: process.env.OMW_POWERSHELL_EXECUTABLE } : {}),
     publicOriginForPort: (instancePort: number) => connectivity.remoteOriginForPort(instancePort),
   })
@@ -60,6 +61,7 @@ try {
     runtime,
     portPool,
     (instancePort) => connectivity.ensureRemoteOriginForPort(instancePort),
+    (details) => diagnostics.recordLocalVerification(details),
   )
   const allowedOrigins = readAllowedOrigins(port, remoteAccess?.publicManagerOrigin)
   const webRoot = path.resolve(process.env.OMW_WEB_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist"))
