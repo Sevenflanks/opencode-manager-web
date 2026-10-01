@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { readdir, realpath, stat } from "node:fs/promises"
 import net from "node:net"
 import path from "node:path"
+import { performance } from "node:perf_hooks"
 import { primarySessionDisposition } from "@omw/contracts"
 import type {
   DirectoryListing,
@@ -29,10 +30,12 @@ import type { InspectResult, RuntimeActivityEvent, RuntimeActivityObserver, Runt
 import { primarySessionFrom, resolveActivityRoot } from "./session-projection.js"
 import { capabilitiesFor, supports } from "./capabilities.js"
 import { InstanceOverview } from "./overview.js"
+import type { LocalVerificationDiagnostic } from "./lifecycle-diagnostics.js"
 
 const RESERVATION_TTL_MS = 10_000
 const OBSERVER_RETRY_DELAYS_MS = [250, 1_000, 2_000] as const
-const LOCAL_VERIFICATION_DEADLINE_MS = 15_000
+const RESUME_BINDING_DEADLINE_MS = 15_000
+const INITIAL_LOCAL_VERIFICATION_BUDGET_MS = 30_000
 const LOCAL_VERIFICATION_INTERVAL_MS = 200
 const RESUME_BINDING_RETRY_DELAYS_MS = [0, 250, 1_000, 2_000] as const
 
@@ -40,6 +43,12 @@ interface LocalVerification {
   controller: AbortController
   deadline: number
   timer: NodeJS.Timeout
+  startedAt: number
+  stageStartedAt: number
+  stage: LocalVerificationDiagnostic["stage"]
+  attempt: number
+  phasePending: boolean
+  finished: boolean
 }
 
 interface ResumeBinding {
@@ -86,6 +95,7 @@ export class ManagerService {
     private readonly runtime: RuntimePort | ((instance: InstanceRecord) => RuntimePort),
     private readonly portPool: InstancePortPoolConfig = { min: 42_000, max: 42_099 },
     private readonly verifyRemoteUrl?: (port: number) => Promise<void>,
+    private readonly localVerificationDiagnostics?: (details: LocalVerificationDiagnostic) => void,
   ) {
     this.snapshots = new InstanceOverview(repository, (record) => this.runtimeFor(record), verifyRemoteUrl)
   }
@@ -264,11 +274,17 @@ export class ManagerService {
     })
     // Local TUI owns the console. Readiness proof runs independently and never grants OMW Stop authority.
     const controller = new AbortController()
-    const deadline = Date.now() + LOCAL_VERIFICATION_DEADLINE_MS
-    const timer = setTimeout(() => controller.abort(new ManagerError(
-      "LOCAL_TUI_VERIFICATION_TIMEOUT", "Local TUI 初次驗證超時。", 409,
-    )), LOCAL_VERIFICATION_DEADLINE_MS)
-    const verification = { controller, deadline, timer }
+    const startedAt = performance.now()
+    const deadline = startedAt + INITIAL_LOCAL_VERIFICATION_BUDGET_MS
+    const timer = setTimeout(() => {
+      // readiness 的底層 Promise 可能仍未完成；外層到期就留下 terminal，不能等舊 async 回來報成功。
+      this.finishLocalVerificationDiagnostic(record.id, verification, "timeout")
+      controller.abort(new ManagerError("LOCAL_TUI_VERIFICATION_TIMEOUT", "Local TUI 初次驗證超時。", 409))
+    }, INITIAL_LOCAL_VERIFICATION_BUDGET_MS)
+    const verification: LocalVerification = {
+      controller, deadline, timer, startedAt, stageStartedAt: startedAt,
+      stage: "inspect", attempt: 0, phasePending: false, finished: false,
+    }
     this.localVerifications.set(record.id, verification)
     void this.verifyLocalRegistration(record.id, verification)
     return { instanceId: record.id, state: "starting" }
@@ -827,6 +843,7 @@ export class ManagerService {
   private cancelLocalVerification(id: string): void {
     const verification = this.localVerifications.get(id)
     if (!verification) return
+    this.finishLocalVerificationDiagnostic(id, verification, "cancelled")
     this.localVerifications.delete(id)
     clearTimeout(verification.timer)
     verification.controller.abort()
@@ -869,12 +886,46 @@ export class ManagerService {
       && current?.state === "starting" && !current.trackingHidden && sameInstanceIdentity(current, record)
   }
 
+  private recordLocalVerificationDiagnostic(id: string, verification: LocalVerification, event: LocalVerificationDiagnostic["event"], result: LocalVerificationDiagnostic["result"]): void {
+    try {
+      const now = performance.now()
+      this.localVerificationDiagnostics?.({
+        event, instanceId: id, attempt: verification.attempt, stage: verification.stage, result,
+        elapsedMs: Math.max(0, now - verification.startedAt),
+        stageElapsedMs: Math.max(0, now - verification.stageStartedAt),
+        remainingMs: Math.max(0, verification.deadline - now),
+      })
+    } catch { /* sink throw 不可改變 identity、deadline 或取消行為 */ }
+  }
+
+  private startLocalVerificationPhase(id: string, verification: LocalVerification, stage: LocalVerificationDiagnostic["stage"]): void {
+    verification.stage = stage
+    verification.stageStartedAt = performance.now()
+    verification.phasePending = true
+    this.recordLocalVerificationDiagnostic(id, verification, "local_tui_verify_phase_started", "pending")
+  }
+
+  private completeLocalVerificationPhase(id: string, verification: LocalVerification, result: LocalVerificationDiagnostic["result"]): void {
+    if (verification.finished || !verification.phasePending) return
+    verification.phasePending = false
+    this.recordLocalVerificationDiagnostic(id, verification, "local_tui_verify_phase_completed", result)
+  }
+
+  private finishLocalVerificationDiagnostic(id: string, verification: LocalVerification, result: "success" | "timeout" | "failed" | "cancelled"): void {
+    if (verification.finished) return
+    this.completeLocalVerificationPhase(id, verification, result)
+    verification.finished = true
+    this.recordLocalVerificationDiagnostic(id, verification, "local_tui_verify_finished", result)
+  }
+
   private async verifyLocalRegistration(id: string, verification: LocalVerification): Promise<void> {
     const record = this.repository.getInstance(id)
     try {
       if (!record || record.kind !== "local-tui") return
       while (this.localVerificationCurrent(id, record, verification)) {
-        if (Date.now() >= verification.deadline) break
+        if (performance.now() >= verification.deadline) break
+        verification.attempt++
+        this.startLocalVerificationPhase(id, verification, "inspect")
         let identity: InspectResult
         try {
           identity = await awaitLocalVerification(this.runtimeFor(record).inspect(record), verification.controller.signal)
@@ -884,15 +935,22 @@ export class ManagerService {
           throw error
         }
         if (!this.localVerificationCurrent(id, record, verification)) return
-        if (Date.now() >= verification.deadline) break
+        if (performance.now() >= verification.deadline) break
         if (!identity.running || !identity.matched || identity.portOwnedByOther) {
+          this.completeLocalVerificationPhase(id, verification, "identity_unverified")
           this.rejectResumeBinding(id)
           throw new ManagerError("INSTANCE_IDENTITY_UNVERIFIED", "Local TUI process identity 或 port owner 無法核對。", 409)
         }
+        this.completeLocalVerificationPhase(id, verification, identity.portOwnerMatched ? "listener_confirmed" : "listener_pending")
         if (identity.portOwnerMatched) {
-          const health = await awaitLocalVerification(this.runtimeFor(record).readiness(record), verification.controller.signal)
+          this.startLocalVerificationPhase(id, verification, "readiness")
+          const runtime = this.runtimeFor(record)
+          const health = await awaitLocalVerification(runtime.readiness(record, {
+            attempt: verification.attempt, deadline: verification.deadline, signal: verification.controller.signal,
+          }), verification.controller.signal)
           if (!this.localVerificationCurrent(id, record, verification)) return
-          if (Date.now() >= verification.deadline) break
+          if (performance.now() >= verification.deadline) break
+          this.completeLocalVerificationPhase(id, verification, "completed")
           const current = this.repository.getInstance(id)!
           current.state = "ready"
           current.healthVersion = health.version
@@ -900,10 +958,15 @@ export class ManagerService {
           this.repository.saveInstance(current)
           this.continueResumeBinding(current.id)
           this.ensureActivityObserver(current)
+          this.finishLocalVerificationDiagnostic(id, verification, "success")
           return
         }
         // #65: exact process 已核對但 listener 尚未出現；不可把無 foreign owner 當成 ready 證據。
-        await awaitLocalVerification(delay(Math.min(LOCAL_VERIFICATION_INTERVAL_MS, verification.deadline - Date.now())), verification.controller.signal)
+        this.startLocalVerificationPhase(id, verification, "listener_wait")
+        await awaitLocalVerification(delay(Math.min(LOCAL_VERIFICATION_INTERVAL_MS, verification.deadline - performance.now())), verification.controller.signal)
+        if (this.localVerificationCurrent(id, record, verification) && performance.now() < verification.deadline) {
+          this.completeLocalVerificationPhase(id, verification, "completed")
+        }
       }
       if (this.localVerifications.get(id) !== verification) return
       throw new ManagerError("LOCAL_TUI_VERIFICATION_TIMEOUT", "Local TUI 初次驗證超時。", 409)
@@ -914,9 +977,12 @@ export class ManagerService {
       current.state = "unreachable"
       current.error = safeRuntimeCode(error, "LOCAL_TUI_VERIFICATION_FAILED").code
       this.repository.saveInstance(current)
+      this.finishLocalVerificationDiagnostic(id, verification, current.error === "LOCAL_TUI_VERIFICATION_TIMEOUT" ? "timeout" : "failed")
     } finally {
+      this.finishLocalVerificationDiagnostic(id, verification, "cancelled")
       if (this.localVerifications.get(id) === verification) this.localVerifications.delete(id)
       clearTimeout(verification.timer)
+      verification.controller.abort()
     }
   }
 
@@ -927,7 +993,7 @@ export class ManagerService {
     if (!current || current.state !== "ready" || current.trackingHidden || !sameInstanceIdentity(current, intent.record)
       || this.repository.getPrimarySession(id)) return
     // 首次核對為 ready 才起算；之後的 recheck 只接續剩餘額度，過期 callback 不得延長期限。
-    const deadline = intent.deadline ?? (intent.deadline = Date.now() + LOCAL_VERIFICATION_DEADLINE_MS)
+    const deadline = intent.deadline ?? (intent.deadline = Date.now() + RESUME_BINDING_DEADLINE_MS)
     if (Date.now() >= deadline) return
     const controller = new AbortController()
     // recheck 僅暫停舊 callback，不能重設原先的時間或嘗試次數上限。

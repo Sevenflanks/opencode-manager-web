@@ -2,11 +2,13 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { existsSync, realpathSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
+import { performance } from "node:perf_hooks"
 import type { SessionMetadata, SessionTodo } from "@omw/contracts"
 import type { InstanceRecord } from "../../repository.js"
 import { ManagerError } from "../../errors.js"
 import { runProcessHelper } from "../../process-control.js"
-import type { LaunchResult, InspectResult, StopResult, RuntimeSessionStatus, RuntimePendingRequest, RuntimeSummary, RuntimeActivityEvidence, RuntimeActivityEvent, RuntimeActivityObserver, RuntimePort } from "../../runtime.js"
+import type { LaunchResult, InspectResult, StopResult, RuntimeSessionStatus, RuntimePendingRequest, RuntimeSummary, RuntimeActivityEvidence, RuntimeActivityEvent, RuntimeActivityObserver, RuntimePort, InitialLocalReadiness } from "../../runtime.js"
+import type { ReadinessDiagnostic } from "../../lifecycle-diagnostics.js"
 
 const HTTP_TIMEOUT_MS = 2_000
 
@@ -31,6 +33,7 @@ export class OpenCodeRuntime implements RuntimePort {
   private readonly publicOriginForPort: ((port: number) => string | null) | null
   private readonly environment: NodeJS.ProcessEnv
   private readonly sameRunChildren = new Map<string, TrackedLaunch>()
+  private readonly readinessDiagnostics: ((details: ReadinessDiagnostic) => void) | undefined
 
   constructor(options: {
     executable: string
@@ -38,6 +41,7 @@ export class OpenCodeRuntime implements RuntimePort {
     powershell?: string
     publicOriginForPort?: (port: number) => string | null
     environment?: NodeJS.ProcessEnv
+    readinessDiagnostics?: (details: ReadinessDiagnostic) => void
   }) {
     if (!options.executable) throw new ManagerError("OPENCODE_EXECUTABLE_REQUIRED", "必須設定 OMW_OPENCODE_EXECUTABLE。", 500)
     if (!existsSync(options.executable)) throw new ManagerError("OPENCODE_EXECUTABLE_NOT_FOUND", "設定的 OpenCode executable 不存在。", 500)
@@ -46,6 +50,7 @@ export class OpenCodeRuntime implements RuntimePort {
     this.helperPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../scripts/process-control.ps1")
     this.publicOriginForPort = options.publicOriginForPort ?? null
     this.environment = options.environment ?? process.env
+    this.readinessDiagnostics = options.readinessDiagnostics
   }
 
   async launch(directory: string, port: number, instanceId: string): Promise<LaunchResult> {
@@ -129,25 +134,76 @@ export class OpenCodeRuntime implements RuntimePort {
     }
   }
 
-  async readiness(instance: LaunchResult | InstanceRecord): Promise<{ version: string; directory: string }> {
+  async readiness(instance: LaunchResult | InstanceRecord, initialVerification?: InitialLocalReadiness): Promise<{ version: string; directory: string }> {
     const expectedDirectory = "directory" in instance ? instance.directory : instance.projectDirectory
     const endpoint = checkedEndpoint(instance.endpoint, "port" in instance ? instance.port : Number(new URL(instance.endpoint).port))
     const deadline = Date.now() + 15_000
-    while (Date.now() < deadline) {
+    const startedAt = performance.now()
+    const remaining = (): number => initialVerification
+      ? initialVerification.deadline - performance.now()
+      : deadline - Date.now()
+    let attempt = 0
+    let stageStartedAt = startedAt
+    let stage: ReadinessDiagnostic["stage"] = "health"
+    let result: ReadinessDiagnostic["result"] = "pending"
+    const emit = (event: ReadinessDiagnostic["event"], code: ReadinessDiagnostic["result"], httpStatus?: number): void => {
       try {
-        const health = await requestJson(endpoint, "/global/health") as { healthy?: unknown; version?: unknown }
+        const now = performance.now()
+        this.readinessDiagnostics?.({ event, instanceId: "instanceId" in instance ? instance.instanceId : instance.id,
+          scope: initialVerification ? "initial_local_tui" : "other",
+          ...(initialVerification ? { verificationAttempt: initialVerification.attempt } : {}),
+          attempt, stage, result: code, ...(httpStatus === undefined ? {} : { httpStatus }),
+          elapsedMs: Math.max(0, now - startedAt), stageElapsedMs: Math.max(0, now - stageStartedAt),
+          remainingMs: Math.max(0, (initialVerification?.deadline ?? startedAt + 15_000) - now) })
+      } catch { /* sink throw 不可進入原有 retry 或替換 runtime exception */ }
+    }
+    const requestDiagnostic: JsonRequestDiagnostic = (event, code, status) => {
+      result = code
+      emit(event, code, status)
+    }
+    while (remaining() > 0 && !initialVerification?.signal.aborted) {
+      attempt++
+      try {
+        stage = "health"
+        stageStartedAt = performance.now()
+        const health = await requestJson(endpoint, "/global/health", {}, requestDiagnostic, initialVerification) as { healthy?: unknown; version?: unknown }
+        if (initialVerification && remaining() <= 0) break
+        result = "health_invalid"
         if (health.healthy !== true || typeof health.version !== "string" || !health.version) {
           throw new Error("health response 缺少 healthy/version")
         }
-        const pathResult = await requestJson(endpoint, "/path") as { directory?: unknown }
+        emit("opencode_readiness_validation_completed", "success")
+        stage = "path"
+        stageStartedAt = performance.now()
+        const pathResult = await requestJson(endpoint, "/path", {}, requestDiagnostic, initialVerification) as { directory?: unknown }
+        if (initialVerification && remaining() <= 0) break
+        result = "directory_mismatch"
         if (typeof pathResult.directory !== "string" || !sameWindowsPath(pathResult.directory, expectedDirectory)) {
           throw new Error("endpoint 回報的 Project directory 不符")
         }
+        emit("opencode_readiness_validation_completed", "success")
+        stage = "readiness"
+        stageStartedAt = startedAt
+        // 只回報這次子 readiness；service 的世代與 outer deadline 仍決定 Instance 狀態。
+        emit("opencode_readiness_finished", "success")
         return { version: health.version, directory: pathResult.directory }
       } catch {
-        await delay(200)
+        if (initialVerification && (initialVerification.signal.aborted || remaining() <= 0)) break
+        if (result === "health_invalid" || result === "directory_mismatch") emit("opencode_readiness_validation_completed", result)
+        emit("opencode_readiness_retry", result)
+        try {
+          await delay(initialVerification ? Math.min(200, Math.max(0, remaining())) : 200, initialVerification?.signal)
+        } catch (error) {
+          if (initialVerification?.signal.aborted) break
+          throw error
+        }
       }
     }
+    stage = "readiness"
+    stageStartedAt = startedAt
+    emit("opencode_readiness_finished", initialVerification ? readinessAbortResult(initialVerification.signal, initialVerification) : "deadline")
+    if (initialVerification?.signal.aborted) throw initialVerification.signal.reason
+    if (initialVerification) throw new ManagerError("LOCAL_TUI_VERIFICATION_TIMEOUT", "Local TUI 初次驗證超時。", 409)
     throw new ManagerError("INSTANCE_START_TIMEOUT", "OpenCode 未在 15000 ms 內證明 ready。", 504)
   }
 
@@ -539,22 +595,77 @@ function checkedEndpoint(value: string, expectedPort: number): string {
   return url.origin
 }
 
+type JsonRequestDiagnostic = (event: "opencode_readiness_request_started" | "opencode_readiness_response_received" | "opencode_readiness_request_completed", result: ReadinessDiagnostic["result"], httpStatus?: number) => void
+
+function readinessAbortResult(signal: AbortSignal, initialVerification?: InitialLocalReadiness): "deadline" | "cancelled" | "http_timeout" {
+  // request 與 terminal 共用觸發原因，避免晚到的 continuation 將顯式取消誤記為 deadline。
+  if (initialVerification?.signal.aborted && signal.reason === initialVerification.signal.reason) {
+    return signal.reason instanceof ManagerError && signal.reason.code === "LOCAL_TUI_VERIFICATION_TIMEOUT" ? "deadline" : "cancelled"
+  }
+  return initialVerification && performance.now() >= initialVerification.deadline ? "deadline" : "http_timeout"
+}
+
 async function requestJson(
   endpoint: string,
   pathname: string,
   options: { method?: "POST"; body?: unknown } = {},
+  diagnostic?: JsonRequestDiagnostic,
+  initialVerification?: InitialLocalReadiness,
 ): Promise<unknown> {
-  const response = await fetch(`${endpoint}${pathname}`, {
-    headers: { accept: "application/json", ...(options.body === undefined ? {} : { "content-type": "application/json" }) },
-    ...(options.method ? { method: options.method } : {}),
-    ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
-    redirect: "error",
-    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-  })
+  // 單次 HTTP 仍最多 2 秒，但不可跨越初次驗證剩餘預算；取消也必須中止 body read。
+  const requestTimeout = AbortSignal.timeout(initialVerification
+    ? Math.min(HTTP_TIMEOUT_MS, Math.max(0, Math.ceil(initialVerification.deadline - performance.now())))
+    : HTTP_TIMEOUT_MS)
+  const signal = initialVerification ? AbortSignal.any([requestTimeout, initialVerification.signal]) : requestTimeout
+  const emit: JsonRequestDiagnostic = (event, result, status) => {
+    try { diagnostic?.(event, result, status) } catch { /* 診斷不影響原有 fetch/body 行為 */ }
+  }
+  emit("opencode_readiness_request_started", "pending")
+  let response: Response
+  try {
+    signal.throwIfAborted()
+    const pending = fetch(`${endpoint}${pathname}`, {
+      headers: { accept: "application/json", ...(options.body === undefined ? {} : { "content-type": "application/json" }) },
+      ...(options.method ? { method: options.method } : {}),
+      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+      redirect: "error",
+      signal,
+    })
+    response = initialVerification ? await awaitReadinessRequest(pending, signal) : await pending
+    if (initialVerification) signal.throwIfAborted()
+  } catch (error) {
+    emit("opencode_readiness_request_completed", signal.aborted ? readinessAbortResult(signal, initialVerification) : "network")
+    throw error
+  }
+  emit("opencode_readiness_response_received", "pending", response.status)
   if (!response.ok || !response.headers.get("content-type")?.toLowerCase().includes("application/json")) {
+    emit("opencode_readiness_request_completed", response.ok ? "content_type" : "http_status", response.status)
     throw new Error(`OpenCode ${pathname} 回傳 HTTP ${response.status}`)
   }
-  return await response.json()
+  try {
+    const pending = response.json()
+    const value: unknown = initialVerification ? await awaitReadinessRequest(pending, signal) : await pending
+    if (initialVerification) signal.throwIfAborted()
+    emit("opencode_readiness_request_completed", "success", response.status)
+    return value
+  } catch (error) {
+    emit("opencode_readiness_request_completed", signal.aborted ? readinessAbortResult(signal, initialVerification) : error instanceof SyntaxError ? "json_parse" : "network", response.status)
+    throw error
+  }
+}
+
+async function awaitReadinessRequest<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  let onAbort!: () => void
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason)
+    if (signal.aborted) onAbort()
+    else signal.addEventListener("abort", onAbort, { once: true })
+  })
+  try {
+    return await Promise.race([pending, aborted])
+  } finally {
+    signal.removeEventListener("abort", onAbort)
+  }
 }
 
 function checkedPublicOrigin(value: string, expectedPort: number): string {
@@ -711,6 +822,13 @@ function redact(value: string): string {
     .slice(0, 4_096)
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  let timer!: NodeJS.Timeout
+  const pending = new Promise<void>((resolve) => { timer = setTimeout(resolve, milliseconds) })
+  try {
+    if (signal) await awaitReadinessRequest(pending, signal)
+    else await pending
+  } finally {
+    clearTimeout(timer)
+  }
 }
