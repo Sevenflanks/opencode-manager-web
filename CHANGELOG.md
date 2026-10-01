@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.5.0...v0.6.0) (2026-09-30)
+
+
+### Features
+
+* **web:** 統一介面用語並導入 Vue I18n 基礎 ([#94](https://github.com/Sevenflanks/opencode-manager-web/issues/94)) ([71d6365](https://github.com/Sevenflanks/opencode-manager-web/commit/71d63650a28aacb24a8f71fd1718d66f103e422b))
+
+
+### Bug Fixes
+
+* **web:** 重用主 Session 分頁並保留不同目標 ([#90](https://github.com/Sevenflanks/opencode-manager-web/issues/90)) ([0bb10c2](https://github.com/Sevenflanks/opencode-manager-web/commit/0bb10c272de6f122f31ed1cb11264fc30965d5a3))
+* 修正恢復既有 Session 後間歇未綁定主 Session ([#89](https://github.com/Sevenflanks/opencode-manager-web/issues/89)) ([2dbfff2](https://github.com/Sevenflanks/opencode-manager-web/commit/2dbfff29ac7096736b915fba774e0e88e1858058))
+
 ## [0.5.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.4.1...v0.5.0) (2026-09-29)
 
 
