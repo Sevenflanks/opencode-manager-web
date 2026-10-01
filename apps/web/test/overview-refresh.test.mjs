@@ -121,11 +121,15 @@ test("global notification uses unfiltered instance-wide polling, persists prefer
     await page.route("**/api/v1/overview?**", async (route) => {
       const response = await route.fetch()
       const overview = await response.json()
-      overview.instances[0].state = "ready"
-      overview.instances[0].summary.pendingQuestions = questions
-      overview.instances[0].summary.pendingPermissions = permissions
-      overview.instances[0].primarySummary.pendingQuestions = 0
-      overview.instances[0].primarySummary.pendingPermissions = 0
+       for (const instance of [...overview.instances, ...(overview.notifications ?? [])]) {
+         instance.state = "ready"
+         instance.summary.pendingQuestions = questions
+         instance.summary.pendingPermissions = permissions
+         if (instance.primarySummary) {
+           instance.primarySummary.pendingQuestions = 0
+           instance.primarySummary.pendingPermissions = 0
+         }
+       }
       if (new URL(route.request().url()).searchParams.get("q") === "" && !new URL(route.request().url()).searchParams.has("includeHidden")) reads++
       await route.fulfill({ response, json: overview })
     })
@@ -175,7 +179,7 @@ test("hidden open page detects 0 to pending once; foreground and pagehide rebuil
   let pending = 0
   let reads = 0
   await withOverviewPage(async ({ page }) => {
-    await page.waitForFunction(() => typeof window.__notificationPoll === "function" && window.__notificationReads >= 2, null, { timeout: 3_000 })
+    await page.waitForFunction(() => typeof window.__notificationPoll === "function" && window.__notificationReads >= 1, null, { timeout: 3_000 })
     await page.waitForTimeout(50)
     assert.deepEqual(await page.evaluate(() => window.__shown), [])
     await page.evaluate(() => {
@@ -186,14 +190,14 @@ test("hidden open page detects 0 to pending once; foreground and pagehide rebuil
     await page.evaluate(() => window.__notificationPoll())
     await page.waitForFunction(() => window.__shown.length === 1, null, { timeout: 3_000 })
     await page.evaluate(() => window.__notificationPoll())
-    await page.waitForFunction(() => window.__notificationReads >= 4, null, { timeout: 3_000 })
+    await page.waitForFunction(() => window.__notificationReads >= 3, null, { timeout: 3_000 })
     assert.equal(await page.evaluate(() => window.__shown.length), 1, "the same hidden pending round notifies only once")
 
     await page.evaluate(() => {
       Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" })
       document.dispatchEvent(new Event("visibilitychange"))
     })
-    await page.waitForFunction(() => window.__notificationReads >= 5, null, { timeout: 3_000 })
+    await page.waitForFunction(() => window.__notificationReads >= 4, null, { timeout: 3_000 })
     await page.waitForTimeout(50)
     assert.equal(await page.evaluate(() => window.__shown.length), 1, "foreground refresh does not replay hidden pending work")
     await page.evaluate(() => {
@@ -211,7 +215,7 @@ test("hidden open page detects 0 to pending once; foreground and pagehide rebuil
       document.dispatchEvent(new Event("visibilitychange"))
       window.dispatchEvent(new Event("pageshow"))
     })
-    await page.waitForFunction(() => window.__notificationReads >= 6, null, { timeout: 3_000 })
+    await page.waitForFunction(() => window.__notificationReads >= 5, null, { timeout: 3_000 })
     await page.waitForTimeout(50)
     assert.equal(await page.evaluate(() => window.__shown.length), 1, "returning foreground baselines existing pending work")
     pending = 0
@@ -241,16 +245,18 @@ test("hidden open page detects 0 to pending once; foreground and pagehide rebuil
       } })
       const fetch = window.fetch.bind(window)
       window.fetch = async (...args) => {
-        if (args[0] === "/api/v1/overview?q=&filter=all") window.__notificationReads++
+         if (String(args[0]).startsWith("/api/v1/overview?")) window.__notificationReads++
         return fetch(...args)
       }
     })
     await page.route("**/api/v1/overview?**", async (route) => {
       const response = await route.fetch()
       const overview = await response.json()
-      overview.instances[0].state = "ready"
-      overview.instances[0].summary.pendingQuestions = pending
-      overview.instances[0].summary.pendingPermissions = 0
+       for (const instance of [...overview.instances, ...(overview.notifications ?? [])]) {
+         instance.state = "ready"
+         instance.summary.pendingQuestions = pending
+         instance.summary.pendingPermissions = 0
+       }
       await route.fulfill({ response, json: overview })
       reads++
     })
@@ -269,7 +275,6 @@ test("overlapping notification poll requests queue one follow-up read", { skip: 
   await withOverviewPage(async ({ page }) => {
     await page.getByRole("button", { name: "已失聯", exact: true }).click()
     await page.route("**/api/v1/overview?**", async (route) => {
-      if (new URL(route.request().url()).searchParams.get("filter") !== "all") return route.continue()
       const read = ++reads
       active++
       maxActive = Math.max(maxActive, active)
@@ -277,9 +282,11 @@ test("overlapping notification poll requests queue one follow-up read", { skip: 
         if (read === 2) await new Promise((resolve) => { release = resolve; blocked() })
         const response = await route.fetch()
         const overview = await response.json()
-        overview.instances[0].state = "ready"
-        overview.instances[0].summary.pendingQuestions = read === 1 ? 0 : 1
-        overview.instances[0].summary.pendingPermissions = 0
+         for (const instance of [...overview.instances, ...(overview.notifications ?? [])]) {
+           instance.state = "ready"
+           instance.summary.pendingQuestions = read === 1 ? 0 : 1
+           instance.summary.pendingPermissions = 0
+         }
         await route.fulfill({ response, json: overview })
       } finally {
         active--
@@ -319,7 +326,7 @@ test("overlapping notification poll requests queue one follow-up read", { skip: 
       } })
       const fetch = window.fetch.bind(window)
       window.fetch = async (...args) => {
-        if (args[0] === "/api/v1/overview?q=&filter=all" && localStorage.getItem("omw-browser-notifications") === "true") window.__notificationReads++
+         if (String(args[0]).startsWith("/api/v1/overview?") && localStorage.getItem("omw-browser-notifications") === "true") window.__notificationReads++
         return fetch(...args)
       }
     })

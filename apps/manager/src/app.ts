@@ -8,6 +8,7 @@ import { CredentialUpdateError, type CredentialController } from "./credential-c
 import { ManagerError } from "./errors.js"
 import type { ManagerService } from "./service.js"
 import type { RemoteAccessController } from "./remote-access.js"
+import { installHttpRepresentations } from "./http-representation.js"
 
 const objectBody = {
   type: "object",
@@ -41,6 +42,7 @@ export function buildApp(options: {
     ajv: { customOptions: { removeAdditional: false } },
   })
   const expectedAuthority = trustedAuthority(options.authority)
+  installHttpRepresentations(app)
   const managerVersion = options.managerVersion
   trustedOriginSet(expectedAuthority, options.allowedOrigins, options.remoteAccess?.config?.publicManagerOrigin ?? options.publicOrigin)
 
@@ -103,7 +105,7 @@ export function buildApp(options: {
     return reply.code(500).send({ error: { code: "INTERNAL_ERROR", message: "Manager 發生未預期錯誤。" } })
   })
 
-  app.get<{ Querystring: { q?: string; filter?: OverviewFilter; includeHidden?: string } }>("/api/v1/overview", async (request) => {
+  app.get<{ Querystring: { q?: string; filter?: OverviewFilter; includeHidden?: string; view?: "legacy" | "compact" | "notifications"; scope?: "all" | "current" } }>("/api/v1/overview", async (request) => {
     const filter = request.query.filter ?? "all"
     if (!["all", "active", "attention", "unreachable"].includes(filter)) {
       throw new ManagerError("FILTER_INVALID", "filter 必須是 all、active、attention 或 unreachable。", 400)
@@ -111,8 +113,18 @@ export function buildApp(options: {
     if (request.query.includeHidden !== undefined && !["true", "false"].includes(request.query.includeHidden)) {
       throw new ManagerError("INCLUDE_HIDDEN_INVALID", "includeHidden 必須是 true 或 false。", 400)
     }
-    return await options.service.overview(request.query.q, filter, request.query.includeHidden === "true")
+    if (request.query.view !== undefined && !["legacy", "compact", "notifications"].includes(request.query.view)) throw new ManagerError("VIEW_INVALID", "view 格式不正確。", 400)
+    if (request.query.scope !== undefined && !["all", "current"].includes(request.query.scope)) throw new ManagerError("SCOPE_INVALID", "scope 格式不正確。", 400)
+    return await options.service.overview(request.query.q, filter, request.query.includeHidden === "true", request.query.view, request.query.scope)
   })
+
+  app.get<{ Querystring: { q?: string; includeHidden?: string; offset?: string; revision?: string } }>("/api/v1/instances/history", async (request) => {
+    const { q, includeHidden, offset = "0", revision } = request.query
+    if (!/^\d+$/.test(offset) || !Number.isSafeInteger(Number(offset))) throw new ManagerError("OFFSET_INVALID", "offset 必須是非負整數。", 400)
+    if (includeHidden !== undefined && !["true", "false"].includes(includeHidden)) throw new ManagerError("INCLUDE_HIDDEN_INVALID", "includeHidden 格式不正確。", 400)
+    return await options.service.history(q, includeHidden === "true", Number(offset), revision)
+  })
+  app.get<{ Params: { id: string } }>("/api/v1/instances/:id", async (request) => await options.service.instance(request.params.id))
 
   app.get("/api/v1/connectivity", async () => {
     const info = options.connectivity

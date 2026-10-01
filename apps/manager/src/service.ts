@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { readdir, realpath, stat } from "node:fs/promises"
 import net from "node:net"
 import path from "node:path"
@@ -15,6 +15,7 @@ import type {
   OpenUrlResponse,
   OverviewFilter,
   OverviewResponse,
+  HistoryResponse,
   PrimarySession,
   PrimaryTodosResponse,
   SessionChildrenResponse,
@@ -103,13 +104,49 @@ export class ManagerService {
     return capabilitiesFor(this.runtimeFor(instance), instance)
   }
 
-  async overview(query = "", filter: OverviewFilter = "all", includeHidden = false): Promise<OverviewResponse> {
+  async overview(query = "", filter: OverviewFilter = "all", includeHidden = false,
+    view: "legacy" | "compact" | "notifications" = "legacy", scope: "all" | "current" = "all"): Promise<OverviewResponse> {
     const normalizedQuery = query.trim().toLocaleLowerCase("zh-TW")
-    const instances = await this.snapshots.load(includeHidden)
+    const instances = await this.snapshots.load(includeHidden, scope === "current" || view === "notifications")
+    const filtered = instances.filter((instance) => matchesFilter(instance, filter) && matchesQuery(instance, normalizedQuery))
     return {
-      shortcuts: this.repository.listShortcuts(),
-      instances: instances.filter((instance) => matchesFilter(instance, filter) && matchesQuery(instance, normalizedQuery)),
+      shortcuts: view === "notifications" ? [] : this.repository.listShortcuts(),
+      instances: view === "notifications" ? [] : view === "compact" ? filtered.map(compactInstance) : filtered,
+      ...(view !== "legacy" ? {
+        history: this.historyRecords(includeHidden).summary,
+        // 通知永遠投影未篩選且未隱藏的 Instance，不能把畫面的搜尋子集當作通知全貌。
+        notifications: instances.filter((instance) => !instance.trackingHidden).map((instance) => ({
+          id: instance.id, state: instance.state, trackingHidden: instance.trackingHidden,
+          summary: { pendingQuestions: instance.summary.pendingQuestions, pendingPermissions: instance.summary.pendingPermissions },
+        })),
+      } : {}),
     }
+  }
+
+  private historyRecords(includeHidden: boolean, query = "") {
+    const normalized = query.trim().toLocaleLowerCase("zh-TW")
+    const records = this.repository.listInstances().filter((record) => record.state === "stopped" && (includeHidden || !record.trackingHidden))
+      .sort((left, right) => Date.parse(right.launchedAt) - Date.parse(left.launchedAt) || left.id.localeCompare(right.id))
+    const entries = records.map((record) => ({ record, primary: this.repository.getPrimarySession(record.id) }))
+    const revision = createHash("sha256").update(JSON.stringify([includeHidden, entries])).digest("hex")
+    const matches = entries.filter(({ record, primary }) => !normalized || [record.projectName, record.projectDirectory, record.id,
+      primary?.sessionId ?? "", primary?.title ?? ""].some((value) => value.toLocaleLowerCase("zh-TW").includes(normalized)))
+    return { records: matches.map((entry) => entry.record), summary: { total: matches.length, revision } }
+  }
+
+  async history(query = "", includeHidden = false, offset = 0, revision?: string): Promise<HistoryResponse> {
+    const page = this.historyRecords(includeHidden, query)
+    // 分頁前確認 membership 未改變；不能用舊 offset 接上新清單而漏列或重複。
+    if (revision && revision !== page.summary.revision) throw new ManagerError("HISTORY_CHANGED", "停止歷史已更新，請重新載入。", 409)
+    const records = page.records.slice(offset, offset + 20)
+    return { ...page.summary, instances: await Promise.all(records.map(async (record) => compactInstance(await this.snapshots.present(record)))),
+      nextOffset: offset + records.length < page.summary.total ? offset + records.length : null }
+  }
+
+  async instance(id: string): Promise<ManagedInstance | null> {
+    const record = this.requireInstance(id)
+    // 此 seam 只補 current 投影之外的持久 stopped detail；active 已在當輪 overview 探測過，不可再完整 probe。
+    return record.state === "stopped" ? compactInstance(await this.snapshots.present(record)) : null
   }
 
   async browse(directory: string): Promise<DirectoryListing> {
@@ -1336,8 +1373,13 @@ function matchesQuery(instance: ManagedInstance, query: string): boolean {
     instance.projectName,
     instance.projectDirectory,
     instance.id,
-    ...instance.sessions.flatMap((session) => [session.title, session.id]),
+    ...(instance.sessions ?? []).flatMap((session) => [session.title, session.id]),
   ].some((value) => value.toLocaleLowerCase("zh-TW").includes(query))
+}
+
+function compactInstance(instance: ManagedInstance): ManagedInstance {
+  const { sessions: _sessions, ...compact } = instance
+  return compact
 }
 
 function loopbackPortAvailable(port: number): Promise<boolean> {

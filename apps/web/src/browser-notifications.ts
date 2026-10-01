@@ -1,4 +1,4 @@
-import type { ManagedInstance } from "@omw/contracts"
+import type { NotificationInstance } from "@omw/contracts"
 
 export type PendingNotice = { instanceId: string; count: number }
 
@@ -10,7 +10,7 @@ export function createPendingTracker() {
   const previous = new Map<string, number | null>()
   return {
     reset() { previous.clear() },
-    observe(instances: ManagedInstance[]): PendingNotice[] {
+    observe(instances: NotificationInstance[]): PendingNotice[] {
       const events: PendingNotice[] = []
       const present = new Set<string>()
       for (const instance of instances) {

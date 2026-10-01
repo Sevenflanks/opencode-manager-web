@@ -11,6 +11,21 @@
     "closeNotice": "關閉成功通知",
     "closeError": "關閉錯誤通知"
   },
+  "history": {
+    "title": "停止歷史",
+    "search": "搜尋全部停止歷史",
+    "searchLabel": "停止歷史關鍵字",
+    "searchAction": "搜尋停止歷史",
+    "progress": "已載入 {loaded} / {total} 筆",
+    "notLoaded": "尚未載入停止歷史",
+    "loadingMore": "正在載入停止歷史，保留已載入內容…",
+    "empty": "沒有停止歷史。",
+    "noCurrent": "目前沒有未停止的 Instance。",
+    "noMatches": "全部停止歷史中沒有符合的結果。",
+    "more": "載入更多",
+    "refresh": "刷新停止歷史",
+    "separateSearch": "此處只搜尋目前 Instance；請展開停止歷史搜尋完整歷史。"
+  },
   "terms": {
     "project": "Project",
     "instance": "Instance",
