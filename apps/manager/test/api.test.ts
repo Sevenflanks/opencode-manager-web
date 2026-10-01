@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import net from "node:net"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { performance } from "node:perf_hooks"
 import { DatabaseSync } from "node:sqlite"
 import test from "node:test"
 import { gunzipSync } from "node:zlib"
@@ -14,6 +15,8 @@ import type { CredentialStore } from "../src/credential-store.js"
 import { ManagerError } from "../src/errors.js"
 import { ManagerRepository, type InstanceRecord } from "../src/repository.js"
 import { ManagerService } from "../src/service.js"
+import type { LocalVerificationDiagnostic, ReadinessDiagnostic } from "../src/lifecycle-diagnostics.js"
+import { OpenCodeRuntime } from "../src/runtime.js"
 import type {
   LaunchResult,
   RuntimeActivityEvent,
@@ -459,6 +462,7 @@ async function fixture(t: test.TestContext, access?: {
   managerVersion?: string
   verifyRemoteUrl?: (port: number) => Promise<void>
   runtimeForInstance?: (instance: InstanceRecord, primary: FakeRuntime) => RuntimePort
+  localVerificationDiagnostics?: (details: LocalVerificationDiagnostic) => void
 }) {
   const root = await mkdtemp(path.join(tmpdir(), "omw-api-"))
   const project = path.join(root, "project")
@@ -469,7 +473,7 @@ async function fixture(t: test.TestContext, access?: {
   const runtime = new FakeRuntime()
   const service = new ManagerService(repository, access?.runtimeForInstance
     ? (instance) => access.runtimeForInstance!(instance, runtime)
-    : runtime, access?.portPool ?? await dynamicPortPool(), access?.verifyRemoteUrl)
+    : runtime, access?.portPool ?? await dynamicPortPool(), access?.verifyRemoteUrl, access?.localVerificationDiagnostics)
   const app = buildApp({
     service,
     authority: { hostname: "127.0.0.1", port: 4174 },
@@ -1150,9 +1154,17 @@ test("Local TUI without a listener times out instead of polling indefinitely and
   runtime.portOwnerMatched = false
   const clientInvocationId = "10000000-0000-4000-8000-000000000066"
   const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  t.mock.timers.enable({ apis: ["setTimeout"] })
   await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5066 })
-  await waitFor(() => repository.getInstance(reservation.reservationId)?.state === "unreachable", 16_000)
+  await settleLocalVerification()
+  t.mock.timers.tick(29_999)
+  await settleLocalVerification()
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "starting")
+  t.mock.timers.tick(1)
+  await settleLocalVerification()
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
   assert.equal(repository.getInstance(reservation.reservationId)?.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")
+  t.mock.timers.reset()
   runtime.portOwnerMatched = true
   const overview = await app.inject({ method: "GET", url: "/api/v1/overview", headers: readHeaders })
   assert.equal(overview.statusCode, 200)
@@ -1340,17 +1352,292 @@ test("Manager shutdown prevents a late Local TUI readiness result from starting 
   assert.equal(runtime.observers.has(reservation.reservationId), false)
 })
 
+async function settleLocalVerification(): Promise<void> {
+  // fake timers 不負責 Promise continuation；只排空已可完成的 initial verify，不解除 runtime gates。
+  for (let turn = 0; turn < 20; turn++) await Promise.resolve()
+}
+
+test("Local TUI initial verification can succeed after 15 seconds and finishes immediately without automatic recheck", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.blockReadiness()
+  t.after(() => runtime.releaseReadiness?.())
+  const clientInvocationId = "10000000-0000-4000-8000-000000000091"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  let now = 0
+  t.mock.method(performance, "now", () => now)
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5091 })
+  await settleLocalVerification()
+  now = 16_000
+  t.mock.timers.tick(16_000)
+  await settleLocalVerification()
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "starting")
+  runtime.releaseReadiness?.()
+  await settleLocalVerification()
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "ready")
+  const inspectCalls = runtime.inspectCalls
+  now = 60_000
+  t.mock.timers.tick(44_000)
+  await settleLocalVerification()
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "ready")
+  assert.equal(runtime.readinessCalls, 1)
+  assert.equal(runtime.inspectCalls, inspectCalls)
+})
+
+test("Local TUI shares inspect and listener time with adapter readiness and aborts at the original 30 second deadline", async (t) => {
+  const { project, repository, runtime, service } = await fixture(t)
+  runtime.sessionMetadata.set(project, [{ id: "root-budget", title: "Budget root" }])
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  runtime.portOwnerMatched = false
+  runtime.blockReadiness()
+  t.after(() => { runtime.releaseInspect?.(); runtime.releaseReadiness?.() })
+  let received: import("../src/runtime.js").InitialLocalReadiness | undefined
+  const readiness = runtime.readiness.bind(runtime)
+  t.mock.method(runtime, "readiness", async (record: LaunchResult, options?: import("../src/runtime.js").InitialLocalReadiness) => {
+    received = options
+    return await readiness(record) // adapter 即使忽略 abort，其 late result 仍不可寫入。
+  })
+  const clientInvocationId = "10000000-0000-4000-8000-000000000092"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  let now = 100
+  t.mock.method(performance, "now", () => now)
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5092, resumedSessionId: "root-budget" })
+  await settleLocalVerification()
+  now += 20_000
+  t.mock.timers.tick(20_000)
+  runtime.releaseInspect?.()
+  await settleLocalVerification()
+  now += 200
+  runtime.portOwnerMatched = true
+  t.mock.timers.tick(200)
+  await settleLocalVerification()
+  assert.equal(received?.deadline, 30_100)
+  assert.equal(received?.deadline! - now, 9_800)
+  assert.equal(received?.signal.aborted, false)
+  now += 9_800
+  t.mock.timers.tick(9_800)
+  await settleLocalVerification()
+  assert.equal(received?.signal.aborted, true)
+  assert.equal(repository.getInstance(reservation.reservationId)?.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")
+  const inspectCalls = runtime.inspectCalls
+  runtime.releaseReadiness?.()
+  now += 30_000
+  t.mock.timers.tick(30_000)
+  await settleLocalVerification()
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
+  assert.equal(runtime.observers.has(reservation.reservationId), false)
+  assert.equal(repository.getPrimarySession(reservation.reservationId), null)
+  assert.equal(runtime.sessionCalls, 0, "late readiness cannot start the explicit resume lookup")
+  assert.equal(runtime.readinessCalls, 1)
+  assert.equal(runtime.inspectCalls, inspectCalls)
+})
+
+test("Local TUI diagnostics distinguish inspect, listener wait and readiness with monotonic phase order", async (t) => {
+  const records: LocalVerificationDiagnostic[] = []
+  const { project, repository, runtime, service } = await fixture(t, { localVerificationDiagnostics: (record) => records.push(record) })
+  runtime.portOwnerMatched = false
+  runtime.deferInspect(runtime.inspectCalls + 1)
+  runtime.blockReadiness()
+  t.after(() => { runtime.releaseInspect?.(); runtime.releaseReadiness?.() })
+  const clientInvocationId = "10000000-0000-4000-8000-000000000080"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  let now = 50
+  t.mock.method(performance, "now", () => now)
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5080 })
+  await settleLocalVerification()
+  now = 125
+  runtime.releaseInspect?.()
+  await settleLocalVerification()
+  assert.equal(records.at(-1)?.stage, "listener_wait")
+  runtime.portOwnerMatched = true
+  // wall time 回退不應把耗時或診斷 remaining deadline 算成負值或延長。
+  const wallNow = Date.now()
+  t.mock.method(Date, "now", () => wallNow - 60_000)
+  now = 325
+  t.mock.timers.tick(200)
+  await settleLocalVerification()
+  assert.equal(records.at(-1)?.stage, "readiness")
+  now = 375
+  runtime.releaseReadiness?.()
+  await settleLocalVerification()
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "ready")
+  assert.deepEqual(records.map(({ event, stage, attempt, result }) => [event, stage, attempt, result]), [
+    ["local_tui_verify_phase_started", "inspect", 1, "pending"],
+    ["local_tui_verify_phase_completed", "inspect", 1, "listener_pending"],
+    ["local_tui_verify_phase_started", "listener_wait", 1, "pending"],
+    ["local_tui_verify_phase_completed", "listener_wait", 1, "completed"],
+    ["local_tui_verify_phase_started", "inspect", 2, "pending"],
+    ["local_tui_verify_phase_completed", "inspect", 2, "listener_confirmed"],
+    ["local_tui_verify_phase_started", "readiness", 2, "pending"],
+    ["local_tui_verify_phase_completed", "readiness", 2, "completed"],
+    ["local_tui_verify_finished", "readiness", 2, "success"],
+  ])
+  assert.deepEqual(records.filter((record) => record.event === "local_tui_verify_phase_completed").map((record) => record.stageElapsedMs), [75, 200, 0, 50])
+  assert.equal(records.at(-1)?.elapsedMs, 325)
+  for (const record of records) {
+    assert.equal(record.instanceId, reservation.reservationId)
+    assert.equal(record.remainingMs, 30_000 - record.elapsedMs)
+    assert.deepEqual(Object.keys(record).sort(), ["event", "instanceId", "attempt", "stage", "result", "elapsedMs", "stageElapsedMs", "remainingMs"].sort())
+  }
+  assert.doesNotMatch(JSON.stringify(records), new RegExp(project.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+})
+
+test("Local TUI diagnostics record terminal timeout at the active stage without waiting for old async completion", async (t) => {
+  for (const stage of ["inspect", "listener_wait", "readiness"] as const) {
+    await t.test(stage, async (t) => {
+      const records: LocalVerificationDiagnostic[] = []
+      const { project, repository, runtime, service } = await fixture(t, { localVerificationDiagnostics: (record) => records.push(record) })
+      if (stage === "inspect") runtime.deferInspect(runtime.inspectCalls + 1)
+      if (stage === "listener_wait") runtime.portOwnerMatched = false
+      if (stage === "readiness") runtime.blockReadiness()
+      t.after(() => { runtime.releaseInspect?.(); runtime.releaseReadiness?.() })
+      const clientInvocationId = "10000000-0000-4000-8000-000000000081"
+      const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+      let now = 0
+      t.mock.method(performance, "now", () => now)
+      t.mock.timers.enable({ apis: ["setTimeout"] })
+      await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5081 })
+      await settleLocalVerification()
+      assert.equal(records.at(-1)?.stage, stage)
+      now = 30_000
+      t.mock.timers.tick(30_000)
+      // timer callback 本身即留 terminal，不依賴 readiness/inspect resolve 或 abort continuation。
+      assert.deepEqual(records.at(-1), {
+        event: "local_tui_verify_finished", instanceId: reservation.reservationId, attempt: 1,
+        stage, result: "timeout", elapsedMs: 30_000, stageElapsedMs: 30_000, remainingMs: 0,
+      })
+      assert.equal(records.at(-2)?.event, "local_tui_verify_phase_completed")
+      assert.equal(records.at(-2)?.result, "timeout")
+      await settleLocalVerification()
+      assert.equal(repository.getInstance(reservation.reservationId)?.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")
+      assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
+      const count = records.length
+      runtime.portOwnerMatched = true
+      runtime.releaseInspect?.()
+      runtime.releaseReadiness?.()
+      await settleLocalVerification()
+      assert.equal(records.length, count)
+      assert.equal(runtime.observers.has(reservation.reservationId), false)
+      assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
+    })
+  }
+})
+
+test("Local TUI diagnostic sink throws cannot change success, failure or timeout", async (t) => {
+  for (const outcome of ["success", "failed", "timeout"] as const) {
+    await t.test(outcome, async (t) => {
+      let calls = 0
+      const { project, repository, runtime, service } = await fixture(t, {
+        localVerificationDiagnostics: () => { calls++; throw new Error("private diagnostic failure") },
+      })
+      if (outcome === "failed") runtime.inspectError = new Error("Authorization: Basic private-secret https://private.test/path")
+      if (outcome === "timeout") runtime.blockReadiness()
+      t.after(() => runtime.releaseReadiness?.())
+      const clientInvocationId = "10000000-0000-4000-8000-000000000082"
+      const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+      t.mock.timers.enable({ apis: ["setTimeout"] })
+      await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5082 })
+      await settleLocalVerification()
+      if (outcome === "timeout") {
+        t.mock.timers.tick(30_000)
+        await settleLocalVerification()
+      }
+      assert.ok(calls > 0)
+      const record = repository.getInstance(reservation.reservationId)!
+      assert.equal(record.state, outcome === "success" ? "ready" : "unreachable")
+      assert.equal(record.error, outcome === "success" ? null : outcome === "timeout" ? "LOCAL_TUI_VERIFICATION_TIMEOUT" : "LOCAL_TUI_VERIFICATION_FAILED")
+    })
+  }
+})
+
+test("Local TUI cancelled diagnostics never report success from a superseded readiness", async (t) => {
+  const records: LocalVerificationDiagnostic[] = []
+  const { project, runtime, service } = await fixture(t, { localVerificationDiagnostics: (record) => records.push(record) })
+  runtime.blockReadiness()
+  t.after(() => runtime.releaseReadiness?.())
+  const clientInvocationId = "10000000-0000-4000-8000-000000000083"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5083 })
+  await settleLocalVerification()
+  runtime.readinessGate = null
+  await service.recheck(reservation.reservationId)
+  assert.equal(records.at(-1)?.result, "cancelled")
+  const count = records.length
+  runtime.releaseReadiness?.()
+  await settleLocalVerification()
+  assert.equal(records.length, count, "recheck and stale initial verification cannot emit a new initial success")
+})
+
+test("Local TUI endpoint diagnostics cancel the child at outer timeout and keep recheck separate", async (t) => {
+  const outer: LocalVerificationDiagnostic[] = []
+  const child: ReadinessDiagnostic[] = []
+  const opencode = new OpenCodeRuntime({ executable: process.execPath, dataDirectory: tmpdir(), readinessDiagnostics: (record) => child.push(record) })
+  const { project, repository, service } = await fixture(t, {
+    localVerificationDiagnostics: (record) => outer.push(record),
+    runtimeForInstance: (_record, primary) => {
+      t.mock.method(opencode, "adoptLocal", primary.adoptLocal.bind(primary))
+      t.mock.method(opencode, "inspect", primary.inspect.bind(primary))
+      t.mock.method(opencode, "sessions", primary.sessions.bind(primary))
+      t.mock.method(opencode, "observeActivity", primary.observeActivity.bind(primary))
+      return opencode
+    },
+  })
+  let releaseHealth!: (response: Response) => void
+  let fetches = 0
+  t.mock.method(globalThis, "fetch", async (url: string) => {
+    fetches++
+    if (fetches === 1) return await new Promise<Response>((resolve) => { releaseHealth = resolve })
+    return new Response(JSON.stringify(url.endsWith("/global/health") ? { healthy: true, version: "fixture-version" } : { directory: project }), { headers: { "content-type": "application/json" } })
+  })
+  const clientInvocationId = "10000000-0000-4000-8000-000000000090"
+  const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  let now = 0
+  t.mock.method(performance, "now", () => now)
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5090 })
+  await settleLocalVerification()
+  assert.equal(child[0]?.scope, "initial_local_tui")
+  assert.equal(child[0]?.verificationAttempt, 1)
+  now = 30_000
+  t.mock.timers.tick(30_000)
+  await settleLocalVerification()
+  assert.equal(outer.at(-1)?.result, "timeout")
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
+  const outerCount = outer.length
+  releaseHealth(new Response(JSON.stringify({ healthy: true, version: "fixture-version" }), { headers: { "content-type": "application/json" } }))
+  await settleLocalVerification()
+  assert.equal(child.at(-1)?.event, "opencode_readiness_finished")
+  assert.equal(child.at(-1)?.result, "deadline")
+  assert.equal(child.at(-1)?.scope, "initial_local_tui")
+  assert.equal(child.at(-1)?.instanceId, reservation.reservationId)
+  assert.equal(outer.length, outerCount)
+  assert.equal(repository.getInstance(reservation.reservationId)?.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
+  assert.equal(fetches, 1, "cancelled health cannot start path or retry after outer timeout")
+  const childCount = child.length
+  await service.recheck(reservation.reservationId)
+  assert.ok(child.slice(childCount).every((record) => record.scope === "other" && record.verificationAttempt === undefined))
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "ready")
+  assert.equal(outer.length, outerCount)
+})
+
 test("Local TUI verification deadline also bounds a pending readiness response", async (t) => {
   const { project, repository, runtime, service } = await fixture(t)
   runtime.blockReadiness()
   t.after(() => runtime.releaseReadiness?.())
   const clientInvocationId = "10000000-0000-4000-8000-000000000072"
   const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
+  t.mock.timers.enable({ apis: ["setTimeout"] })
   await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5072 })
-  await waitFor(() => repository.getInstance(reservation.reservationId)?.state === "unreachable", 16_000)
+  await settleLocalVerification()
+  t.mock.timers.tick(30_000)
+  await settleLocalVerification()
+  assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
   assert.equal(repository.getInstance(reservation.reservationId)?.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")
   runtime.releaseReadiness?.()
-  await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  await settleLocalVerification()
   assert.equal(repository.getInstance(reservation.reservationId)?.state, "unreachable")
   assert.equal(runtime.observers.has(reservation.reservationId), false)
 })
@@ -1363,8 +1650,8 @@ test("Local TUI marks a readiness result after the deadline unreachable before i
   const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
   await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5074 })
   await waitFor(() => runtime.readinessCalls === 1, 500)
-  const realNow = Date.now.bind(Date)
-  t.mock.method(Date, "now", () => realNow() + 16_000)
+  const realNow = performance.now.bind(performance)
+  t.mock.method(performance, "now", () => realNow() + 31_000)
   runtime.releaseReadiness?.()
   await waitFor(() => repository.getInstance(reservation.reservationId)?.state === "unreachable", 500)
   assert.equal(repository.getInstance(reservation.reservationId)?.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")
@@ -1379,8 +1666,8 @@ test("Local TUI marks an inspection result after the deadline unreachable before
   const reservation = await service.reserveLocal({ clientInvocationId, directory: project })
   await service.registerLocal(reservation.reservationId, { clientInvocationId, pid: 5077 })
   await waitFor(() => runtime.deferredInspectStarted, 500)
-  const realNow = Date.now.bind(Date)
-  t.mock.method(Date, "now", () => realNow() + 16_000)
+  const realNow = performance.now.bind(performance)
+  t.mock.method(performance, "now", () => realNow() + 31_000)
   runtime.releaseInspect?.()
   await waitFor(() => repository.getInstance(reservation.reservationId)?.state === "unreachable", 500)
   assert.equal(repository.getInstance(reservation.reservationId)?.error, "LOCAL_TUI_VERIFICATION_TIMEOUT")

@@ -14,6 +14,34 @@ type StartupStage = "port" | "version" | "remote_access" | "configuration" | "cr
 type LifecycleEvent = "start" | "ready" | "shutdown_requested" | "close_completed" | "startup_failed"
 const startupStages = new Set<StartupStage>(["port", "version", "remote_access", "configuration", "credentials", "application", "reconcile", "listen"])
 const lifecycleEvents = new Set<LifecycleEvent>(["start", "ready", "shutdown_requested", "close_completed", "startup_failed"])
+export interface LocalVerificationDiagnostic {
+  event: "local_tui_verify_phase_started" | "local_tui_verify_phase_completed" | "local_tui_verify_finished"
+  instanceId: string
+  attempt: number
+  stage: "inspect" | "listener_wait" | "readiness"
+  result: "pending" | "listener_pending" | "listener_confirmed" | "identity_unverified" | "completed" | "success" | "timeout" | "failed" | "cancelled"
+  elapsedMs: number
+  stageElapsedMs: number
+  remainingMs: number
+}
+const verificationEvents = new Set(["local_tui_verify_phase_started", "local_tui_verify_phase_completed", "local_tui_verify_finished"])
+const verificationStages = new Set(["inspect", "listener_wait", "readiness"])
+const verificationResults = new Set(["pending", "listener_pending", "listener_confirmed", "identity_unverified", "completed", "success", "timeout", "failed", "cancelled"])
+export interface ReadinessDiagnostic {
+  event: "opencode_readiness_request_started" | "opencode_readiness_response_received" | "opencode_readiness_request_completed" | "opencode_readiness_validation_completed" | "opencode_readiness_retry" | "opencode_readiness_finished"
+  instanceId: string
+  scope: "initial_local_tui" | "other"
+  verificationAttempt?: number
+  attempt: number
+  stage: "health" | "path" | "readiness"
+  result: "pending" | "success" | "http_timeout" | "network" | "http_status" | "content_type" | "json_parse" | "health_invalid" | "directory_mismatch" | "deadline" | "cancelled"
+  httpStatus?: number
+  elapsedMs: number
+  stageElapsedMs: number
+  remainingMs: number
+}
+const readinessEvents = new Set(["opencode_readiness_request_started", "opencode_readiness_response_received", "opencode_readiness_request_completed", "opencode_readiness_validation_completed", "opencode_readiness_retry", "opencode_readiness_finished"])
+const readinessResults = new Set(["pending", "success", "http_timeout", "network", "http_status", "content_type", "json_parse", "health_invalid", "directory_mismatch", "deadline", "cancelled"])
 const knownErrorNames = new Set(["Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "EvalError", "AggregateError", "ManagerError"])
 const knownErrorCodes = new Set([
   "ENOENT", "EACCES", "EPERM", "EADDRINUSE", "ECONNREFUSED", "ETIMEDOUT", "SQLITE_BUSY", "SQLITE_CORRUPT",
@@ -23,6 +51,8 @@ const knownErrorCodes = new Set([
 export function createLifecycleDiagnostics(dataDirectory: string): {
   setContext(context: { port?: number; managerVersion?: string }): void
   record(event: LifecycleEvent, details?: { stage?: string; error?: unknown; source?: "api" }): void
+  recordLocalVerification(details: LocalVerificationDiagnostic): void
+  recordReadiness(details: ReadinessDiagnostic): void
 } {
   const logDirectory = path.join(dataDirectory, "logs")
   const current = path.join(logDirectory, "manager-lifecycle.jsonl")
@@ -78,6 +108,33 @@ export function createLifecycleDiagnostics(dataDirectory: string): {
       } catch { /* 不信任外部傳入的 getter */ }
     },
     record,
+    recordLocalVerification(details) {
+      try {
+        // 只投影 fixed codes、UUID 與數字；不可 spread runtime/request/error 到持久化紀錄。
+        const { event, instanceId, attempt, stage, result, elapsedMs, stageElapsedMs, remainingMs } = details
+        if (!verificationEvents.has(event) || !verificationStages.has(stage) || !verificationResults.has(result)
+          || typeof instanceId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(instanceId)
+          || !Number.isSafeInteger(attempt) || attempt < 1
+          || ![elapsedMs, stageElapsedMs, remainingMs].every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER)) return
+        write({ event, instanceId, attempt, stage, result, elapsedMs, stageElapsedMs, remainingMs })
+      } catch { /* 診斷輸入或寫入失敗不可改變驗證結果 */ }
+    },
+    recordReadiness(details) {
+      try {
+        const { event, instanceId, scope, verificationAttempt, attempt, stage, result, httpStatus, elapsedMs, stageElapsedMs, remainingMs } = details
+        if (!readinessEvents.has(event) || !readinessResults.has(result) || !["health", "path", "readiness"].includes(stage)
+          || !["initial_local_tui", "other"].includes(scope)
+          || typeof instanceId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(instanceId)
+          || !Number.isSafeInteger(attempt) || attempt < 1
+          || (scope === "initial_local_tui" && (!Number.isSafeInteger(verificationAttempt) || verificationAttempt! < 1))
+          || (scope === "other" && verificationAttempt !== undefined)
+          || (httpStatus !== undefined && (!Number.isInteger(httpStatus) || httpStatus < 100 || httpStatus > 599))
+          || ![elapsedMs, stageElapsedMs, remainingMs].every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER)) return
+        // 子 readiness 只描述 adapter 核對；Instance ready 仍由 service 的 deadline 與世代保護決定。
+        write({ event, instanceId, scope, ...(verificationAttempt === undefined ? {} : { verificationAttempt }), attempt, stage, result,
+          ...(httpStatus === undefined ? {} : { httpStatus }), elapsedMs, stageElapsedMs, remainingMs })
+      } catch { /* 只投影 allowlist；getter、sink 或 IO 失敗均不可改變 readiness */ }
+    },
   }
 }
 

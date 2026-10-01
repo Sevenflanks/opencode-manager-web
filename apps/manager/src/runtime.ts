@@ -42,6 +42,14 @@ export type RuntimeActivityEvent =
 export interface RuntimeActivityObserver { close(): void; done: Promise<void> }
 export type RuntimeCapabilities = AgentCapabilities
 
+export interface InitialLocalReadiness {
+  attempt: number
+  // 使用 performance.now() 的共同 deadline；adapter 不可從 readiness 重新起算。
+  deadline: number
+  // 收到取消須終止底層請求與 retry；service 的外層 await 另保護不遵守取消的 adapter 結果。
+  signal: AbortSignal
+}
+
 export interface RuntimePort {
   // legacy OpenCode adapter 可省略 metadata；其他 family 須宣告可用能力。
   readonly agentFamily?: string
@@ -49,7 +57,7 @@ export interface RuntimePort {
   launch(directory: string, port: number, instanceId: string): Promise<LaunchResult>
   adoptLocal?(directory: string, port: number, instanceId: string, pid: number): Promise<LaunchResult>
   cleanupLaunch(instanceId: string): Promise<StopResult>
-  readiness(instance: LaunchResult | InstanceRecord): Promise<{ version: string; directory: string }>
+  readiness(instance: LaunchResult | InstanceRecord, initialVerification?: InitialLocalReadiness): Promise<{ version: string; directory: string }>
   inspect(instance: InstanceRecord | LaunchResult): Promise<InspectResult>
   // Manager 先 fresh inspect 篩掉不安全的 Stop；adapter helper 還須原子核對 identity/port owner，不能靠 preflight 消除 TOCTOU。
   stop(instance: InstanceRecord): Promise<StopResult>

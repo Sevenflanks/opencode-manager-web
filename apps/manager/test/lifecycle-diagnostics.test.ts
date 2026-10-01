@@ -211,3 +211,58 @@ test("rotation bounds both JSONL files and retains latest events", { timeout: 12
     assert.equal((await log(context)).at(-1)?.event, "exit")
   })
 })
+
+test("Local TUI verification diagnostics persist only fixed codes, UUID and finite numeric timings", { timeout: 12_000 }, async () => {
+  await withIsolatedChild(async (context, execute) => {
+    const safe = {
+      event: "local_tui_verify_finished", instanceId: "10000000-0000-4000-8000-000000000080", attempt: 2,
+      stage: "readiness", result: "timeout", elapsedMs: 15_000, stageElapsedMs: 12_500, remainingMs: 0,
+    }
+    const result = await execute(`
+      const { createLifecycleDiagnostics } = await import(${JSON.stringify(diagnosticsUrl)});
+      const logger = createLifecycleDiagnostics(process.env.OMW_DATA_DIR);
+      const safe = ${JSON.stringify(safe)};
+      logger.recordLocalVerification({ ...safe, credentials: 'private-credentials', header: 'private-header', url: 'https://private.test', path: 'C:/private-path', conversation: 'private-conversation', error: new Error('private-message'), stderr: 'private-stderr', get extra() { throw new Error('must not read extra fields') } });
+      for (const invalid of [{ event: 'private-event' }, { stage: 'private-stage' }, { result: 'private-result' }, { instanceId: 'private-secret' }, { attempt: 1.5 }, { elapsedMs: NaN }, { stageElapsedMs: Infinity }, { remainingMs: -1 }, { elapsedMs: 'private-elapsed' }]) logger.recordLocalVerification({ ...safe, ...invalid });
+      const { proxy, revoke } = Proxy.revocable({}, {}); revoke(); logger.recordLocalVerification(proxy);
+    `)
+    assert.equal(result.code, 0, result.stderr)
+    const records = await log(context)
+    assert.deepEqual(records.map((record) => record.event), ["start", "local_tui_verify_finished", "exit"])
+    const { time, pid, ...persisted } = records[1]!
+    assert.equal(typeof time, "string")
+    assert.equal(typeof pid, "number")
+    assert.deepEqual(persisted, safe)
+    assert.doesNotMatch(JSON.stringify(records), /private-|private\.test|credentials|header|conversation|stderr|message/)
+  })
+})
+
+test("readiness diagnostics persist only allowlisted subphase fields and fixed failure codes", { timeout: 12_000 }, async () => {
+  await withIsolatedChild(async (context, execute) => {
+    const safe = {
+      event: "opencode_readiness_request_completed", instanceId: "10000000-0000-4000-8000-000000000090",
+      scope: "initial_local_tui", verificationAttempt: 2, attempt: 3, stage: "health", result: "http_status",
+      httpStatus: 503, elapsedMs: 1400, stageElapsedMs: 1200, remainingMs: 13_600,
+    }
+    const result = await execute(`
+      const { createLifecycleDiagnostics } = await import(${JSON.stringify(diagnosticsUrl)});
+      const logger = createLifecycleDiagnostics(process.env.OMW_DATA_DIR);
+      const safe = ${JSON.stringify(safe)};
+      logger.recordReadiness({ ...safe, url: 'https://private.test', path: 'C:/private-project', version: 'private-version', body: 'private-body', message: 'private-message', authorization: 'private-auth', get extra() { throw new Error('private-getter'); } });
+      logger.recordReadiness({ ...safe, scope: 'other', verificationAttempt: undefined });
+      for (const invalid of [{ event: 'private-event' }, { scope: 'private-scope' }, { stage: 'private-stage' }, { result: 'private-result' }, { instanceId: 'private-id' }, { attempt: 0 }, { attempt: 1.5 }, { verificationAttempt: undefined }, { verificationAttempt: 0 }, { scope: 'other' }, { httpStatus: '503' }, { httpStatus: 600 }, { elapsedMs: NaN }, { stageElapsedMs: Infinity }, { remainingMs: -1 }, { elapsedMs: 'private-time' }]) logger.recordReadiness({ ...safe, ...invalid });
+      const { proxy, revoke } = Proxy.revocable({}, {}); revoke(); logger.recordReadiness(proxy);
+      logger.recordReadiness({ ...safe, get result() { throw new Error('private-result-getter'); } });
+    `)
+    assert.equal(result.code, 0, result.stderr)
+    const records = await log(context)
+    assert.deepEqual(records.map((record) => record.event), ["start", safe.event, safe.event, "exit"])
+    const { time, pid, ...persisted } = records[1]!
+    assert.equal(typeof time, "string")
+    assert.equal(typeof pid, "number")
+    assert.deepEqual(persisted, safe)
+    assert.equal(records[2]?.scope, "other")
+    assert.equal(records[2]?.verificationAttempt, undefined)
+    assert.doesNotMatch(JSON.stringify(records), /private-|private\.test|authorization|version|body|message/)
+  })
+})
