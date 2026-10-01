@@ -21,6 +21,10 @@
 
 首次展開載入；收合／重開與詳情返回保留條件、頁數及既有 mobile scroll context。手動刷新原子替換已載入頁數，失敗保留舊列。每 5 秒只讀可靠摘要，revision 改變才失效／刷新已展開歷史；收合時延至下次展開。includeHidden 改變則重建該 scope。正在看的 Instance 停止後，detail seam 保留最新 stopped 狀態與既有操作。
 
+目前搜尋／filter 不提交停止歷史草稿。停止歷史只在明確提交表單時更新查詢意圖；刷新、續頁、重開及失敗重試沿用已提交查詢，成功載入後才更新 `appliedQuery`。
+
+手機 History state 的 `omwHistoryQuery` 保存草稿、`omwHistoryCommittedQuery` 保存已提交意圖；沿既有 pagehide／導覽快照，也在草稿編輯與明確提交時更新當前 entry，避免瀏覽器 reload 已在 pagehide 前取用舊 entry。reload 後重新讀取已提交範圍的首批 20 筆，保留 draft，不持久化結果列或分頁快取。舊 state 沒有 committed 欄位時，只還原 draft，採預設未篩選查詢，不宣稱舊草稿已提交。提交失敗後的 snapshot 仍保存該提交意圖，因此還原／retry 不會誤送後來編輯的新草稿。
+
 ## HTTP representation
 
 目前應用為 Fastify 5，原先沒有 response compression；僅在 overview、history 與上述 detail 的 GET JSON 使用 Node 標準庫 async gzip。預設 1 KiB 以上才壓縮；若 caller 禁止 identity 或明示較偏好 gzip，小回應也可壓縮。依 RFC 9110 §12.5.3 比較明示 q-value，`gzip;q=0.1, identity;q=1` 選 identity；未列出的 identity 只是預設可接受，不當成較高的明示 q=1，因此 `gzip;q=0.1` 仍可選 gzip。明示 `gzip;q=0` 優先於 wildcard；沒有可接受 representation 時回 406。串流、mutation 與其他路徑不加入此 hook。

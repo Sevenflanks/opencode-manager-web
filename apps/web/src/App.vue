@@ -105,6 +105,8 @@ const historyOpen = ref<Set<string>>(new Set())
 const stoppedHistory = createStoppedHistory((q, hidden, offset, revision, signal) => managerApi.history(q, hidden, offset, revision, signal))
 const { query: historyQuery, appliedQuery: historyAppliedQuery, instances: stoppedInstances, total: historyTotal,
   loading: historyLoading, loaded: historyLoaded, failure: historyFailure, nextOffset: historyNextOffset } = stoppedHistory
+// reload 可能在 pagehide 前取用 History entry；先保存草稿，但不改變已提交的查詢意圖。
+watch(historyQuery, persistMobileListHistory, { flush: "post" })
 const historyError = computed(() => historyFailure.value ? presentError(historyFailure.value, t) : null)
 const mutating = ref(false)
 const actionError = ref("")
@@ -266,10 +268,7 @@ const refresh = createOverviewRefresh({
     appliedFilter.value = result.filter
     const next = result.overview
     const historyChanged = next.history ? stoppedHistory.observe(next.history) : false
-    if (historyExpanded()) {
-      if (source === "user") void stoppedHistory.load(false, true)
-      else if (historyChanged) void stoppedHistory.load()
-    }
+    if (historyExpanded() && historyChanged) void stoppedHistory.load()
     if (current()) void revealNotificationTarget(next.instances)
     const detailRouteIsCurrent = Boolean(route.detailTarget)
       && route.historyGeneration === mobileHistoryGeneration
@@ -696,6 +695,7 @@ function mobileHistoryState(view: "list" | "detail", instanceId = ""): Record<st
   const current = typeof window.history.state === "object" && window.history.state !== null
     ? window.history.state as Record<string, unknown>
     : {}
+  const historySearch = stoppedHistory.searchState()
   return {
     ...current,
     omwMobileView: view,
@@ -705,7 +705,8 @@ function mobileHistoryState(view: "list" | "detail", instanceId = ""): Record<st
     omwIncludeHidden: includeHidden.value,
     omwListScroll: listScrollPosition,
     omwHistoryOpen: [...historyOpen.value],
-    omwHistoryQuery: historyQuery.value,
+    omwHistoryQuery: historySearch.draft,
+    omwHistoryCommittedQuery: historySearch.committed,
   }
 }
 
@@ -741,11 +742,11 @@ function applyMobileHistoryContext(): boolean {
   const historyScroll = Reflect.get(state, "omwListScroll")
   const historyDisclosure = Reflect.get(state, "omwHistoryOpen")
   const savedHistoryQuery = Reflect.get(state, "omwHistoryQuery")
-  if (typeof savedHistoryQuery === "string") historyQuery.value = savedHistoryQuery
+  const historyChanged = stoppedHistory.restoreSearch(savedHistoryQuery, Reflect.get(state, "omwHistoryCommittedQuery"))
   const nextQuery = typeof historyOverviewQuery === "string" ? historyOverviewQuery : ""
   const nextFilter = filters.value.some((item) => item.value === historyFilter) ? historyFilter as OverviewFilter : "all"
   const nextIncludeHidden = historyIncludeHidden === true
-  const changed = query.value !== nextQuery || filter.value !== nextFilter || includeHidden.value !== nextIncludeHidden
+  const changed = query.value !== nextQuery || filter.value !== nextFilter || includeHidden.value !== nextIncludeHidden || historyChanged
   query.value = nextQuery
   filter.value = nextFilter
   includeHidden.value = nextIncludeHidden
@@ -1018,8 +1019,9 @@ watch(includeHidden, (hidden) => {
 }, { flush: "sync" })
 
 async function searchHistory(): Promise<void> {
-  await stoppedHistory.load(false, true)
+  const submitted = stoppedHistory.submit()
   persistMobileListHistory()
+  await submitted
 }
 
 async function clearOverviewFilters(): Promise<void> {

@@ -157,6 +157,197 @@ test("stopped detail fallback cannot replace a newer selection while its respons
   }
 })
 
+test("current overview search and filter preserve committed history pages and its unsubmitted draft", { skip: !enabled, timeout: 45_000 }, async () => {
+  const executablePath = process.env.OMW_BROWSER_EXECUTABLE
+  assert.ok(executablePath)
+  const sandbox = await mkdtemp(path.join(tmpdir(), "omw-history-draft-"))
+  await Promise.all(["AppData/Roaming", "AppData/Local", "Temp"].map((folder) => mkdir(path.join(sandbox, "browser-profile", folder), { recursive: true })))
+  const repository = new ManagerRepository(":memory:")
+  const record: InstanceRecord = {
+    id: "current-draft-fixture", projectName: "current-fixture", projectDirectory: "C:\\fixture\\draft-query",
+    state: "ready", endpoint: "http://127.0.0.1:49998", port: 49998, pid: 12345,
+    creationTimeUtc: null, creationTimeTicks: null, executable: null, healthVersion: "fixture",
+    launchedAt: "2026-09-18T00:00:00.000Z", stoppedAt: null, error: null, stderrSummary: null,
+  }
+  repository.createInstance(record)
+  for (const [group, count] of [["A", 45], ["B", 3]] as const) {
+    for (let index = 0; index < count; index++) {
+      const id = `draft-history-${group}-${String(index).padStart(2, "0")}`
+      repository.createInstance({ ...record, id, state: "stopped", pid: null,
+        projectName: `history-${group}`, launchedAt: "2026-09-17T00:00:00.000Z" })
+      repository.replacePrimarySession(id, { sessionId: `root-${id}`, title: `history-${group} ${String(index).padStart(2, "0")}`,
+        source: "manual", boundAt: "2026-09-17T00:00:00.000Z" })
+    }
+  }
+  const service = new ManagerService(repository, new BrowserRuntime())
+  const port = await freePort()
+  const origin = `http://127.0.0.1:${port}`
+  const app = buildApp({ service, authority: { hostname: "127.0.0.1", port }, allowedOrigins: new Set([origin]),
+    webRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist") })
+  let failHistoryB = false
+  app.addHook("preHandler", async (request) => {
+    const url = new URL(request.url, origin)
+    if (failHistoryB && url.pathname === "/api/v1/instances/history" && url.searchParams.get("q") === "history-B") {
+      throw new ManagerError("HISTORY_DRAFT_FIXTURE", "isolated submitted B fixture failure", 503)
+    }
+  })
+  const network: Array<{ width: number; path: string; query: string; filter: string; offset: number; status: number }> = []
+  const states: Array<{ width: number; stage: string; draft: string; progress: string; ids: string[] }> = []
+  const errors: string[] = []
+  let browser: Browser | undefined
+  let passed = false
+  try {
+    await app.listen({ host: "127.0.0.1", port })
+    browser = await chromium.launch({ executablePath, headless: true, env: createBrowserEnvironment(sandbox) })
+    for (const width of [390, 1280]) {
+      const page: Page = await browser.newPage({ viewport: { width, height: 844 }, reducedMotion: "reduce" })
+      page.on("pageerror", (cause) => { errors.push(cause.message) })
+      page.on("response", (response) => {
+        const url = new URL(response.url())
+        if (["/api/v1/overview", "/api/v1/instances/history"].includes(url.pathname)) network.push({ width,
+          path: url.pathname, query: url.searchParams.get("q") ?? "", filter: url.searchParams.get("filter") ?? "all",
+          offset: Number(url.searchParams.get("offset") ?? 0), status: response.status() })
+      })
+      const idleHistory = () => page.waitForFunction(() => document.querySelector("#instance-history")?.getAttribute("aria-busy") === "false")
+      const expectA = async (stage: string) => {
+        await idleHistory()
+        const state = { width, stage, draft: await page.locator(".history-search-row input").inputValue(),
+          progress: (await page.locator("#instance-history > .history-status").first().textContent() ?? "").trim(),
+          ids: await page.locator(".stopped-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-instance-id") ?? "")) }
+        states.push(state)
+        assert.equal(state.ids.length, 40, `${stage}: committed A keeps its 40 loaded rows`)
+        assert.ok(state.ids.every((id) => id.startsWith("draft-history-A-")))
+        assert.equal(state.draft, "history-B", `${stage}: the draft remains available for an explicit submit`)
+        assert.equal(state.progress, "已載入 40 / 45 筆")
+        assert.equal(network.filter((entry) => entry.width === width && entry.path === "/api/v1/instances/history" && entry.query === "history-B").length, 0,
+          `${stage}: no request may implicitly submit B`)
+      }
+      const overviewAction = async (action: () => Promise<unknown>) => {
+        const response = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/overview" && response.ok())
+        await action()
+        await response
+        await page.locator('.overview-freshness[data-state="fresh"]').waitFor()
+        await idleHistory()
+      }
+      await page.goto(origin)
+      await page.locator(`.instance-row[data-instance-id="${record.id}"]`).waitFor()
+      await page.locator(".history-toggle").click()
+      await idleHistory()
+      await page.locator(".history-search-row input").fill("history-A")
+      await page.locator(".history-search-row").getByRole("button", { name: "搜尋停止歷史", exact: true }).click()
+      await idleHistory()
+      await page.getByRole("button", { name: "載入更多", exact: true }).click()
+      await idleHistory()
+      await page.locator(".history-search-row input").fill("history-B")
+      await expectA("draft-before-current-search")
+      const initialReads = network.filter((entry) => entry.width === width && entry.path === "/api/v1/instances/history").length
+      await page.locator(".search-row input").fill("current-fixture")
+      await overviewAction(() => page.locator(".search-row button").click())
+      await expectA("after-current-search")
+      await overviewAction(() => page.locator(".filters").getByRole("button", { name: "有執行中", exact: true }).click())
+      await expectA("after-current-filter")
+      assert.equal(network.filter((entry) => entry.width === width && entry.path === "/api/v1/instances/history").length, initialReads,
+        "current search/filter must not force-refresh unchanged history")
+      await page.screenshot({ path: path.join(regressionArtifacts, `history-draft-current-${width}.png`), fullPage: true })
+      const changed = repository.getInstance("draft-history-A-00")!
+      repository.saveInstance({ ...changed, projectName: `history-A refreshed-${width}` })
+      await overviewAction(() => page.locator(".topbar").getByRole("button", { name: "重新整理", exact: true }).click())
+      await expectA("after-overview-revision")
+      await page.getByRole("button", { name: "刷新停止歷史", exact: true }).click()
+      await expectA("after-history-refresh")
+      const beforeReopen = network.filter((entry) => entry.width === width && entry.path === "/api/v1/instances/history").length
+      await page.locator(".history-toggle").click()
+      await page.locator(".history-toggle").click()
+      await expectA("after-reopen")
+      assert.equal(network.filter((entry) => entry.width === width && entry.path === "/api/v1/instances/history").length, beforeReopen)
+      if (width === 390) {
+        const beforeReload = network.length
+        await page.reload()
+        await page.locator('.overview-freshness[data-state="fresh"]').waitFor()
+        await idleHistory()
+        const reloaded = { width, stage: "after-mobile-reload", draft: await page.locator(".history-search-row input").inputValue(),
+          progress: (await page.locator("#instance-history > .history-status").first().textContent() ?? "").trim(),
+          ids: await page.locator(".stopped-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-instance-id") ?? "")) }
+        states.push(reloaded)
+        assert.equal(reloaded.draft, "history-B", "pagehide persists the draft separately from submitted A")
+        assert.equal(reloaded.progress, "已載入 20 / 45 筆", "reload must restore the submitted A scope, not all 48 records")
+        assert.ok(reloaded.ids.every((id) => id.startsWith("draft-history-A-")))
+        assert.deepEqual(network.slice(beforeReload).filter((entry) => entry.path === "/api/v1/instances/history")
+          .map((entry) => ({ query: entry.query, offset: entry.offset })), [{ query: "history-A", offset: 0 }])
+        const saved = await page.evaluate(() => window.history.state)
+        assert.equal(saved.omwHistoryQuery, "history-B")
+        assert.equal(saved.omwHistoryCommittedQuery, "history-A")
+        await page.screenshot({ path: path.join(regressionArtifacts, "history-draft-reloaded-390.png"), fullPage: true })
+        await page.getByRole("button", { name: "載入更多", exact: true }).click()
+        await expectA("after-mobile-reload-load-more")
+      }
+      await page.locator(".history-search-row").getByRole("button", { name: "搜尋停止歷史", exact: true }).click()
+      await idleHistory()
+      assert.equal(await page.locator(".stopped-row").count(), 3)
+      assert.ok((await page.locator(".stopped-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-instance-id") ?? "")))
+        .every((id) => id.startsWith("draft-history-B-")))
+      assert.equal(network.filter((entry) => entry.width === width && entry.path === "/api/v1/instances/history" && entry.query === "history-B").length, 1)
+      states.push({ width, stage: "after-explicit-history-submit", draft: await page.locator(".history-search-row input").inputValue(),
+        progress: (await page.locator("#instance-history > .history-status").first().textContent() ?? "").trim(),
+        ids: await page.locator(".stopped-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-instance-id") ?? "")) })
+      await page.screenshot({ path: path.join(regressionArtifacts, `history-draft-submitted-${width}.png`), fullPage: true })
+      await page.close()
+    }
+    const legacy: Page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" })
+    const legacyRequests: Array<{ query: string; status: number }> = []
+    legacy.on("pageerror", (cause) => { errors.push(cause.message) })
+    legacy.on("response", (response) => {
+      const url = new URL(response.url())
+      if (url.pathname === "/api/v1/instances/history") legacyRequests.push({ query: url.searchParams.get("q") ?? "", status: response.status() })
+    })
+    await legacy.addInitScript(() => {
+      if (!window.history.state?.omwMobileView) window.history.replaceState({ omwMobileView: "list", omwHistoryOpen: ["stopped"],
+        omwHistoryQuery: "history-B" }, "")
+    })
+    await legacy.goto(origin)
+    await legacy.locator('.overview-freshness[data-state="fresh"]').waitFor()
+    await legacy.waitForFunction(() => document.querySelector("#instance-history")?.getAttribute("aria-busy") === "false")
+    assert.equal(await legacy.locator(".history-search-row input").inputValue(), "history-B")
+    assert.equal((await legacy.locator("#instance-history > .history-status").first().textContent())?.trim(), "已載入 20 / 48 筆")
+    assert.deepEqual(legacyRequests, [{ query: "", status: 200 }], "legacy state restores B as a draft, never implicitly submitted")
+    failHistoryB = true
+    await legacy.locator(".history-search-row").getByRole("button", { name: "搜尋停止歷史", exact: true }).click()
+    await legacy.locator("#instance-history").getByRole("button", { name: "重試", exact: true }).waitFor()
+    assert.equal(await legacy.locator(".stopped-row").count(), 20, "failed B preserves last successful content")
+    await legacy.evaluate(() => window.addEventListener("pagehide", () => {
+      window.sessionStorage.setItem("history-draft-pagehide", JSON.stringify(window.history.state))
+    }))
+    await legacy.locator(".history-search-row input").fill("history-C")
+    await legacy.reload()
+    await legacy.locator("#instance-history").getByRole("button", { name: "重試", exact: true }).waitFor()
+    await writeFile(path.join(regressionArtifacts, "history-draft-reload-state.json"), JSON.stringify({ legacyRequests,
+      state: await legacy.evaluate(() => window.history.state), pagehide: await legacy.evaluate(() => window.sessionStorage.getItem("history-draft-pagehide")) }, null, 2))
+    assert.equal(await legacy.locator(".history-search-row input").inputValue(), "history-C")
+    assert.equal(await legacy.evaluate(() => window.history.state.omwHistoryCommittedQuery), "history-B")
+    assert.deepEqual(legacyRequests.slice(-2), [{ query: "history-B", status: 503 }, { query: "history-B", status: 503 }])
+    await legacy.screenshot({ path: path.join(regressionArtifacts, "history-draft-reloaded-error-390.png"), fullPage: true })
+    failHistoryB = false
+    await legacy.locator("#instance-history").getByRole("button", { name: "重試", exact: true }).click()
+    await legacy.waitForFunction(() => document.querySelector("#instance-history")?.getAttribute("aria-busy") === "false")
+    assert.equal(await legacy.locator(".stopped-row").count(), 3)
+    assert.equal(await legacy.locator(".history-search-row input").inputValue(), "history-C", "retry must retain C while requesting committed B")
+    assert.deepEqual(legacyRequests.at(-1), { query: "history-B", status: 200 })
+    assert.equal(legacyRequests.some((entry) => entry.query === "history-C"), false)
+    await legacy.screenshot({ path: path.join(regressionArtifacts, "history-draft-reloaded-retry-390.png"), fullPage: true })
+    await writeFile(path.join(regressionArtifacts, "history-draft-reload-retry.json"), JSON.stringify({ result: "passed", legacyRequests,
+      draft: await legacy.locator(".history-search-row input").inputValue(), committed: "history-B", loaded: 3 }, null, 2))
+    await legacy.close()
+    assert.deepEqual(errors, [])
+    passed = true
+  } finally {
+    try {
+      await writeFile(path.join(regressionArtifacts, "history-draft-result.json"), JSON.stringify({ result: passed ? "passed" : "failed", states, network, errors }, null, 2))
+    } finally {
+      try { await service.shutdown() } finally { await closeRegressionFixture("history-draft", browser, app, repository, sandbox) }
+    }
+  }
+})
+
 test("browser usability keeps browsing, settings, mobile detail and overview semantics consistent", { skip: !enabled, timeout: 70_000 }, async () => {
   const executablePath = process.env.OMW_BROWSER_EXECUTABLE
   assert.ok(executablePath, "OMW_BROWSER_EXECUTABLE is required")

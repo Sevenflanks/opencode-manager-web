@@ -10,6 +10,7 @@ export function createStoppedHistory(read: (query: string, hidden: boolean, offs
   const loaded = ref(false)
   const failure = ref<unknown>(null)
   const nextOffset = ref<number | null>(null)
+  let committedQuery = ""
   let hidden = false
   let revision: string | undefined
   let stale = true
@@ -32,20 +33,21 @@ export function createStoppedHistory(read: (query: string, hidden: boolean, offs
 
   function observe(summary: HistorySummary): boolean {
     if (revision && revision !== summary.revision) stale = true
-    if (!loaded.value && !query.value.trim()) total.value = summary.total
+    if (!loaded.value && !committedQuery.trim()) total.value = summary.total
     return stale
   }
 
   async function load(more = false, force = false): Promise<void> {
     if (loading.value && !force) return
-    if (!more && loaded.value && !stale && appliedQuery.value === query.value && !force) return
+    if (!more && loaded.value && !stale && appliedQuery.value === committedQuery && !force) return
     if (more && nextOffset.value === null) return
     const current = ++generation
     controller?.abort()
     const request = new AbortController()
     controller = request
     const timeout = setTimeout(() => request.abort(), 15_000)
-    const requestedQuery = query.value
+    // query 是可編輯草稿；刷新、續頁與重開只重讀已提交查詢，失敗重試也不可偷偷提交新草稿。
+    const requestedQuery = committedQuery
     const requestedHidden = hidden
     const replacing = !more || stale || appliedQuery.value !== requestedQuery
     // 刷新保留使用者已載入的頁數；只有完整 replacement 成功才換掉可用內容。
@@ -81,6 +83,30 @@ export function createStoppedHistory(read: (query: string, hidden: boolean, offs
     }
   }
 
-  return { query, appliedQuery, instances, total, loading, loaded, failure, nextOffset, scope, observe, load,
+  function submit(): Promise<void> {
+    committedQuery = query.value
+    return load(false, true)
+  }
+
+  function searchState(): { draft: string; committed: string } {
+    return { draft: query.value, committed: committedQuery }
+  }
+
+  function restoreSearch(draft: unknown, committed: unknown): boolean {
+    query.value = typeof draft === "string" ? draft : ""
+    // 舊 History entry 只有草稿，沒有證據可推定它已提交；採預設未篩選查詢，保留草稿供明確提交。
+    const next = typeof committed === "string" ? committed : ""
+    if (committedQuery === next) return false
+    committedQuery = next
+    generation++
+    controller?.abort()
+    controller = null
+    loading.value = false
+    failure.value = null
+    stale = true
+    return true
+  }
+
+  return { query, appliedQuery, instances, total, loading, loaded, failure, nextOffset, scope, observe, load, submit, searchState, restoreSearch,
     dispose() { generation++; controller?.abort() } }
 }
