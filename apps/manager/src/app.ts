@@ -34,6 +34,7 @@ export function buildApp(options: {
   managerVersion?: string
   connectivity?: { get(): Promise<ConnectivityInfo>; register(trigger: "manual"): Promise<ConnectivityInfo> }
   webRoot?: string
+  worker?: { nativeOrigin: string }
 }): FastifyInstance {
   const app = Fastify({
     logger: false,
@@ -64,6 +65,14 @@ export function buildApp(options: {
     const origin = request.headers.origin
     if (origin !== undefined && (typeof origin !== "string" || !trustedOrigins.has(origin))) {
       throw new ManagerError("UNTRUSTED_ORIGIN", "Request Origin 不在受信任的 loopback origins。", 403)
+    }
+    if (options.worker) {
+      if (!options.authenticator?.authorize(request.headers, "browser")) {
+        return reply.header("www-authenticate", 'Basic realm="OMW", charset="UTF-8"').code(401).send({ error: { code: "AUTH_REQUIRED", message: "需要有效的 OMW Basic auth。" } })
+      }
+      if (launcherRoute || ["/api/v1/settings/credentials", "/api/v1/manager/shutdown", "/api/v1/connectivity/register", "/api/v1/connectivity/enable"].includes(route)) {
+        throw new ManagerError("WORKER_UNSUPPORTED", "Worker 不支援此桌面管理操作；請使用部署設定管理服務與 credentials。", 409)
+      }
     }
     if (launcherRoute) {
       if (request.headers.host !== expectedAuthority || origin !== undefined) {
@@ -130,7 +139,16 @@ export function buildApp(options: {
     const info = options.connectivity
       ? await options.connectivity.get()
       : fallbackConnectivity(options.authority.port, options.publicOrigin)
-    return withManagerVersion(info, managerVersion)
+    return withManagerVersion(options.worker ? { ...info, mode: "worker", remoteAccess: "disabled",
+      nativeWebOrigin: options.worker.nativeOrigin,
+      capabilities: { launcher: false, tailscale: false, credentialUpdate: false, managerShutdown: false, maxInstances: 1, nativeWeb: true },
+    } : info, managerVersion)
+  })
+
+  app.get("/api/v1/worker/capacity", async (_request, reply) => {
+    if (!options.worker) throw new ManagerError("WORKER_UNSUPPORTED", "目前不是 Worker 模式。", 409)
+    reply.header("cache-control", "no-store")
+    return await options.service.workerCapacity()
   })
 
   app.post("/api/v1/connectivity/register", async () => {

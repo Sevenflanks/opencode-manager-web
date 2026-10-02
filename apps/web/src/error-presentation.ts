@@ -7,6 +7,7 @@ const knownCodes: Record<string, MessageKey> = {
   SESSION_NOT_FOUND: "error.sessionNotFound", SESSION_BINDING_CHANGED: "error.bindingChanged",
   DIRECTORY_REQUIRED: "error.directoryRequired", DIRECTORY_NOT_ACCESSIBLE: "error.directoryNotAccessible",
   PORT_UNAVAILABLE: "error.portUnavailable", PORT_POOL_EXHAUSTED: "error.portExhausted",
+  WORKER_CAPACITY_UNAVAILABLE: "worker.capacityUnknown",
   REMOTE_URL_UNAVAILABLE: "error.remoteUnavailable", TAILSCALE_OFFLINE: "error.tailscaleOffline",
   TAILSCALE_NEEDS_LOGIN: "error.tailscaleLogin", SESSION_CREATED_URL_FAILED: "error.sessionCreatedUrlFailed",
   AUTH_REQUIRED: "error.unauthorized", CURRENT_PASSWORD_INVALID: "error.invalidCredentials",

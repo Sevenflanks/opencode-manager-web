@@ -1,5 +1,6 @@
 import { createI18n, useI18n } from "vue-i18n"
 import zhTW from "./locales/zh-TW.json"
+import enUS from "./locales/en-US.json"
 
 type Leaves<T, P extends string = ""> = {
   [K in keyof T & string]: T[K] extends string ? `${P}${K}` : Leaves<T[K], `${P}${K}.`>
@@ -11,7 +12,7 @@ export const i18n = createI18n<false>({
   legacy: false,
   locale: "zh-TW",
   fallbackLocale: "zh-TW",
-  messages: { "zh-TW": zhTW },
+  messages: { "zh-TW": zhTW, "en-US": enUS },
   missingWarn: false,
   fallbackWarn: false,
 })

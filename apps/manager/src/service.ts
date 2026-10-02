@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { readdir, realpath, stat } from "node:fs/promises"
+import { canonicalDirectory, localDirectories } from "./directory.js"
 import net from "node:net"
 import path from "node:path"
 import { performance } from "node:perf_hooks"
@@ -160,23 +160,11 @@ export class ManagerService {
   }
 
   async browse(directory: string): Promise<DirectoryListing> {
-    const current = await canonicalDirectory(directory)
-    const parentCandidate = path.dirname(current)
-    const parent = samePath(parentCandidate, current) ? null : parentCandidate
-    const children = []
-    const errors: Array<{ path: string; message: string }> = []
-    for (const entry of await readdir(current, { withFileTypes: true })) {
-      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
-      const candidate = path.join(current, entry.name)
-      try {
-        const canonical = await canonicalDirectory(candidate)
-        children.push({ name: entry.name, path: canonical })
-      } catch (error) {
-        errors.push({ path: candidate, message: safeMessage(error) })
-      }
-    }
-    children.sort((left, right) => left.name.localeCompare(right.name, "zh-TW"))
-    return { current, parent, children, errors }
+    return await this.directories.browse(directory)
+  }
+
+  private get directories() {
+    return (typeof this.runtime === "function" ? undefined : this.runtime.directories) ?? localDirectories
   }
 
   async createShortcut(input: { name: string; directory: string }): Promise<DirectoryShortcut> {
@@ -184,7 +172,7 @@ export class ManagerService {
     return this.repository.createShortcut({
       id: randomUUID(),
       name: validName(input.name),
-      directory: await canonicalDirectory(input.directory),
+      directory: await this.directories.resolve(input.directory),
       createdAt: now,
       updatedAt: now,
     })
@@ -196,7 +184,7 @@ export class ManagerService {
     const updated = this.repository.updateShortcut({
       ...existing,
       name: validName(input.name),
-      directory: await canonicalDirectory(input.directory),
+      directory: await this.directories.resolve(input.directory),
       updatedAt: new Date().toISOString(),
     })
     if (!updated) throw new ManagerError("SHORTCUT_NOT_FOUND", "找不到 Directory Shortcut。", 404)
@@ -208,14 +196,17 @@ export class ManagerService {
   }
 
   async start(directoryInput: string, observeActivity = true, resumeRuntime?: RuntimePort): Promise<ManagedInstance> {
-    const directory = await canonicalDirectory(directoryInput)
-    const allocation = await this.reservePort("headless", directory, null)
+    const runtime = resumeRuntime ?? (typeof this.runtime === "function" ? undefined : this.runtime)
+    const directory = await (runtime?.directories ?? this.directories).resolve(directoryInput)
+    const allocation = runtime?.allocationScope
+      ? await this.reserveScopedExecution(directory, runtime)
+      : await this.reservePort("headless", directory, null)
     const record = newInstanceRecord(allocation, directory, null)
     this.repository.createReservedInstance(allocation.id, record)
     if (resumeRuntime) this.instanceRuntimes.set(record.id, resumeRuntime)
 
     try {
-      const launch = await this.runtimeFor(record).launch(directory, allocation.port, allocation.id)
+      const launch = await this.runtimeFor(record).launch(directory, allocation.port, allocation.id, allocation.allocationScope)
       // Persist exact identity before any readiness work so a startup failure remains safely stoppable.
       Object.assign(record, {
         pid: launch.pid,
@@ -821,6 +812,27 @@ export class ManagerService {
     return allocation
   }
 
+  async workerCapacity(): Promise<import("@omw/contracts").WorkerCapacity> {
+    if (typeof this.runtime === "function" || !this.runtime.allocationScope) throw new ManagerError("WORKER_UNSUPPORTED", "目前 Runtime 不提供 Worker capacity。", 409)
+    try {
+      const authority = await this.runtime.allocationScope()
+      const reserved = this.repository.allocationScopes().some((allocation) => allocation.scope === null || allocation.scope === authority.scope)
+      return { state: authority.state === "available" && reserved ? "unknown" : authority.state, maxInstances: 1 }
+    } catch { return { state: "unknown", maxInstances: 1 } }
+  }
+
+  private async reserveScopedExecution(directory: string, runtime: RuntimePort): Promise<PortAllocation> {
+    const previous = this.repository.allocationScopes()
+    const authority = await runtime.allocationScope!()
+    if (authority.state !== "available") throw new ManagerError("WORKER_CAPACITY_UNAVAILABLE", "Worker execution 目前忙碌或狀態未知。", 409)
+    const allocation: PortAllocation = { id: randomUUID(), kind: "headless", clientInvocationId: null,
+      projectDirectory: directory, port: this.portPool.min, createdAt: new Date().toISOString(), expiresAt: null,
+      instanceId: null, allocationScope: authority.scope }
+    const obsolete = previous.filter((entry) => entry.scope !== null && entry.scope !== authority.scope).map((entry) => entry.id)
+    if (!this.repository.tryCreateAllocation(allocation, obsolete)) throw new ManagerError("WORKER_CAPACITY_UNAVAILABLE", "Worker execution 啟動 slot 尚未釋放。", 409)
+    return allocation
+  }
+
   private async reservePort(
     kind: InstanceKind,
     directory: string,
@@ -1401,18 +1413,6 @@ function localRegistrationState(instance: InstanceRecord): LauncherRegistrationR
   return instance.state === "ready" ? "ready" : "starting"
 }
 
-async function canonicalDirectory(input: string): Promise<string> {
-  if (typeof input !== "string" || !input.trim()) throw new ManagerError("DIRECTORY_REQUIRED", "請提供目錄路徑。", 400)
-  try {
-    const canonical = await realpath(path.resolve(input.trim()))
-    if (!(await stat(canonical)).isDirectory()) throw new Error("路徑不是目錄")
-    await readdir(canonical)
-    return path.normalize(canonical)
-  } catch (error) {
-    throw new ManagerError("DIRECTORY_NOT_ACCESSIBLE", `目錄不存在、不是目錄或無法存取：${safeMessage(error)}`, 400)
-  }
-}
-
 function validName(input: string): string {
   const value = typeof input === "string" ? input.trim() : ""
   if (!value || value.length > 80) throw new ManagerError("SHORTCUT_NAME_INVALID", "Shortcut 名稱須為 1 到 80 個字元。", 400)
@@ -1462,6 +1462,7 @@ function loopbackPortAvailable(port: number): Promise<boolean> {
 }
 
 function samePath(left: string, right: string): boolean {
+  if (process.platform !== "win32") return path.resolve(left) === path.resolve(right)
   return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase()
 }
 

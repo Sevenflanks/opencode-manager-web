@@ -19,6 +19,11 @@ export class ApiError extends Error {
   }
 }
 
+export interface WorkerCapacity {
+  state: "available" | "occupied" | "unknown"
+  maxInstances: 1
+}
+
 // 啟用後同一頁面的 polling 立即需要 Basic；只保留於記憶體，reload 後交回瀏覽器登入。
 let transientAuthorization: string | undefined
 function basicAuthorization(username: string, password: string): string {
@@ -67,6 +72,14 @@ export const managerApi = {
   },
   connectivity() {
     return request<ConnectivityInfo>("/api/v1/connectivity")
+  },
+  async workerCapacity(signal?: AbortSignal): Promise<WorkerCapacity> {
+    const capacity = await request<WorkerCapacity>("/api/v1/worker/capacity", { cache: "no-store", ...(signal ? { signal } : {}) })
+    // 舊 Manager 或缺欄位的回應不可被當成空閒；只接受目前 execution 的完整 capacity 契約。
+    if (capacity?.maxInstances !== 1 || !["available", "occupied", "unknown"].includes(capacity.state)) {
+      throw new ApiError("WORKER_CAPACITY_UNAVAILABLE", "WORKER_CAPACITY_UNAVAILABLE", 503)
+    }
+    return capacity
   },
   registerConnectivity() {
     return request<ConnectivityInfo>("/api/v1/connectivity/register", { method: "POST", body: "{}" })

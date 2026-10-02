@@ -23,6 +23,24 @@ try {
     return renderToString(app)
   }
 
+  await test("Worker entry and deployment login guidance render in English and Traditional Chinese", async () => {
+    i18n.global.locale.value = "en-US"
+    assert.match(await render("worker.openNative"), /Open native OpenCode Web/)
+    assert.match(await render("worker.credentials"), /Worker credentials are managed by the deployment/)
+    assert.match(await render("worker.capacityAvailable"), /current execution environment is available/)
+    assert.match(await render("worker.capacityFull"), /current execution environment is occupied/)
+    const capacityError = presentError(new ApiError("WORKER_CAPACITY_UNAVAILABLE", "internal execution detail", 503), key => i18n.global.t(key))
+    assert.match(capacityError.summary, /current execution capacity could not be verified/)
+    assert.equal(capacityError.code, "WORKER_CAPACITY_UNAVAILABLE")
+    assert.equal(capacityError.diagnostic, null)
+    i18n.global.locale.value = "zh-TW"
+    assert.match(await render("worker.openNative"), /開啟原生 OpenCode Web/)
+    assert.match(await render("worker.credentials"), /Worker 帳密由部署設定管理/)
+    assert.match(await render("worker.capacityAvailable"), /目前執行環境可用/)
+    assert.match(await render("worker.capacityFull"), /目前執行環境已占用/)
+    assert.match(await render("worker.capacityUnknown"), /無法確認 Worker 目前執行環境容量/)
+  })
+
   await test("named parameters reorder and missing test-locale messages fall back to zh-TW", async () => {
     i18n.global.setLocaleMessage("en-US", longLocale)
     i18n.global.locale.value = "en-US"

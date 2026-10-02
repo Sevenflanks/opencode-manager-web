@@ -156,7 +156,9 @@ export interface LauncherRegistrationResponse {
 export interface ConnectivityInfo {
   remoteAccess?: "available" | "enabled" | "disabled"
   checkedAt: string
-  mode: "loopback" | "tailnet"
+  mode: "loopback" | "tailnet" | "worker"
+  capabilities?: { launcher: boolean; tailscale: boolean; credentialUpdate: boolean; managerShutdown: boolean; maxInstances: number; nativeWeb: boolean }
+  nativeWebOrigin?: string
   manager: { localUrl: string; publicUrl: string | null; version?: string }
   tailscale: {
     state: "connected" | "offline" | "needs-login" | "unavailable" | "unknown"
@@ -180,4 +182,9 @@ export interface ConnectivityInfo {
     } | null
   }
   nodeVersion: string
+}
+/** 固定設定之單一 Worker execution 的 fresh backend authority，不計入歷史 unknown Instance。 */
+export interface WorkerCapacity {
+  state: "available" | "occupied" | "unknown"
+  maxInstances: 1
 }

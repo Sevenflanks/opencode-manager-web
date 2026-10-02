@@ -34,6 +34,7 @@ export class OpenCodeRuntime implements RuntimePort {
   private readonly environment: NodeJS.ProcessEnv
   private readonly sameRunChildren = new Map<string, TrackedLaunch>()
   private readonly readinessDiagnostics: ((details: ReadinessDiagnostic) => void) | undefined
+  private readonly http: { endpoint(value: string, port: number): string; fetch: typeof fetch } | undefined
 
   constructor(options: {
     executable: string
@@ -42,6 +43,7 @@ export class OpenCodeRuntime implements RuntimePort {
     publicOriginForPort?: (port: number) => string | null
     environment?: NodeJS.ProcessEnv
     readinessDiagnostics?: (details: ReadinessDiagnostic) => void
+    http?: { endpoint(value: string, port: number): string; fetch: typeof fetch }
   }) {
     if (!options.executable) throw new ManagerError("OPENCODE_EXECUTABLE_REQUIRED", "必須設定 OMW_OPENCODE_EXECUTABLE。", 500)
     if (!existsSync(options.executable)) throw new ManagerError("OPENCODE_EXECUTABLE_NOT_FOUND", "設定的 OpenCode executable 不存在。", 500)
@@ -51,6 +53,15 @@ export class OpenCodeRuntime implements RuntimePort {
     this.publicOriginForPort = options.publicOriginForPort ?? null
     this.environment = options.environment ?? process.env
     this.readinessDiagnostics = options.readinessDiagnostics
+    this.http = options.http
+  }
+
+  private endpoint(value: string, port: number): string {
+    return this.http ? this.http.endpoint(value, port) : checkedEndpoint(value, port)
+  }
+
+  private requestJson(endpoint: string, pathname: string, options: { method?: "POST"; body?: unknown } = {}, diagnostic?: JsonRequestDiagnostic, initialVerification?: InitialLocalReadiness): Promise<unknown> {
+    return requestJson(endpoint, pathname, options, diagnostic, initialVerification, this.http?.fetch)
   }
 
   async launch(directory: string, port: number, instanceId: string): Promise<LaunchResult> {
@@ -136,7 +147,7 @@ export class OpenCodeRuntime implements RuntimePort {
 
   async readiness(instance: LaunchResult | InstanceRecord, initialVerification?: InitialLocalReadiness): Promise<{ version: string; directory: string }> {
     const expectedDirectory = "directory" in instance ? instance.directory : instance.projectDirectory
-    const endpoint = checkedEndpoint(instance.endpoint, "port" in instance ? instance.port : Number(new URL(instance.endpoint).port))
+    const endpoint = this.endpoint(instance.endpoint, "port" in instance ? instance.port : Number(new URL(instance.endpoint).port))
     const deadline = Date.now() + 15_000
     const startedAt = performance.now()
     const remaining = (): number => initialVerification
@@ -166,7 +177,7 @@ export class OpenCodeRuntime implements RuntimePort {
       try {
         stage = "health"
         stageStartedAt = performance.now()
-        const health = await requestJson(endpoint, "/global/health", {}, requestDiagnostic, initialVerification) as { healthy?: unknown; version?: unknown }
+        const health = await this.requestJson(endpoint, "/global/health", {}, requestDiagnostic, initialVerification) as { healthy?: unknown; version?: unknown }
         if (initialVerification && remaining() <= 0) break
         result = "health_invalid"
         if (health.healthy !== true || typeof health.version !== "string" || !health.version) {
@@ -175,7 +186,7 @@ export class OpenCodeRuntime implements RuntimePort {
         emit("opencode_readiness_validation_completed", "success")
         stage = "path"
         stageStartedAt = performance.now()
-        const pathResult = await requestJson(endpoint, "/path", {}, requestDiagnostic, initialVerification) as { directory?: unknown }
+        const pathResult = await this.requestJson(endpoint, "/path", {}, requestDiagnostic, initialVerification) as { directory?: unknown }
         if (initialVerification && remaining() <= 0) break
         result = "directory_mismatch"
         if (typeof pathResult.directory !== "string" || !sameWindowsPath(pathResult.directory, expectedDirectory)) {
@@ -238,21 +249,21 @@ export class OpenCodeRuntime implements RuntimePort {
   }
 
   async sessions(instance: InstanceRecord): Promise<SessionMetadata[]> {
-    const value = await requestJson(checkedEndpoint(instance.endpoint, instance.port), routed("/session", instance.projectDirectory))
+    const value = await this.requestJson(this.endpoint(instance.endpoint, instance.port), routed("/session", instance.projectDirectory))
     return parseSessions(value, instance.projectDirectory)
   }
 
   async children(instance: InstanceRecord, sessionId: string): Promise<SessionMetadata[]> {
-    const value = await requestJson(
-      checkedEndpoint(instance.endpoint, instance.port),
+    const value = await this.requestJson(
+      this.endpoint(instance.endpoint, instance.port),
       routed(`/session/${encodeURIComponent(sessionId)}/children`, instance.projectDirectory),
     )
     return parseSessions(value, instance.projectDirectory).filter((session) => session.parentID === sessionId)
   }
 
   async todos(instance: InstanceRecord, sessionId: string): Promise<SessionTodo[]> {
-    const value = await requestJson(
-      checkedEndpoint(instance.endpoint, instance.port),
+    const value = await this.requestJson(
+      this.endpoint(instance.endpoint, instance.port),
       routed(`/session/${encodeURIComponent(sessionId)}/todo`, instance.projectDirectory),
     )
     if (!Array.isArray(value)) throw new Error("OpenCode todo response 不是 array")
@@ -268,8 +279,8 @@ export class OpenCodeRuntime implements RuntimePort {
   }
 
   async activity(instance: InstanceRecord): Promise<RuntimeActivityEvidence> {
-    const value = await requestJson(
-      checkedEndpoint(instance.endpoint, instance.port),
+    const value = await this.requestJson(
+      this.endpoint(instance.endpoint, instance.port),
       routed("/session/status", instance.projectDirectory),
     )
     if (!isObject(value)) throw new Error("OpenCode status response 不是 object")
@@ -290,8 +301,8 @@ export class OpenCodeRuntime implements RuntimePort {
   }
 
   async createSession(instance: InstanceRecord): Promise<SessionMetadata> {
-    const value = await requestJson(
-      checkedEndpoint(instance.endpoint, instance.port),
+    const value = await this.requestJson(
+      this.endpoint(instance.endpoint, instance.port),
       routed("/session", instance.projectDirectory),
       { method: "POST", body: {} },
     )
@@ -301,12 +312,12 @@ export class OpenCodeRuntime implements RuntimePort {
   }
 
   async summary(instance: InstanceRecord): Promise<RuntimeSummary> {
-    const endpoint = checkedEndpoint(instance.endpoint, instance.port)
+    const endpoint = this.endpoint(instance.endpoint, instance.port)
     const [sessionsResult, statusesResult, questionsResult, permissionsResult] = await Promise.allSettled([
       this.sessions(instance),
-      requestJson(endpoint, routed("/session/status", instance.projectDirectory)),
-      requestJson(endpoint, routed("/question", instance.projectDirectory)),
-      requestJson(endpoint, routed("/permission", instance.projectDirectory)),
+      this.requestJson(endpoint, routed("/session/status", instance.projectDirectory)),
+      this.requestJson(endpoint, routed("/question", instance.projectDirectory)),
+      this.requestJson(endpoint, routed("/permission", instance.projectDirectory)),
     ])
     const errors: string[] = []
     const sessions = sessionsResult.status === "fulfilled" ? sessionsResult.value : []
@@ -413,11 +424,11 @@ export class OpenCodeRuntime implements RuntimePort {
     onEvent: (event: RuntimeActivityEvent) => Promise<void> | void,
     controller: AbortController,
   ): Promise<void> {
-    const endpoint = checkedEndpoint(instance.endpoint, instance.port)
+    const endpoint = this.endpoint(instance.endpoint, instance.port)
     const connectionTimer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS)
     let response: Response
     try {
-      response = await fetch(`${endpoint}${routed("/event", instance.projectDirectory)}`, {
+      response = await (this.http?.fetch ?? fetch)(`${endpoint}${routed("/event", instance.projectDirectory)}`, {
         headers: { accept: "text/event-stream" },
         redirect: "error",
         signal: controller.signal,
@@ -611,6 +622,7 @@ async function requestJson(
   options: { method?: "POST"; body?: unknown } = {},
   diagnostic?: JsonRequestDiagnostic,
   initialVerification?: InitialLocalReadiness,
+  fetcher: typeof fetch = fetch,
 ): Promise<unknown> {
   // 單次 HTTP 仍最多 2 秒，但不可跨越初次驗證剩餘預算；取消也必須中止 body read。
   const requestTimeout = AbortSignal.timeout(initialVerification
@@ -624,7 +636,7 @@ async function requestJson(
   let response: Response
   try {
     signal.throwIfAborted()
-    const pending = fetch(`${endpoint}${pathname}`, {
+    const pending = fetcher(`${endpoint}${pathname}`, {
       headers: { accept: "application/json", ...(options.body === undefined ? {} : { "content-type": "application/json" }) },
       ...(options.method ? { method: options.method } : {}),
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
@@ -802,6 +814,7 @@ function isNonNegativeInteger(value: unknown): value is number {
 }
 
 function sameWindowsPath(left: string, right: string): boolean {
+  if (process.platform !== "win32") return path.resolve(left) === path.resolve(right)
   return path.resolve(left).replace(/[\\/]+$/, "").toLowerCase() === path.resolve(right).replace(/[\\/]+$/, "").toLowerCase()
 }
 
