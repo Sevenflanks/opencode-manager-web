@@ -1,11 +1,203 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import net, { type Socket } from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { buildExecutionApp } from "../src/worker/supervisor.js"
+import { WorkerRuntime } from "../src/worker/runtime.js"
+import { ManagerRepository } from "../src/repository.js"
+import { ManagerService } from "../src/service.js"
+import { localDirectories } from "../src/directory.js"
+import { spawn } from "node:child_process"
+
+for (const failure of ["executable ENOENT before spawn", "executable EACCES before spawn", "directory race before spawn", "readiness failure after spawn"] as const) {
+test(`Manager manual Start recovers in the same epoch after ${failure}`, { skip: process.platform !== "linux" || (process.pid !== 1 && process.ppid !== 1), timeout: 30_000 }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "omw-worker-pre-spawn-"))
+  const project = path.join(directory, "project")
+  await mkdir(project)
+  const fixture = path.join(directory, "ready.cjs")
+  const executable = path.join(directory, "runtime")
+  await writeFile(fixture, `const http=require('node:http');
+    const authorization='Basic '+Buffer.from('opencode:'+process.env.OPENCODE_SERVER_PASSWORD).toString('base64');
+    const server=http.createServer((req,res)=>{
+      if(req.headers.authorization!==authorization){res.writeHead(401);res.end('{}');return}
+      const url=new URL(req.url,'http://fixture');
+      res.setHeader('content-type','application/json');
+      res.end(JSON.stringify(url.pathname==='/global/health'?{healthy:true,version:'fixture'}:
+        url.pathname==='/path'?{directory:process.cwd()}:url.pathname==='/session/status'?{}:[]));
+    }).listen(4096,'127.0.0.1');
+    setTimeout(()=>process.exit(0),20000);process.on('SIGTERM',()=>{server.close();process.exit(0)});`)
+  const token = "fixture-control-token-32-characters"
+  const repairedExecutable = `#!/bin/sh\nexec "${process.execPath}" "${fixture}"\n`
+  if (failure === "executable EACCES before spawn") await writeFile(executable, repairedExecutable, { mode: 0o600 })
+  if (failure === "directory race before spawn") await writeFile(executable, repairedExecutable, { mode: 0o700 })
+  if (failure === "readiness failure after spawn") await writeFile(executable, `#!/bin/sh\nexec "${process.execPath}" -e 'process.exit(1)'\n`, { mode: 0o700 })
+  let removeAfterResolve = failure === "directory race before spawn"
+  const app = buildExecutionApp({ token, executable, runtimePort: 4096 }, {
+    ...localDirectories,
+    async resolve(input) {
+      const resolved = await localDirectories.resolve(input)
+      // 真正 execution filesystem 在 public resolve 與 Start realpath 間消失，不 mock spawn/error。
+      if (removeAfterResolve) { removeAfterResolve = false; await rm(project, { recursive: true }) }
+      return resolved
+    },
+  })
+  const sockets = new Set<Socket>()
+  app.server.on("connection", (socket) => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)) })
+  const lifetime = setTimeout(() => { for (const socket of sockets) socket.destroy() }, 25_000)
+  const repository = new ManagerRepository(path.join(directory, "manager.sqlite"))
+  let service: ManagerService | undefined
+  let runtime: WorkerRuntime | undefined
+  const attempts: Array<{ epoch: string; instanceId: string }> = []
+  let replacement: string | undefined
+  try {
+    const origin = await app.listen({ host: "127.0.0.1", port: 0 })
+    runtime = new WorkerRuntime({ controlOrigin: origin, token, nativeOrigin: "http://native.fixture.test", fetch: async (url, init) => {
+      if (new URL(String(url)).pathname === "/v1/start") attempts.push(JSON.parse(String(init?.body)))
+      return await fetch(url, init)
+    } })
+    service = new ManagerService(repository, runtime, { min: 4096, max: 4096 })
+    const control = async (pathname: string, body?: unknown) => await fetch(`${origin}${pathname}`, {
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }), signal: AbortSignal.timeout(8_000),
+    })
+    const info = async () => await (await control("/v1/execution")).json() as { epoch: string; capacity: string; startupFailure?: { phase: string; code: string } }
+    const epoch = (await info()).epoch
+    const unknown = { epoch, instanceId: "not-accepted" }
+    assert.equal((await control("/v1/stop", unknown)).status, 409, "available alone cannot prove an unknown attempt stopped")
+    assert.equal((await control("/v1/start", { ...unknown, epoch: "wrong-epoch", directory: project })).status, 409)
+    assert.equal((await control("/v1/stop", unknown)).status, 409, "rejected preflight must not retain a fake attempt")
+    await assert.rejects(service.start(project, false), { code: "EXECUTION_REJECTED" })
+    assert.deepEqual((await info()).startupFailure, failure === "directory race before spawn" ? { phase: "directory", code: "ENOENT" }
+      : failure === "readiness failure after spawn" ? { phase: "child-exited", code: "START_FAILED" }
+      : { phase: "spawn", code: failure === "executable EACCES before spawn" ? "EACCES" : "ENOENT" })
+    assert.equal((await info()).capacity, "available", "failed spawn leaves no runnable execution")
+    assert.deepEqual(await service.workerCapacity(), { state: "available", maxInstances: 1 }, "confirmed pre-spawn failure must release the same-epoch allocation")
+    const failed = attempts[0]!
+    assert.deepEqual(await runtime.cleanupLaunch(failed.instanceId), { stopped: true, reason: null })
+    assert.deepEqual(await runtime.cleanupLaunch(failed.instanceId), { stopped: true, reason: null }, "same-attempt cleanup is idempotent")
+    assert.equal((await control("/v1/stop", { ...failed, epoch: "wrong-epoch" })).status, 409)
+    if (failure === "executable ENOENT before spawn") {
+      // 有限 lifetime 的獨立 namespace 成員；舊未啟動證據只能確認空 namespace，不能送 signal。
+      const other = spawn(process.execPath, ["-e", "setTimeout(()=>process.exit(0),1000)"], { stdio: "ignore", detached: true })
+      const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => other.once("close", (code, signal) => resolve({ code, signal })))
+      await new Promise<void>((resolve, reject) => { other.once("spawn", resolve); other.once("error", reject) })
+      try {
+        assert.equal((await runtime.cleanupLaunch(failed.instanceId)).stopped, false)
+        const rejected = { epoch, instanceId: "busy-during-failed-attempt", directory: project }
+        assert.equal((await control("/v1/start", rejected)).status, 409)
+        assert.equal((await control("/v1/stop", rejected)).status, 409)
+      } finally { assert.deepEqual(await bounded(exit), { code: 0, signal: null }, "failed-attempt cleanup must not kill another namespace member") }
+      assert.deepEqual(await runtime.cleanupLaunch(failed.instanceId), { stopped: true, reason: null }, "busy preflight does not replace the accepted attempt")
+    }
+    await mkdir(project, { recursive: true })
+    await writeFile(executable, repairedExecutable, { mode: 0o700 })
+    await chmod(executable, 0o700)
+    assert.equal(attempts.length, 1, "repair and capacity reads do not automatically Start")
+    const started = await service.start(project, false)
+    replacement = started.id
+    assert.equal(started.state, "ready")
+    assert.equal(attempts[1]!.epoch, epoch)
+    assert.notEqual(started.id, failed.instanceId)
+    assert.equal((await runtime.cleanupLaunch(failed.instanceId)).stopped, false, "stale cleanup cannot terminate the replacement")
+    const busy = { epoch, instanceId: "busy-not-accepted", directory: project }
+    assert.equal((await control("/v1/start", busy)).status, 409)
+    assert.equal((await control("/v1/stop", busy)).status, 409)
+    assert.deepEqual(await service.workerCapacity(), { state: "occupied", maxInstances: 1 })
+    assert.equal((await control("/v1/inspect", { epoch, instanceId: started.id })).status, 200)
+    assert.equal((await runtime.inspect(repository.getInstance(started.id)!)).portOwnerMatched, true)
+    assert.equal((await runtime.cleanupLaunch(started.id)).stopped, true)
+    replacement = undefined
+    // 前一個 current 已 stopped；下一個 accepted attempt 即使還沒 spawn，也撤銷前一個 ID。
+    await rm(executable)
+    await assert.rejects(runtime.launch(project, 4096, "failed-after-previous", epoch), { code: "EXECUTION_REJECTED" })
+    assert.deepEqual(await runtime.cleanupLaunch("failed-after-previous"), { stopped: true, reason: null })
+    assert.equal((await runtime.cleanupLaunch(started.id)).stopped, false)
+    assert.equal((await runtime.cleanupLaunch(failed.instanceId)).stopped, false, "only the last accepted attempt retains proof")
+  } finally {
+    clearTimeout(lifetime)
+    try {
+      if (replacement) assert.equal((await runtime!.cleanupLaunch(replacement)).stopped, true)
+      await service?.shutdown()
+    } finally {
+      for (const socket of sockets) socket.destroy()
+      await bounded(app.close())
+      repository.close()
+      await rm(directory, { recursive: true, force: true })
+    }
+  }
+})
+}
+
+test("lost successful Start response and unreachable cleanup stay fail-closed despite later available execution", { skip: process.platform !== "linux" || (process.pid !== 1 && process.ppid !== 1), timeout: 30_000 }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "omw-worker-lost-start-"))
+  const fixture = path.join(directory, "ready.cjs")
+  await writeFile(fixture, `const http=require('node:http');
+    const server=http.createServer((req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({healthy:true,version:'fixture'}))}).listen(4096,'127.0.0.1');
+    setTimeout(()=>process.exit(0),20000);process.on('SIGTERM',()=>{server.close();process.exit(0)});`)
+  const token = "fixture-control-token-32-characters"
+  const app = buildExecutionApp({ token, executable: process.execPath, arguments: [fixture], runtimePort: 4096 })
+  const sockets = new Set<Socket>()
+  app.server.on("connection", (socket) => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)) })
+  const lifetime = setTimeout(() => { for (const socket of sockets) socket.destroy() }, 25_000)
+  const filename = path.join(directory, "manager.sqlite")
+  const repository = new ManagerRepository(filename)
+  let service: ManagerService | undefined
+  let runtime: WorkerRuntime | undefined
+  let instanceId: string | undefined
+  let offline = false
+  let starts = 0
+  try {
+    const origin = await app.listen({ host: "127.0.0.1", port: 0 })
+    runtime = new WorkerRuntime({ controlOrigin: origin, token, nativeOrigin: "http://native.fixture.test", fetch: async (url, init) => {
+      if (offline) throw new Error("synthetic control transport loss")
+      const response = await fetch(url, init)
+      if (new URL(String(url)).pathname === "/v1/start") {
+        assert.equal(response.status, 200, "the real supervisor accepted and spawned this Start")
+        instanceId = JSON.parse(String(init?.body)).instanceId
+        starts++
+        await response.arrayBuffer()
+        offline = true
+        throw new Error("synthetic successful Start response loss")
+      }
+      return response
+    } })
+    service = new ManagerService(repository, runtime, { min: 4096, max: 4096 })
+    await assert.rejects(service.start(directory, false), { code: "WORKER_CAPACITY_UNAVAILABLE" })
+    assert.deepEqual(await service.workerCapacity(), { state: "unknown", maxInstances: 1 })
+    assert.equal((await runtime.cleanupLaunch(instanceId!)).stopped, false)
+    await assert.rejects(service.start(directory, false), { code: "WORKER_CAPACITY_UNAVAILABLE" })
+    offline = false
+    assert.equal((await runtime.allocationScope()).state, "occupied", "lost response did not mean the child never started")
+    assert.equal((await runtime.cleanupLaunch(instanceId!)).stopped, true)
+    assert.equal((await runtime.allocationScope()).state, "available")
+    assert.deepEqual(await service.workerCapacity(), { state: "unknown", maxInstances: 1 }, "available cannot repair a previously unconfirmed Manager cleanup")
+    await service.reconcile()
+    await assert.rejects(service.start(directory, false), { code: "WORKER_CAPACITY_UNAVAILABLE" })
+    const reopened = new ManagerRepository(filename)
+    const restarted = new ManagerService(reopened, new WorkerRuntime({ controlOrigin: origin, token, nativeOrigin: "http://native.fixture.test" }), { min: 4096, max: 4096 })
+    try {
+      await restarted.reconcile()
+      assert.deepEqual(await restarted.workerCapacity(), { state: "unknown", maxInstances: 1 })
+      await assert.rejects(restarted.start(directory, false), { code: "WORKER_CAPACITY_UNAVAILABLE" })
+    } finally { await restarted.shutdown(); reopened.close() }
+    assert.equal(starts, 1, "reads, reconcile and Manager restart cannot retry Start")
+  } finally {
+    clearTimeout(lifetime)
+    offline = false
+    try {
+      if (instanceId) assert.equal((await runtime!.cleanupLaunch(instanceId)).stopped, true)
+      await service?.shutdown()
+    } finally {
+      for (const socket of sockets) socket.destroy()
+      await bounded(app.close())
+      repository.close()
+      await rm(directory, { recursive: true, force: true })
+    }
+  }
+})
 
 async function bounded<T>(work: Promise<T>, milliseconds = 2_000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined

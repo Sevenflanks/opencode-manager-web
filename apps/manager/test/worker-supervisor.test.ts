@@ -40,6 +40,11 @@ test("Start requires exact supervisor epoch and rejects malformed input without 
     const epoch = (await app.inject({ method: "GET", url: "/v1/execution", headers })).json().epoch
     assert.equal((await app.inject({ method: "POST", url: "/v1/start", headers, payload: { epoch: "stale", instanceId: "fixture", directory: "/workspace" } })).statusCode, 409)
     assert.equal((await app.inject({ method: "POST", url: "/v1/start", headers, payload: { epoch, instanceId: "fixture", directory: "relative" } })).statusCode, 400)
+    if (process.platform !== "linux") {
+      const identity = { epoch, instanceId: "owner-rejected" }
+      assert.equal((await app.inject({ method: "POST", url: "/v1/start", headers, payload: { ...identity, directory: process.cwd() } })).statusCode, 503)
+      assert.equal((await app.inject({ method: "POST", url: "/v1/stop", headers, payload: identity })).statusCode, 409, "namespace-owner rejection must not invent accepted-attempt cleanup proof")
+    }
     assert.equal((await app.inject({ method: "POST", url: "/v1/inspect", headers, payload: { epoch: "stale", instanceId: "fixture" } })).json().processState, "unknown")
   } finally { await app.close() }
 })

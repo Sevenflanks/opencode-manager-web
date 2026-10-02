@@ -29,6 +29,7 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
   let listenerIdentity: string | null = null
   let mutation = false
   let startupFailure: { phase: string; code: string } | null = null
+  let lastAcceptedAttempt: { instanceId: string; stopped: boolean } | null = null
   const app = Fastify({ logger: false, bodyLimit: 4096 })
   app.addHook("onRequest", async (request, reply) => {
     if (request.headers.origin !== undefined) return reply.code(403).send({ error: "BROWSER_NOT_ALLOWED" })
@@ -68,6 +69,8 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
     if (mutation) return reply.code(409).send({ error: "EXECUTION_BUSY" })
     mutation = true
     let phase = "namespace-owner"
+    let acceptedAttempt: typeof lastAcceptedAttempt = null
+    let spawned = false
     startupFailure = null
     try {
       await requireNamespaceOwner()
@@ -78,6 +81,11 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
         return current
       }
       if ((await namespaceProcesses()).length) return reply.code(409).send({ error: "EXECUTION_BUSY" })
+      // 只有通過 preflight 的 Start 才持有 cleanup authority；下一個已接受 attempt 立即撤銷舊身分。
+      acceptedAttempt = lastAcceptedAttempt = { instanceId: body.instanceId, stopped: false }
+      current = null
+      root = null
+      listenerIdentity = null
       phase = "directory"
       const directory = await realpath(body.directory)
       phase = "spawn"
@@ -86,6 +94,7 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
       })
       root = child
       await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject) })
+      spawned = true
       current = { pid: child.pid!, instanceId: body.instanceId, directory, executable: options.executable,
         creationTimeUtc: new Date().toISOString(), creationTimeTicks: epoch,
         endpoint: `http://127.0.0.1:${options.runtimePort}` }
@@ -121,6 +130,11 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
         throw error
       }
     } catch (error) {
+      // pre-spawn 失敗沒有 LaunchResult，但仍須留下同一次 attempt 的「未啟動且 namespace 已空」證據。
+      // available 或不認識的 ID 不能替代此證據；spawn 成功後仍走原有 current/owned Stop 契約。
+      if (acceptedAttempt && !spawned) {
+        acceptedAttempt.stopped = await namespaceProcesses().then((members) => members.length === 0).catch(() => false)
+      }
       // Control-only 固定 enum：不回傳原始錯誤、路徑、環境或 runtime credential。
       const code = (error as NodeJS.ErrnoException).code
       startupFailure = { phase, code: ["EACCES", "EPERM", "ENOENT", "ESRCH"].includes(code ?? "") ? code! : "START_FAILED" }
@@ -140,11 +154,18 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
       managedProcessCount: members.length }
   })
   app.post<{ Body: Identity }>("/v1/stop", async (request, reply) => {
-    if (!request.body || !matches(request.body)) return reply.code(409).send({ error: "IDENTITY_MISMATCH" })
+    const failedAttemptMatches = request.body?.epoch === epoch && !current && lastAcceptedAttempt?.stopped === true
+      && request.body.instanceId === lastAcceptedAttempt.instanceId
+    if (!request.body || (!matches(request.body) && !failedAttemptMatches)) return reply.code(409).send({ error: "IDENTITY_MISMATCH" })
     if (mutation) return reply.code(409).send({ error: "EXECUTION_BUSY" })
     mutation = true
     try {
       await requireNamespaceOwner()
+      if (failedAttemptMatches) {
+        // 冪等確認不送 signal；即使 namespace 後來出現其他程序，也不能藉舊失敗 attempt 停掉它。
+        const empty = (await namespaceProcesses()).length === 0
+        return { stopped: empty, reason: empty ? null : "failed launch namespace is no longer empty" }
+      }
       return await stopNamespace()
     } finally { mutation = false }
   })
