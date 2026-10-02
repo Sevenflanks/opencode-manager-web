@@ -129,8 +129,8 @@ try {
   await check("linux-namespace-orphan-stop", async () => {
     const output = await docker(["run", "--rm", "--init", "--network", "none", "--name", `${project}-namespace`, "--label", `com.docker.compose.project=${project}`, image,
       "node", "apps/manager/dist/test/worker-supervisor-linux.test.js"], 60_000)
-    assert.match(output, /(?:#|ℹ) pass 2\b/); assert.match(output, /(?:#|ℹ) skipped 0\b/); assert.match(output, /(?:#|ℹ) fail 0\b/)
-    return { command: "node apps/manager/dist/test/worker-supervisor-linux.test.js", passed: 2, skipped: 0, failed: 0 }
+    assert.match(output, /(?:#|ℹ) pass 3\b/); assert.match(output, /(?:#|ℹ) skipped 0\b/); assert.match(output, /(?:#|ℹ) fail 0\b/)
+    return { command: "node apps/manager/dist/test/worker-supervisor-linux.test.js", passed: 3, skipped: 0, failed: 0 }
   })
   const marker = `${project}-synthetic-persistence`
   const seed = `const fs=require('node:fs'); for(const dir of ['/workspace/verification-project',process.env.XDG_CONFIG_HOME,process.env.XDG_DATA_HOME])fs.mkdirSync(dir,{recursive:true}); for(const name of ['/workspace/verification-project/uncommitted.txt',process.env.HOME+'/verification-home.txt',process.env.XDG_CONFIG_HOME+'/verification-config.txt',process.env.XDG_DATA_HOME+'/verification-data.txt'])fs.writeFileSync(name,${JSON.stringify(marker)});`
