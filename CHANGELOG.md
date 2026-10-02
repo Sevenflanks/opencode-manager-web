@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.6.0...v0.6.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **manager:** 共用 Local TUI 初次驗證的 30 秒預算 ([#97](https://github.com/Sevenflanks/opencode-manager-web/issues/97)) ([8728f88](https://github.com/Sevenflanks/opencode-manager-web/commit/8728f88d925415133f7ae787be7a90dd3fbf3568))
+
 ## [0.6.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.5.0...v0.6.0) (2026-09-30)
 
 
