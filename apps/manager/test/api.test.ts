@@ -6,6 +6,7 @@ import path from "node:path"
 import { performance } from "node:perf_hooks"
 import { DatabaseSync } from "node:sqlite"
 import test from "node:test"
+import { gunzipSync } from "node:zlib"
 import type { SessionTodo } from "@omw/contracts"
 import { buildApp } from "../src/app.js"
 import { SeparateRequestAuthenticator, type StoredCredentials } from "../src/auth.js"
@@ -31,6 +32,116 @@ const mutationHeaders = {
   "x-omw-csrf": "1",
 }
 const readHeaders = { host: "127.0.0.1:4174" }
+
+test("compact current overview preserves legacy all/search and paginates stopped history without probes", async (t) => {
+  const { project, service, repository, runtime, app } = await fixture(t)
+  const live = await service.start(project, false)
+  const record = repository.getInstance(live.id)!
+  for (let index = 0; index < 45; index++) repository.createInstance({
+    ...record, id: `stopped-${String(index).padStart(2, "0")}`, state: "stopped", trackingHidden: index === 44,
+    projectName: index === 35 ? "history-needle" : "history", launchedAt: "2026-09-17T00:00:00.000Z",
+  })
+  const read = async (url: string) => await app.inject({ method: "GET", url, headers: readHeaders })
+  const legacy = (await read("/api/v1/overview?filter=all")).json()
+  assert.equal(legacy.instances.length, 45)
+  assert.ok(legacy.instances.every((item: object) => "sessions" in item))
+  const compact = (await read("/api/v1/overview?view=compact&scope=current&q=absent")).json()
+  assert.deepEqual(compact.instances, [])
+  assert.equal(compact.history.total, 44)
+  assert.equal(compact.notifications.length, 1, "filtered UI must not filter the notification baseline")
+  assert.equal(compact.notifications[0].id, live.id)
+  const probes = runtime.inspectCalls
+  const first = (await read("/api/v1/instances/history")).json()
+  assert.equal(first.instances.length, 20)
+  assert.equal(first.total, 44)
+  assert.equal(first.nextOffset, 20)
+  assert.equal("sessions" in first.instances[0], false)
+  const second = (await read(`/api/v1/instances/history?offset=20&revision=${first.revision}`)).json()
+  assert.equal(new Set([...first.instances, ...second.instances].map((item: { id: string }) => item.id)).size, 40)
+  assert.equal((await read("/api/v1/instances/history?q=history-needle")).json().total, 1)
+  assert.equal((await read("/api/v1/instances/history?includeHidden=true")).json().total, 45)
+  assert.equal((await read("/api/v1/instances/history?offset=-1")).statusCode, 400)
+  repository.createInstance({ ...record, id: "stopped-new", state: "stopped" })
+  assert.equal((await read(`/api/v1/instances/history?offset=20&revision=${first.revision}`)).statusCode, 409)
+  assert.equal(runtime.inspectCalls, probes, "stopped history never performs a live runtime probe")
+  assert.equal((await read(`/api/v1/instances/${live.id}`)).json(), null, "active detail fallback does not re-probe the full overview")
+  assert.equal((await read("/api/v1/instances/stopped-00")).json().state, "stopped")
+  assert.equal(runtime.inspectCalls, probes)
+  runtime.summaries.set(project, { activity: "reported-non-busy", busySessions: 0, pendingQuestions: 0, pendingPermissions: 0,
+    error: null, sessions: [{ id: "search-session", title: "title-needle" }] })
+  assert.equal((await read("/api/v1/overview?view=compact&scope=current&q=title-needle")).json().instances[0].id, live.id)
+  assert.equal("sessions" in (await read("/api/v1/overview?view=compact&scope=current&q=search-session")).json().instances[0], false)
+  repository.createInstance({ ...record, id: "unreachable-current", state: "unreachable", pid: null })
+  repository.createInstance({ ...record, id: "hidden-current", trackingHidden: true })
+  const hidden = (await read("/api/v1/overview?view=compact&scope=current&includeHidden=true")).json()
+  assert.equal(hidden.instances.length, 3)
+  assert.ok(hidden.instances.some((item: { id: string; state: string }) => item.id === "unreachable-current" && item.state === "unreachable"))
+  assert.equal(hidden.notifications.length, 2)
+})
+
+test("overview HTTP gzip and validators negotiate isolated representations and retain JSON equality", async (t) => {
+  const { service, project, app, runtime } = await fixture(t)
+  await service.start(project, false)
+  const url = "/api/v1/overview?view=compact&scope=current"
+  const read = (encoding: string, validator?: string, target = url) => app.inject({ method: "GET", url: target,
+    headers: { ...readHeaders, "accept-encoding": encoding, ...(validator ? { "if-none-match": validator } : {}) } })
+  const plain = await read("identity")
+  const compressed = await read("gzip")
+  assert.equal(compressed.headers["content-encoding"], "gzip")
+  assert.match(String(compressed.headers.vary), /Accept-Encoding/i)
+  assert.deepEqual(JSON.parse(gunzipSync(compressed.rawPayload).toString()), plain.json())
+  assert.equal((await read("gzip;q=0, *;q=1")).headers["content-encoding"], undefined)
+  assert.equal((await read("br")).headers["content-encoding"], undefined)
+  assert.equal((await read("gzip;q=0, identity;q=0")).statusCode, 406)
+  assert.equal((await read("*;q=0, identity;q=1")).statusCode, 200)
+  const etag = String(compressed.headers.etag)
+  assert.equal((await read("gzip", `W/${etag}`)).statusCode, 304)
+  assert.equal((await read("identity", etag)).statusCode, 200)
+  assert.equal((await read("gzip", etag, `${url}&q=missing`)).statusCode, 200)
+  assert.equal((await read("gzip", etag, `${url}&includeHidden=true`)).statusCode, 200)
+  assert.equal((await read("gzip", etag, `${url}&filter=attention`)).statusCode, 200)
+  runtime.summaries.set(project, { activity: "reported-non-busy", busySessions: 0, pendingQuestions: 2, pendingPermissions: 0, error: null, sessions: [] })
+  assert.equal((await read("gzip", etag)).statusCode, 200, "changed data invalidates the validator")
+  const invalid = await read("gzip", undefined, "/api/v1/overview?view=invalid")
+  assert.equal(invalid.statusCode, 400)
+  assert.equal(invalid.json().error.code, "VIEW_INVALID")
+  const compressedError = await read("gzip, identity;q=0", undefined, "/api/v1/overview?view=invalid")
+  assert.equal(compressedError.statusCode, 400)
+  assert.deepEqual(JSON.parse(gunzipSync(compressedError.rawPayload).toString()), invalid.json())
+})
+
+test("overview HTTP encoding qvalues honor explicit identity preferences and implicit identity fallback", async (t) => {
+  const { service, project, app } = await fixture(t)
+  await service.start(project, false)
+  const url = "/api/v1/overview?view=compact&scope=current"
+  const plain = await app.inject({ method: "GET", url, headers: readHeaders })
+  const cases: Array<[string | undefined, "gzip" | undefined, number]> = [
+    ["gzip;q=0.1, identity;q=1", undefined, 200],
+    [undefined, undefined, 200], ["", undefined, 200],
+    ["gzip", "gzip", 200], ["gzip;q=0.1", "gzip", 200],
+    ["gzip;q=0.8, identity;q=0.2", "gzip", 200],
+    ["gzip;q=0.1, identity;q=0.2", undefined, 200],
+    ["*;q=0.2", "gzip", 200], ["*;q=0.2, identity;q=1", undefined, 200],
+    ["gzip;q=0, *;q=1", undefined, 200], ["*;q=0, gzip;q=0.1", "gzip", 200],
+    ["gzip;q=0.2, *;q=0, identity;q=0.8", undefined, 200],
+    ["gzip;q=0.1, identity;q=0", "gzip", 200],
+    ["*;q=0", undefined, 406], ["gzip;q=0, identity;q=0", undefined, 406],
+    ["br, identity;q=0", undefined, 406],
+  ]
+  for (const [encoding, expected, status] of cases) {
+    const response = await app.inject({ method: "GET", url, headers: { ...readHeaders,
+      ...(encoding === undefined ? {} : { "accept-encoding": encoding }) } })
+    assert.equal(response.statusCode, status, `status for ${encoding}`)
+    assert.equal(response.headers["content-encoding"], expected, `encoding for ${encoding}`)
+    assert.match(String(response.headers.vary), /Accept-Encoding/i)
+    if (status === 200) assert.deepEqual(expected === "gzip" ? JSON.parse(gunzipSync(response.rawPayload).toString()) : response.json(), plain.json())
+  }
+  const preferredSmall = await app.inject({ method: "GET", url: "/api/v1/overview?view=invalid",
+    headers: { ...readHeaders, "accept-encoding": "gzip;q=0.8, identity;q=0.2" } })
+  assert.equal(preferredSmall.statusCode, 400)
+  assert.equal(preferredSmall.headers["content-encoding"], "gzip", "explicit preference applies below the normal compression size threshold")
+  assert.equal(JSON.parse(gunzipSync(preferredSmall.rawPayload).toString()).error.code, "VIEW_INVALID")
+})
 
 class FakeRuntime implements RuntimePort {
   agentFamily = "opencode"

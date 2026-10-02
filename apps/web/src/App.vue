@@ -33,6 +33,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { ApiError, managerApi } from "@/api"
 import { createNotificationPreference, createPendingTracker } from "@/browser-notifications"
 import { createOverviewRefresh } from "@/overview-refresh"
+import { createStoppedHistory } from "@/stopped-history"
 import { createSessionTodoRefresh, TodoBindingChangedError } from "@/session-todo-refresh"
 import { renderSessionWaiting } from "@/session-waiting"
 import { createSwipeDismiss } from "@/swipe-dismiss"
@@ -101,6 +102,12 @@ const includeHidden = ref(false)
 const selectedId = ref("")
 const mobileDetailOpen = ref(false)
 const historyOpen = ref<Set<string>>(new Set())
+const stoppedHistory = createStoppedHistory((q, hidden, offset, revision, signal) => managerApi.history(q, hidden, offset, revision, signal))
+const { query: historyQuery, appliedQuery: historyAppliedQuery, instances: stoppedInstances, total: historyTotal,
+  loading: historyLoading, loaded: historyLoaded, failure: historyFailure, nextOffset: historyNextOffset } = stoppedHistory
+// reload 可能在 pagehide 前取用 History entry；先保存草稿，但不改變已提交的查詢意圖。
+watch(historyQuery, persistMobileListHistory, { flush: "post" })
+const historyError = computed(() => historyFailure.value ? presentError(historyFailure.value, t) : null)
 const mutating = ref(false)
 const actionError = ref("")
 const notice = ref<{ key: MessageKey; params?: Record<string, string | number> } | null>(null)
@@ -219,6 +226,23 @@ const refresh = createOverviewRefresh({
       && route.historyGeneration === mobileHistoryGeneration
       && mobileHistoryView() === "detail"
       && mobileHistoryInstanceId() === route.detailTarget
+    const detailTarget = () => detailRouteIsCurrent() ? route.detailTarget : selectedId.value
+    let target = detailTarget()
+    while (target && !next.instances.some((item) => item.id === target) && current()) {
+      let instance: ManagedInstance | null = null
+      try {
+        instance = await managerApi.instance(target, signal)
+      } catch (cause) {
+        if (!(cause instanceof ApiError && cause.status === 404)) throw cause
+      }
+      if (!current()) break
+      // 等待 A 的 stopped fallback 時可改選 B；重解目前選取，避免只合併 A 後把 B 從詳情清掉。
+      const latestTarget = detailTarget()
+      if (target !== latestTarget) { target = latestTarget; continue }
+      // current 投影刻意排除 stopped，但正在看的詳情必須持續呈現最新停止狀態。
+      if (instance?.state === "stopped") next = { ...next, instances: [...next.instances, instance] }
+      break
+    }
     if (detailRouteIsCurrent() && !next.instances.some((item) => item.id === route.detailTarget)
       && (requested.query.trim() || requested.filter !== "all") && current()) {
       // 篩選結果不能當成 Instance 已移除；僅同一 includeHidden 範圍的未篩選結果可確認缺少。
@@ -243,6 +267,8 @@ const refresh = createOverviewRefresh({
     appliedQuery.value = result.query
     appliedFilter.value = result.filter
     const next = result.overview
+    const historyChanged = next.history ? stoppedHistory.observe(next.history) : false
+    if (historyExpanded() && historyChanged) void stoppedHistory.load()
     if (current()) void revealNotificationTarget(next.instances)
     const detailRouteIsCurrent = Boolean(route.detailTarget)
       && route.historyGeneration === mobileHistoryGeneration
@@ -441,7 +467,6 @@ const lifecycleUnavailableReasons = computed(() => {
 const orderedInstances = computed(() => overview.value.instances.toSorted((left, right) =>
   Date.parse(right.launchedAt) - Date.parse(left.launchedAt) || left.id.localeCompare(right.id)))
 const currentInstances = computed(() => orderedInstances.value.filter((instance) => instance.state !== "stopped"))
-const stoppedInstances = computed(() => orderedInstances.value.filter((instance) => instance.state === "stopped"))
 
 onMounted(async () => {
   mobileBreakpoint = window.matchMedia("(max-width: 860px)")
@@ -501,6 +526,7 @@ onBeforeUnmount(() => {
   if (managerSettingsOpen.value) document.body.style.overflow = managerSettingsBodyOverflow
   refresh.dispose()
   todoRefresh.dispose()
+  stoppedHistory.dispose()
   connectivityReadGeneration++
   connectivityMutationGeneration++
   sessionsGeneration++
@@ -625,6 +651,7 @@ async function handleShareFailure(cause: unknown): Promise<void> {
 
 async function choose(instance: ManagedInstance): Promise<void> {
   beginUserAction()
+  replaceInstance(instance)
   if (isMobileViewport()) {
     listScrollPosition = window.scrollY
     returnToInstanceId = instance.id
@@ -668,6 +695,7 @@ function mobileHistoryState(view: "list" | "detail", instanceId = ""): Record<st
   const current = typeof window.history.state === "object" && window.history.state !== null
     ? window.history.state as Record<string, unknown>
     : {}
+  const historySearch = stoppedHistory.searchState()
   return {
     ...current,
     omwMobileView: view,
@@ -677,6 +705,8 @@ function mobileHistoryState(view: "list" | "detail", instanceId = ""): Record<st
     omwIncludeHidden: includeHidden.value,
     omwListScroll: listScrollPosition,
     omwHistoryOpen: [...historyOpen.value],
+    omwHistoryQuery: historySearch.draft,
+    omwHistoryCommittedQuery: historySearch.committed,
   }
 }
 
@@ -706,15 +736,17 @@ function pushMobileHistory(instanceId: string): void {
 function applyMobileHistoryContext(): boolean {
   const state = window.history.state
   if (typeof state !== "object" || state === null) return false
-  const historyQuery = Reflect.get(state, "omwQuery")
+  const historyOverviewQuery = Reflect.get(state, "omwQuery")
   const historyFilter = Reflect.get(state, "omwFilter")
   const historyIncludeHidden = Reflect.get(state, "omwIncludeHidden")
   const historyScroll = Reflect.get(state, "omwListScroll")
   const historyDisclosure = Reflect.get(state, "omwHistoryOpen")
-  const nextQuery = typeof historyQuery === "string" ? historyQuery : ""
+  const savedHistoryQuery = Reflect.get(state, "omwHistoryQuery")
+  const historyChanged = stoppedHistory.restoreSearch(savedHistoryQuery, Reflect.get(state, "omwHistoryCommittedQuery"))
+  const nextQuery = typeof historyOverviewQuery === "string" ? historyOverviewQuery : ""
   const nextFilter = filters.value.some((item) => item.value === historyFilter) ? historyFilter as OverviewFilter : "all"
   const nextIncludeHidden = historyIncludeHidden === true
-  const changed = query.value !== nextQuery || filter.value !== nextFilter || includeHidden.value !== nextIncludeHidden
+  const changed = query.value !== nextQuery || filter.value !== nextFilter || includeHidden.value !== nextIncludeHidden || historyChanged
   query.value = nextQuery
   filter.value = nextFilter
   includeHidden.value = nextIncludeHidden
@@ -859,7 +891,7 @@ async function pollNotifications(): Promise<void> {
       const response = await managerApi.notificationOverview(controller.signal)
       if (generation !== notificationGeneration || !notificationPageActive || !notificationPreference.enabled()) return
       notificationError.value = ""
-      for (const event of pendingTracker.observe(response.instances)) {
+      for (const event of pendingTracker.observe(response.notifications ?? response.instances)) {
         if (generation !== notificationGeneration || !notificationPageActive || !notificationPreference.enabled()) break
         const title = t("notification.title")
         const body = t("notification.body", { id: event.instanceId, count: number(event.count) })
@@ -973,12 +1005,23 @@ function toggleHistory(): void {
   if (next.has(STOPPED_HISTORY_KEY)) next.delete(STOPPED_HISTORY_KEY)
   else next.add(STOPPED_HISTORY_KEY)
   historyOpen.value = next
+  if (historyExpanded()) void stoppedHistory.load()
   persistMobileListHistory()
 }
 
 function historyExpanded(): boolean {
-  return Boolean(appliedQuery.value.trim())
-    || historyOpen.value.has(STOPPED_HISTORY_KEY)
+  return historyOpen.value.has(STOPPED_HISTORY_KEY)
+}
+
+watch(includeHidden, (hidden) => {
+  stoppedHistory.scope(hidden)
+  if (historyExpanded()) void stoppedHistory.load()
+}, { flush: "sync" })
+
+async function searchHistory(): Promise<void> {
+  const submitted = stoppedHistory.submit()
+  persistMobileListHistory()
+  await submitted
 }
 
 async function clearOverviewFilters(): Promise<void> {
@@ -2126,11 +2169,24 @@ function displayedError(area: ErrorArea, current: string): string {
             </span>
             <span class="instance-meta"><b :data-category="statusCategory(instance)" :title="statusHeadline(instance)">{{ statusHeadline(instance) }}</b></span>
           </button>
-          <section v-if="stoppedInstances.length" class="stopped-history">
+          <section class="stopped-history">
             <button type="button" class="history-toggle" :aria-expanded="historyExpanded()" aria-controls="instance-history" @click="toggleHistory">
-              <ChevronDownIcon :class="{ rotated: historyExpanded() }" />{{ t('ui.historyCount', { count: number(stoppedInstances.length) }) }}
+              <ChevronDownIcon :class="{ rotated: historyExpanded() }" />{{ overview.history ? t('ui.historyCount', { count: number(overview.history.total) }) : t('history.title') }}
             </button>
-            <div v-show="historyExpanded()" id="instance-history" class="history-list">
+            <div v-show="historyExpanded()" id="instance-history" class="history-list" :aria-busy="historyLoading">
+              <form class="history-search-row" @submit.prevent="searchHistory">
+                <Input v-model="historyQuery" :placeholder="t('history.search')" :aria-label="t('history.searchLabel')" />
+                <Button type="submit" variant="outline" size="icon" :aria-label="t('history.searchAction')" :disabled="historyLoading"><SearchIcon /></Button>
+              </form>
+              <p class="history-status" role="status">
+                <template v-if="historyLoading">{{ historyLoaded ? t('history.loadingMore') : t('common.loading') }}</template>
+                <template v-else-if="historyLoaded && historyTotal !== null">{{ t('history.progress', { loaded: number(stoppedInstances.length), total: number(historyTotal) }) }}</template>
+                <template v-else>{{ t('history.notLoaded') }}</template>
+              </p>
+              <p v-if="historyLoaded && !stoppedInstances.length && !historyLoading && !historyError" class="history-status">{{ historyAppliedQuery.trim() ? t('history.noMatches') : t('history.empty') }}</p>
+              <div v-if="historyError" class="history-status" role="alert"><ErrorDetails :summary="historyError.summary" :code="historyError.code" :diagnostic="historyError.diagnostic" />
+                <Button variant="outline" :disabled="historyLoading" @click="stoppedHistory.load(false, true)">{{ t('common.retry') }}</Button>
+              </div>
               <button
                 v-for="instance in stoppedInstances"
                 :key="instance.id"
@@ -2150,16 +2206,22 @@ function displayedError(area: ErrorArea, current: string): string {
                 </span>
                 <span class="instance-meta"><b :data-category="statusCategory(instance)" :title="statusHeadline(instance)">{{ statusHeadline(instance) }}</b></span>
               </button>
+              <div class="history-actions">
+                <Button v-if="historyNextOffset !== null" variant="outline" :disabled="historyLoading" @click="stoppedHistory.load(true)">{{ t('history.more') }}</Button>
+                <Button variant="ghost" :disabled="historyLoading" @click="stoppedHistory.load(false, true)"><RefreshCwIcon />{{ t('history.refresh') }}</Button>
+              </div>
             </div>
           </section>
         </div>
         <div v-if="!loading && !overviewError && overview.instances.length === 0" class="instance-empty">
           <template v-if="appliedQuery.trim() || appliedFilter !== 'all'">
             <p>{{ t('ui.filterEmpty') }}</p>
+            <p>{{ t('history.separateSearch') }}</p>
             <Button variant="outline" @click="clearOverviewFilters">{{ t('ui.clearFilter') }}</Button>
           </template>
           <template v-else>
-            <p>{{ t('ui.noInstances') }}</p>
+            <p>{{ overview.history?.total ? t('history.noCurrent') : t('ui.noInstances') }}</p>
+            <p v-if="overview.history?.total">{{ t('history.separateSearch') }}</p>
             <Button variant="success" @click="openStartPanel"><PlusIcon />{{ t('ui.startInstance') }}</Button>
           </template>
         </div>

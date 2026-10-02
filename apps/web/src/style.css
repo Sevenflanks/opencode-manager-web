@@ -98,7 +98,7 @@ h3 { font-size: .95rem; }
 .shortcut-main code, .instance-copy code { overflow: hidden; color: #7f8b91; font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
 .shortcut-actions { display: flex; align-items: center; border-left: 1px solid #30373b; }
 .shortcut-actions button { min-width: 40px; padding: 0; }
-.shortcut-form, .browse-form, .search-row { display: flex; gap: 8px; margin-top: 10px; }
+.shortcut-form, .browse-form, .search-row, .history-search-row { display: flex; gap: 8px; margin-top: 10px; }
 .shortcut-form input, .browse-form input { min-width: 0; flex: 1 1 auto; }
 .shortcut-form > button, .browse-form > button { flex: 0 0 auto; white-space: nowrap; }
 .shortcut-form > button svg, .browse-form > button svg { width: 1rem; height: 1rem; flex: 0 0 1rem; }
@@ -184,6 +184,15 @@ h3 { font-size: .95rem; }
 .lifecycle-diagnostic svg { width: 16px; flex: 0 0 16px; }
 .lifecycle-reason { margin-top: 9px; color: #9aa5aa; font-size: .7rem; line-height: 1.5; overflow-wrap: anywhere; }
 .lifecycle-reason span + span::before { content: " · "; color: #59656b; }
+.history-search-row { margin: 8px 0; }
+.history-status { padding: 8px 10px; overflow-wrap: anywhere; color: #a8b5bc; font-size: .85rem; }
+.history-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; }
+.stopped-history button, .stopped-history input { min-height: 44px; }
+@media (max-width: 390px) {
+  /* 200% 文字下入口文案不能被固定在分享按鈕剩下的狹窄欄位。 */
+  .connectivity-access { grid-template-columns: minmax(0, 1fr); }
+  .connectivity-actions { justify-content: flex-start; flex-wrap: wrap; }
+}
 .technical-info { margin: 16px 0; border: 1px solid #30373b; background: #14181a; }
 .technical-info > summary { min-height: 44px; padding: 12px 10px; color: #879399; font-size: .72rem; font-weight: 700; cursor: pointer; }
 .technical-info[open] > summary { border-bottom: 1px solid #30373b; }

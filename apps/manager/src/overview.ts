@@ -11,7 +11,7 @@ const EMPTY_SUMMARY: RuntimeSummary = {
 // Snapshot singleflight、probe concurrency 與呈現降級由 OMW 一起持有；mutation 只需宣告 invalidation，
 // 不必知道 snapshot key 或清理順序，adapter 也不能改變 snapshot freshness。
 export class InstanceOverview {
-  private readonly inFlight = new Map<boolean, Promise<ManagedInstance[]>>()
+  private readonly inFlight = new Map<string, Promise<ManagedInstance[]>>()
 
   constructor(
     private readonly repository: ManagerRepository,
@@ -21,17 +21,19 @@ export class InstanceOverview {
 
   invalidate(): void { this.inFlight.clear() }
 
-  async load(includeHidden: boolean): Promise<ManagedInstance[]> {
-    const existing = this.inFlight.get(includeHidden)
+  async load(includeHidden: boolean, currentOnly = false): Promise<ManagedInstance[]> {
+    const key = `${includeHidden}:${currentOnly}`
+    const existing = this.inFlight.get(key)
     if (existing) return await existing
-    const records = this.repository.listInstances().filter((record) => includeHidden || !record.trackingHidden)
+    const records = this.repository.listInstances().filter((record) => (includeHidden || !record.trackingHidden)
+      && (!currentOnly || record.state !== "stopped"))
     const request = this.probe(records)
-    this.inFlight.set(includeHidden, request)
+    this.inFlight.set(key, request)
     try {
       return (await request).filter((instance) => this.repository.getInstance(instance.id) !== null)
     } finally {
       // Mutation 後可能已建立新 snapshot；舊 request 不可清掉新 generation。
-      if (this.inFlight.get(includeHidden) === request) this.inFlight.delete(includeHidden)
+      if (this.inFlight.get(key) === request) this.inFlight.delete(key)
     }
   }
 

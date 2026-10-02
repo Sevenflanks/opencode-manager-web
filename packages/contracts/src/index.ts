@@ -97,7 +97,8 @@ export interface ManagedInstance {
   error: string | null
   summary: InstanceSummary
   primarySummary: PrimarySessionSummary
-  sessions: SessionMetadata[]
+  /** compact 投影不提供清單；legacy 回應仍提供，完整清單由 Session API 取得。 */
+  sessions?: SessionMetadata[]
   primarySession: PrimarySession | null
   trackingHidden: boolean
   recovery: {
@@ -108,7 +109,17 @@ export interface ManagedInstance {
   }
 }
 
-export interface OverviewResponse { shortcuts: DirectoryShortcut[]; instances: ManagedInstance[] }
+export type NotificationInstance = Pick<ManagedInstance, "id" | "state" | "trackingHidden"> & {
+  summary: Pick<InstanceSummary, "pendingQuestions" | "pendingPermissions">
+}
+export interface HistorySummary { total: number; revision: string }
+export interface HistoryResponse extends HistorySummary { instances: ManagedInstance[]; nextOffset: number | null }
+export interface OverviewResponse {
+  shortcuts: DirectoryShortcut[]
+  instances: ManagedInstance[]
+  history?: HistorySummary
+  notifications?: NotificationInstance[]
+}
 export interface SessionRootsResponse { roots: SessionMetadata[]; unknownParent: SessionMetadata[] }
 export interface SessionChildrenResponse {
   parentID: string

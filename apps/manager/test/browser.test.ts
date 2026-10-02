@@ -1,18 +1,19 @@
 import assert from "node:assert/strict"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
-import { chromium, type Browser, type Page } from "playwright-core"
+import { chromium, type Browser, type Locator, type Page } from "playwright-core"
 import type { ConnectivityInfo, ManagedInstance, SessionMetadata } from "@omw/contracts"
 import { buildApp } from "../src/app.js"
 import { ManagerError } from "../src/errors.js"
 import { prepareIsolatedEnvironment } from "../src/isolation.js"
 import { ManagerRepository, type InstanceRecord } from "../src/repository.js"
 import { ManagerService } from "../src/service.js"
+import { createProofArtifacts } from "./proof-artifacts.js"
 import {
   OpenCodeRuntime,
   type LaunchResult,
@@ -22,7 +23,330 @@ import {
 } from "../src/runtime.js"
 
 const enabled = process.env.OMW_BROWSER_TEST === "1"
+const regressionArtifacts = enabled
+  ? await createProofArtifacts("overview-regression-") : ""
+if (enabled) console.info(`Browser regression artifacts: ${regressionArtifacts}`)
+
+async function assertUnknownFixtureError(area: Locator, code: string, rawMessage: string,
+  summary = "操作未完成，請稍後重試；若持續發生，請查看詳細資訊。") {
+  await area.getByText(summary, { exact: true }).waitFor()
+  const text = await area.textContent() ?? ""
+  assert.equal(text.includes(rawMessage), false, "unknown server messages must not be exposed")
+  assert.equal(text.includes(code), false, "unknown codes must not become trusted diagnostics")
+  assert.equal(await area.locator(".error-details").count(), 0, "unknown diagnostics do not create a details disclosure")
+}
+
+async function closeRegressionFixture(name: string, browser: Browser | undefined, app: ReturnType<typeof buildApp>,
+  repository: ManagerRepository, sandbox: string) {
+  // 只關閉當次 fixture binding；某項 cleanup 失敗時，仍必須清理其餘本次資源。
+  try { await browser?.close() } finally {
+    try { await app.close() } finally {
+      repository.close()
+      await rm(sandbox, { recursive: true, force: true })
+    }
+  }
+  assert.equal(browser?.isConnected() ?? false, false, "owned browser is closed")
+  assert.equal(app.server.listening, false, "owned loopback listener is closed")
+  await writeFile(path.join(regressionArtifacts, `${name}-lifecycle.json`), JSON.stringify({
+    browserConnected: false, appListening: false, repositoryClosed: true, sandboxRemoved: true,
+    finalDisposition: "Stop", cleanup: "completed",
+  }, null, 2))
+}
+
+// Mock consumer 與 opt-in compact/history 契約一起演進；不可讓全量 fixture 掩蓋未載入歷史的狀態。
+function fixtureHistory(instances: ManagedInstance[], url: URL) {
+  const hidden = url.searchParams.get("includeHidden") === "true"
+  const query = (url.searchParams.get("q") ?? "").trim().toLocaleLowerCase("zh-TW")
+  const all = instances.filter((instance) => instance.state === "stopped" && (hidden || !instance.trackingHidden))
+    .toSorted((left, right) => Date.parse(right.launchedAt) - Date.parse(left.launchedAt) || left.id.localeCompare(right.id))
+  const revision = createHash("sha256").update(JSON.stringify(all)).digest("hex")
+  const matches = all.filter((instance) => [instance.projectName, instance.projectDirectory, instance.id,
+    instance.primarySession?.sessionId ?? "", instance.primarySession?.title ?? ""]
+    .some((value) => value.toLocaleLowerCase("zh-TW").includes(query)))
+  const offset = Number(url.searchParams.get("offset") ?? 0)
+  return { total: matches.length, revision, instances: matches.slice(offset, offset + 20).map(fixtureCompact),
+    nextOffset: offset + 20 < matches.length ? offset + 20 : null }
+}
+
+function fixtureCompact(instance: ManagedInstance) {
+  const { sessions: _sessions, ...compact } = instance
+  return compact
+}
+
+function fixtureOverview(all: ManagedInstance[], visible: ManagedInstance[], url: URL) {
+  const historyUrl = new URL(url)
+  historyUrl.searchParams.delete("q")
+  const history = fixtureHistory(all, historyUrl)
+  return { shortcuts: [], instances: visible.filter((instance) => instance.state !== "stopped").map(fixtureCompact),
+    history: { total: history.total, revision: history.revision },
+    notifications: all.filter((instance) => !instance.trackingHidden && instance.state !== "stopped").map((instance) => ({
+      id: instance.id, state: instance.state, trackingHidden: instance.trackingHidden, summary: instance.summary,
+    })) }
+}
 const realEnabled = enabled && process.env.OMW_REAL_OPENCODE_TEST === "1"
+
+test("stopped detail fallback cannot replace a newer selection while its response is deferred", { skip: !enabled, timeout: 30_000 }, async () => {
+  const executablePath = process.env.OMW_BROWSER_EXECUTABLE
+  assert.ok(executablePath)
+  const sandbox = await mkdtemp(path.join(tmpdir(), "omw-stopped-selection-"))
+  await Promise.all(["AppData/Roaming", "AppData/Local", "Temp"].map((folder) => mkdir(path.join(sandbox, "browser-profile", folder), { recursive: true })))
+  const repository = new ManagerRepository(":memory:")
+  const service = new ManagerService(repository, new BrowserRuntime())
+  const port = await freePort()
+  const origin = `http://127.0.0.1:${port}`
+  const app = buildApp({ service, authority: { hostname: "127.0.0.1", port }, allowedOrigins: new Set([origin]),
+    webRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist") })
+  const live = fakeManagedInstance({ id: "selection-current", projectDirectory: "C:\\fixture\\selection" })
+  const stopped = (id: string, title: string) => fakeManagedInstance({ id, projectDirectory: "C:\\fixture\\selection", state: "stopped", stopAllowed: false,
+    primarySession: { sessionId: `root-${id}`, title, source: "manual", boundAt: "2026-09-18T00:00:00.000Z" } })
+  const a = stopped("selection-a", "停止 A")
+  const b = stopped("selection-b", "停止 B")
+  const freshB = stopped(b.id, "停止 B 最新詳情")
+  let browser: Browser | undefined
+  let releaseA = () => {}
+  const results: Array<{ width: number; selected: string; title: string }> = []
+  try {
+    await app.listen({ host: "127.0.0.1", port })
+    browser = await chromium.launch({ executablePath, headless: true, env: createBrowserEnvironment(sandbox) })
+    for (const width of [1280, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 844 }, reducedMotion: "reduce" })
+      let startedA = () => {}
+      const aStarted = new Promise<void>((resolve) => { startedA = resolve })
+      const aGate = new Promise<void>((resolve) => { releaseA = resolve })
+      let fallbackReads = 0
+      await page.route("**/api/v1/**", async (route) => {
+        const url = new URL(route.request().url())
+        if (url.pathname === "/api/v1/overview") await route.fulfill({ json: fixtureOverview([live, a, b], [live], url) })
+        else if (url.pathname === "/api/v1/instances/history") await route.fulfill({ json: fixtureHistory([a, b], url) })
+        else if (url.pathname === `/api/v1/instances/${a.id}`) {
+          startedA()
+          await aGate
+          await route.fulfill({ json: fixtureCompact(a) })
+        } else if (url.pathname === `/api/v1/instances/${b.id}`) {
+          fallbackReads++
+          await route.fulfill({ json: fixtureCompact(freshB) })
+        } else if (url.pathname.endsWith("/sessions")) await route.fulfill({ json: { roots: [], unknownParent: [] } })
+        else if (url.pathname.endsWith("/primary-todos")) await route.fulfill({ json: { instanceId: b.id, sessionId: `root-${b.id}`, todos: [] } })
+        else await route.continue()
+      })
+      await page.goto(origin)
+      await page.locator(`.instance-row[data-instance-id="${live.id}"]`).waitFor()
+      await page.locator(".history-toggle").click()
+      await page.locator(`.instance-row[data-instance-id="${a.id}"]`).click()
+      await page.locator(".detail-head h2").getByText("停止 A", { exact: true }).waitFor()
+      await page.locator(".topbar").getByRole("button", { name: "重新整理", exact: true }).click()
+      await aStarted
+      if (width === 390) await page.getByRole("button", { name: "返回列表", exact: true }).click()
+      await page.locator(`.instance-row[data-instance-id="${b.id}"]`).click()
+      assert.equal(await page.locator(".detail-head h2").textContent(), "停止 B")
+      releaseA()
+      await page.locator(".detail-head h2").getByText("停止 B 最新詳情", { exact: true }).waitFor({ timeout: 3_000 })
+      assert.equal(fallbackReads, 1, "the current selection is freshly resolved, not replaced by A or a stale cached B")
+      assert.equal(await page.locator(`.instance-row[data-instance-id="${b.id}"]`).getAttribute("aria-current"), "true")
+      assert.equal(await page.locator(`.instance-row[data-instance-id="${live.id}"]`).getAttribute("aria-current"), null)
+      assert.equal(await page.locator(".detail-pane .state-chip[data-category=stopped]").count(), 1)
+      if (width === 390) assert.equal(await page.evaluate(() => window.history.state.omwInstanceId), b.id)
+      results.push({ width, selected: b.id, title: "停止 B 最新詳情" })
+      await page.screenshot({ path: path.join(regressionArtifacts, `stopped-selection-${width}.png`), fullPage: true })
+      await page.close()
+    }
+    await writeFile(path.join(regressionArtifacts, "stopped-selection-result.json"), JSON.stringify({ result: "passed", results }, null, 2))
+  } finally {
+    releaseA()
+    await closeRegressionFixture("stopped-selection", browser, app, repository, sandbox)
+  }
+})
+
+test("current overview search and filter preserve committed history pages and its unsubmitted draft", { skip: !enabled, timeout: 45_000 }, async () => {
+  const executablePath = process.env.OMW_BROWSER_EXECUTABLE
+  assert.ok(executablePath)
+  const sandbox = await mkdtemp(path.join(tmpdir(), "omw-history-draft-"))
+  await Promise.all(["AppData/Roaming", "AppData/Local", "Temp"].map((folder) => mkdir(path.join(sandbox, "browser-profile", folder), { recursive: true })))
+  const repository = new ManagerRepository(":memory:")
+  const record: InstanceRecord = {
+    id: "current-draft-fixture", projectName: "current-fixture", projectDirectory: "C:\\fixture\\draft-query",
+    state: "ready", endpoint: "http://127.0.0.1:49998", port: 49998, pid: 12345,
+    creationTimeUtc: null, creationTimeTicks: null, executable: null, healthVersion: "fixture",
+    launchedAt: "2026-09-18T00:00:00.000Z", stoppedAt: null, error: null, stderrSummary: null,
+  }
+  repository.createInstance(record)
+  for (const [group, count] of [["A", 45], ["B", 3]] as const) {
+    for (let index = 0; index < count; index++) {
+      const id = `draft-history-${group}-${String(index).padStart(2, "0")}`
+      repository.createInstance({ ...record, id, state: "stopped", pid: null,
+        projectName: `history-${group}`, launchedAt: "2026-09-17T00:00:00.000Z" })
+      repository.replacePrimarySession(id, { sessionId: `root-${id}`, title: `history-${group} ${String(index).padStart(2, "0")}`,
+        source: "manual", boundAt: "2026-09-17T00:00:00.000Z" })
+    }
+  }
+  const service = new ManagerService(repository, new BrowserRuntime())
+  const port = await freePort()
+  const origin = `http://127.0.0.1:${port}`
+  const app = buildApp({ service, authority: { hostname: "127.0.0.1", port }, allowedOrigins: new Set([origin]),
+    webRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist") })
+  let failHistoryB = false
+  app.addHook("preHandler", async (request) => {
+    const url = new URL(request.url, origin)
+    if (failHistoryB && url.pathname === "/api/v1/instances/history" && url.searchParams.get("q") === "history-B") {
+      throw new ManagerError("HISTORY_DRAFT_FIXTURE", "isolated submitted B fixture failure", 503)
+    }
+  })
+  const network: Array<{ width: number; path: string; query: string; filter: string; offset: number; status: number }> = []
+  const states: Array<{ width: number; stage: string; draft: string; progress: string; ids: string[] }> = []
+  const errors: string[] = []
+  let browser: Browser | undefined
+  let passed = false
+  try {
+    await app.listen({ host: "127.0.0.1", port })
+    browser = await chromium.launch({ executablePath, headless: true, env: createBrowserEnvironment(sandbox) })
+    for (const width of [390, 1280]) {
+      const page: Page = await browser.newPage({ viewport: { width, height: 844 }, reducedMotion: "reduce" })
+      page.on("pageerror", (cause) => { errors.push(cause.message) })
+      page.on("response", (response) => {
+        const url = new URL(response.url())
+        if (["/api/v1/overview", "/api/v1/instances/history"].includes(url.pathname)) network.push({ width,
+          path: url.pathname, query: url.searchParams.get("q") ?? "", filter: url.searchParams.get("filter") ?? "all",
+          offset: Number(url.searchParams.get("offset") ?? 0), status: response.status() })
+      })
+      const idleHistory = () => page.waitForFunction(() => document.querySelector("#instance-history")?.getAttribute("aria-busy") === "false")
+      const expectA = async (stage: string) => {
+        await idleHistory()
+        const state = { width, stage, draft: await page.locator(".history-search-row input").inputValue(),
+          progress: (await page.locator("#instance-history > .history-status").first().textContent() ?? "").trim(),
+          ids: await page.locator(".stopped-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-instance-id") ?? "")) }
+        states.push(state)
+        assert.equal(state.ids.length, 40, `${stage}: committed A keeps its 40 loaded rows`)
+        assert.ok(state.ids.every((id) => id.startsWith("draft-history-A-")))
+        assert.equal(state.draft, "history-B", `${stage}: the draft remains available for an explicit submit`)
+        assert.equal(state.progress, "已載入 40 / 45 筆")
+        assert.equal(network.filter((entry) => entry.width === width && entry.path === "/api/v1/instances/history" && entry.query === "history-B").length, 0,
+          `${stage}: no request may implicitly submit B`)
+      }
+      const overviewAction = async (action: () => Promise<unknown>) => {
+        const response = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/overview" && response.ok())
+        await action()
+        await response
+        await page.locator('.overview-freshness[data-state="fresh"]').waitFor()
+        await idleHistory()
+      }
+      await page.goto(origin)
+      await page.locator(`.instance-row[data-instance-id="${record.id}"]`).waitFor()
+      await page.locator(".history-toggle").click()
+      await idleHistory()
+      await page.locator(".history-search-row input").fill("history-A")
+      await page.locator(".history-search-row").getByRole("button", { name: "搜尋停止歷史", exact: true }).click()
+      await idleHistory()
+      await page.getByRole("button", { name: "載入更多", exact: true }).click()
+      await idleHistory()
+      await page.locator(".history-search-row input").fill("history-B")
+      await expectA("draft-before-current-search")
+      const initialReads = network.filter((entry) => entry.width === width && entry.path === "/api/v1/instances/history").length
+      await page.locator(".search-row input").fill("current-fixture")
+      await overviewAction(() => page.locator(".search-row button").click())
+      await expectA("after-current-search")
+      await overviewAction(() => page.locator(".filters").getByRole("button", { name: "有執行中", exact: true }).click())
+      await expectA("after-current-filter")
+      assert.equal(network.filter((entry) => entry.width === width && entry.path === "/api/v1/instances/history").length, initialReads,
+        "current search/filter must not force-refresh unchanged history")
+      await page.screenshot({ path: path.join(regressionArtifacts, `history-draft-current-${width}.png`), fullPage: true })
+      const changed = repository.getInstance("draft-history-A-00")!
+      repository.saveInstance({ ...changed, projectName: `history-A refreshed-${width}` })
+      await overviewAction(() => page.locator(".topbar").getByRole("button", { name: "重新整理", exact: true }).click())
+      await expectA("after-overview-revision")
+      await page.getByRole("button", { name: "刷新停止歷史", exact: true }).click()
+      await expectA("after-history-refresh")
+      const beforeReopen = network.filter((entry) => entry.width === width && entry.path === "/api/v1/instances/history").length
+      await page.locator(".history-toggle").click()
+      await page.locator(".history-toggle").click()
+      await expectA("after-reopen")
+      assert.equal(network.filter((entry) => entry.width === width && entry.path === "/api/v1/instances/history").length, beforeReopen)
+      if (width === 390) {
+        const beforeReload = network.length
+        await page.reload()
+        await page.locator('.overview-freshness[data-state="fresh"]').waitFor()
+        await idleHistory()
+        const reloaded = { width, stage: "after-mobile-reload", draft: await page.locator(".history-search-row input").inputValue(),
+          progress: (await page.locator("#instance-history > .history-status").first().textContent() ?? "").trim(),
+          ids: await page.locator(".stopped-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-instance-id") ?? "")) }
+        states.push(reloaded)
+        assert.equal(reloaded.draft, "history-B", "pagehide persists the draft separately from submitted A")
+        assert.equal(reloaded.progress, "已載入 20 / 45 筆", "reload must restore the submitted A scope, not all 48 records")
+        assert.ok(reloaded.ids.every((id) => id.startsWith("draft-history-A-")))
+        assert.deepEqual(network.slice(beforeReload).filter((entry) => entry.path === "/api/v1/instances/history")
+          .map((entry) => ({ query: entry.query, offset: entry.offset })), [{ query: "history-A", offset: 0 }])
+        const saved = await page.evaluate(() => window.history.state)
+        assert.equal(saved.omwHistoryQuery, "history-B")
+        assert.equal(saved.omwHistoryCommittedQuery, "history-A")
+        await page.screenshot({ path: path.join(regressionArtifacts, "history-draft-reloaded-390.png"), fullPage: true })
+        await page.getByRole("button", { name: "載入更多", exact: true }).click()
+        await expectA("after-mobile-reload-load-more")
+      }
+      await page.locator(".history-search-row").getByRole("button", { name: "搜尋停止歷史", exact: true }).click()
+      await idleHistory()
+      assert.equal(await page.locator(".stopped-row").count(), 3)
+      assert.ok((await page.locator(".stopped-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-instance-id") ?? "")))
+        .every((id) => id.startsWith("draft-history-B-")))
+      assert.equal(network.filter((entry) => entry.width === width && entry.path === "/api/v1/instances/history" && entry.query === "history-B").length, 1)
+      states.push({ width, stage: "after-explicit-history-submit", draft: await page.locator(".history-search-row input").inputValue(),
+        progress: (await page.locator("#instance-history > .history-status").first().textContent() ?? "").trim(),
+        ids: await page.locator(".stopped-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-instance-id") ?? "")) })
+      await page.screenshot({ path: path.join(regressionArtifacts, `history-draft-submitted-${width}.png`), fullPage: true })
+      await page.close()
+    }
+    const legacy: Page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" })
+    const legacyRequests: Array<{ query: string; status: number }> = []
+    legacy.on("pageerror", (cause) => { errors.push(cause.message) })
+    legacy.on("response", (response) => {
+      const url = new URL(response.url())
+      if (url.pathname === "/api/v1/instances/history") legacyRequests.push({ query: url.searchParams.get("q") ?? "", status: response.status() })
+    })
+    await legacy.addInitScript(() => {
+      if (!window.history.state?.omwMobileView) window.history.replaceState({ omwMobileView: "list", omwHistoryOpen: ["stopped"],
+        omwHistoryQuery: "history-B" }, "")
+    })
+    await legacy.goto(origin)
+    await legacy.locator('.overview-freshness[data-state="fresh"]').waitFor()
+    await legacy.waitForFunction(() => document.querySelector("#instance-history")?.getAttribute("aria-busy") === "false")
+    assert.equal(await legacy.locator(".history-search-row input").inputValue(), "history-B")
+    assert.equal((await legacy.locator("#instance-history > .history-status").first().textContent())?.trim(), "已載入 20 / 48 筆")
+    assert.deepEqual(legacyRequests, [{ query: "", status: 200 }], "legacy state restores B as a draft, never implicitly submitted")
+    failHistoryB = true
+    await legacy.locator(".history-search-row").getByRole("button", { name: "搜尋停止歷史", exact: true }).click()
+    await legacy.locator("#instance-history").getByRole("button", { name: "重試", exact: true }).waitFor()
+    assert.equal(await legacy.locator(".stopped-row").count(), 20, "failed B preserves last successful content")
+    await legacy.evaluate(() => window.addEventListener("pagehide", () => {
+      window.sessionStorage.setItem("history-draft-pagehide", JSON.stringify(window.history.state))
+    }))
+    await legacy.locator(".history-search-row input").fill("history-C")
+    await legacy.reload()
+    await legacy.locator("#instance-history").getByRole("button", { name: "重試", exact: true }).waitFor()
+    await writeFile(path.join(regressionArtifacts, "history-draft-reload-state.json"), JSON.stringify({ legacyRequests,
+      state: await legacy.evaluate(() => window.history.state), pagehide: await legacy.evaluate(() => window.sessionStorage.getItem("history-draft-pagehide")) }, null, 2))
+    assert.equal(await legacy.locator(".history-search-row input").inputValue(), "history-C")
+    assert.equal(await legacy.evaluate(() => window.history.state.omwHistoryCommittedQuery), "history-B")
+    assert.deepEqual(legacyRequests.slice(-2), [{ query: "history-B", status: 503 }, { query: "history-B", status: 503 }])
+    await legacy.screenshot({ path: path.join(regressionArtifacts, "history-draft-reloaded-error-390.png"), fullPage: true })
+    failHistoryB = false
+    await legacy.locator("#instance-history").getByRole("button", { name: "重試", exact: true }).click()
+    await legacy.waitForFunction(() => document.querySelector("#instance-history")?.getAttribute("aria-busy") === "false")
+    assert.equal(await legacy.locator(".stopped-row").count(), 3)
+    assert.equal(await legacy.locator(".history-search-row input").inputValue(), "history-C", "retry must retain C while requesting committed B")
+    assert.deepEqual(legacyRequests.at(-1), { query: "history-B", status: 200 })
+    assert.equal(legacyRequests.some((entry) => entry.query === "history-C"), false)
+    await legacy.screenshot({ path: path.join(regressionArtifacts, "history-draft-reloaded-retry-390.png"), fullPage: true })
+    await writeFile(path.join(regressionArtifacts, "history-draft-reload-retry.json"), JSON.stringify({ result: "passed", legacyRequests,
+      draft: await legacy.locator(".history-search-row input").inputValue(), committed: "history-B", loaded: 3 }, null, 2))
+    await legacy.close()
+    assert.deepEqual(errors, [])
+    passed = true
+  } finally {
+    try {
+      await writeFile(path.join(regressionArtifacts, "history-draft-result.json"), JSON.stringify({ result: passed ? "passed" : "failed", states, network, errors }, null, 2))
+    } finally {
+      try { await service.shutdown() } finally { await closeRegressionFixture("history-draft", browser, app, repository, sandbox) }
+    }
+  }
+})
 
 test("browser usability keeps browsing, settings, mobile detail and overview semantics consistent", { skip: !enabled, timeout: 70_000 }, async () => {
   const executablePath = process.env.OMW_BROWSER_EXECUTABLE
@@ -71,7 +395,9 @@ test("browser usability keeps browsing, settings, mobile detail and overview sem
       if (url.pathname === "/api/v1/overview") {
         await route.fulfill(overviewFails
           ? { status: 503, json: { error: { code: "UNAVAILABLE", message: "overview unavailable fixture" } } }
-          : { json: { shortcuts: [], instances: [active, stopped] } })
+          : { json: fixtureOverview([active, stopped], [active], url) })
+      } else if (url.pathname === "/api/v1/instances/history") {
+        await route.fulfill({ json: fixtureHistory([active, stopped], url) })
       } else if (url.pathname === "/api/v1/instances/inst-attention/primary-todos") {
         await route.fulfill({ json: { instanceId: active.id, sessionId: "ses-a", todos: [{ content: longTodo, status: "pending" }] } })
       } else if (url.pathname === "/api/v1/directories") {
@@ -132,7 +458,7 @@ test("browser usability keeps browsing, settings, mobile detail and overview sem
     await page.mouse.click(2, 2)
     assert.equal(await settings.isVisible(), true, "busy settings reject Escape and backdrop")
     releaseCredential()
-    await settings.getByRole("alert").getByText("credential failure fixture").waitFor()
+    await assertUnknownFixtureError(settings.getByRole("alert"), "CREDENTIAL_FAILED", "credential failure fixture")
     credentialPending = false
     await page.keyboard.press("Escape")
     await settings.waitFor({ state: "hidden" })
@@ -159,8 +485,8 @@ test("browser usability keeps browsing, settings, mobile detail and overview sem
     await page.waitForFunction(() => document.activeElement?.closest(".topbar") !== null)
     assert.equal(await settingsTrigger.evaluate((button) => button === document.activeElement), true)
 
-    await page.getByRole("button", { name: "啟動執行個體", exact: true }).first().click()
-    const browseInput = page.getByRole("textbox", { name: "瀏覽目錄" })
+    await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
+    const browseInput = page.getByRole("textbox", { name: "瀏覽並啟動" })
     await browseInput.fill("C:\\ready")
     await page.getByRole("button", { name: "瀏覽", exact: true }).click()
     await page.getByText("C:\\ready", { exact: true }).last().waitFor()
@@ -178,7 +504,7 @@ test("browser usability keeps browsing, settings, mobile detail and overview sem
     assert.equal(await page.locator(".current-directory code").textContent(), "C:\\new", "old response cannot replace newest listing")
     browseFails = true
     await page.getByRole("button", { name: "瀏覽", exact: true }).click()
-    await page.locator(".browse-error").getByText(/browse failure fixture/).waitFor()
+    await assertUnknownFixtureError(page.locator(".browse-error"), "BROWSE_FAILED", "browse failure fixture", "無法讀取目錄：C:\\new")
     assert.equal(await page.getByRole("button", { name: "啟動全新 Instance" }).count(), 0)
     browseFails = false
     await page.getByRole("button", { name: "重試瀏覽" }).click()
@@ -191,7 +517,7 @@ test("browser usability keeps browsing, settings, mobile detail and overview sem
     await page.locator(".primary-todos-timeline li").waitFor()
     assert.equal(await activeRow.getAttribute("aria-current"), "true")
     assert.match(await activeRow.getAttribute("aria-label") ?? "", /目前選取/)
-    await page.getByText("Technical info", { exact: true }).focus()
+    await page.getByText("技術資訊", { exact: true }).focus()
     await page.keyboard.press("Enter")
     assert.equal(await page.locator(".identity-strip code").last().textContent(), longVersion)
     assert.equal(await page.locator(".identity-strip code").last().evaluate((code) => getComputedStyle(code).whiteSpace), "normal")
@@ -228,7 +554,8 @@ test("browser usability keeps browsing, settings, mobile detail and overview sem
         overviewFails = true
         await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
         await page.locator('.overview-freshness[data-state="failed"] [role="alert"]').waitFor()
-        assert.match(await page.locator(".overview-freshness").textContent() ?? "", /更新失敗.*overview unavailable fixture/s)
+        assert.match(await page.locator(".overview-freshness").textContent() ?? "", /資料已過期，最後更新失敗/)
+        await assertUnknownFixtureError(page.locator(".overview-freshness"), "UNAVAILABLE", "overview unavailable fixture")
         assert.equal(await page.locator(".overview-freshness").evaluate((element) => element.getBoundingClientRect().height), normalHeight, "refresh failure does not shift the list")
         const errorBounds = await page.locator(".overview-freshness").evaluate((element) => element.getBoundingClientRect())
         assert.ok(errorBounds.width > 0 && errorBounds.right <= width, `${width}px ${fontSize}: error stays within its status region`)
@@ -240,10 +567,7 @@ test("browser usability keeps browsing, settings, mobile detail and overview sem
   } finally {
     releaseOld()
     releaseCredential()
-    await browser?.close()
-    await app.close()
-    repository.close()
-    await rm(sandbox, { recursive: true, force: true })
+    await closeRegressionFixture("usability", browser, app, repository, sandbox)
   }
 })
 
@@ -533,12 +857,13 @@ test("detail header keeps long project title and state badge on one line", { ski
       for (const { label, id } of states) {
         await returnToInstanceList(page)
         const row = page.locator(`.instance-row[data-instance-id="${id}"]`)
-        assert.equal(await row.count(), 1, `${width}px fixture row for ${label} is missing`)
         if (!await row.isVisible()) {
           const historyToggle = page.locator(".history-toggle").filter({ hasText: "已停止紀錄" })
           assert.equal(await historyToggle.count(), 1, `${width}px stopped history disclosure is missing`)
           await historyToggle.click()
         }
+        await row.waitFor()
+        assert.equal(await row.count(), 1, `${width}px fixture row for ${label} is missing`)
         await row.click()
         await page.getByText(label, { exact: true }).last().waitFor()
         const geometry = await page.evaluate(() => {
@@ -665,7 +990,7 @@ test("primary Session attention reasons stay consistent in the list, detail, and
         const visible = url.searchParams.get("filter") === "attention"
           ? instances.filter((instance) => instance.id === "inst-zero-busy" || instance.id === "inst-unbound")
           : instances
-        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ shortcuts: [], instances: visible }) })
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixtureOverview(instances, visible, url)) })
         return
       }
       await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: { code: "FIXTURE_ROUTE_MISSING", message: url.pathname } }) })
@@ -677,14 +1002,14 @@ test("primary Session attention reasons stay consistent in the list, detail, and
     const retry = page.locator('.instance-row[data-instance-id="inst-retry"]')
     const unknown = page.locator('.instance-row[data-instance-id="inst-unknown-scope"]')
     assert.match(await zeroBusy.textContent() ?? "", /需處理 · 無執行中 Session/)
-    assert.match(await unbound.textContent() ?? "", /需處理 · 未綁定主 Session/)
+    assert.match(await unbound.textContent() ?? "", /需處理 · 尚未綁定入口 Session/)
     assert.match(await retry.textContent() ?? "", /重試中/)
-    assert.match(await unknown.textContent() ?? "", /無法確認 · 主 Session 範圍未知/)
+    assert.match(await unknown.textContent() ?? "", /無法確認 · 入口 Session 範圍未知/)
     for (const [id, category, text] of [
       ["inst-zero-busy", "attention", "無執行中 Session"],
-      ["inst-unbound", "attention", "未綁定主 Session"],
+      ["inst-unbound", "attention", "尚未綁定入口 Session"],
       ["inst-retry", "operable", "重試中"],
-      ["inst-unknown-scope", "unknown", "主 Session 範圍未知"],
+      ["inst-unknown-scope", "unknown", "入口 Session 範圍未知"],
       ["inst-activity-unknown", "unknown", "活動未知"],
       ["inst-same-session", "operable", "執行中"],
       ["inst-starting", "unknown", "啟動中"],
@@ -698,7 +1023,7 @@ test("primary Session attention reasons stay consistent in the list, detail, and
     assert.equal(await page.locator('.instance-row[data-instance-id="inst-same-session"] .instance-path').getAttribute("title"), "D:\\fixture\\primary-attention")
     assert.equal(await page.locator('.instance-row[data-instance-id="inst-zero-busy"] .instance-path').getAttribute("title"), directory,
       "the same Session remains distinguishable across Instances in different paths")
-    assert.equal(await page.locator(".history-toggle").count(), 0, "starting and failed do not count as stopped")
+    assert.match(await page.locator(".history-toggle").textContent() ?? "", /0/, "starting and failed do not count as stopped")
 
     for (const width of [900, 1024]) {
       await page.setViewportSize({ width, height: 844 })
@@ -742,7 +1067,7 @@ test("primary Session attention reasons stay consistent in the list, detail, and
     await zeroBusy.click()
     await page.locator(".detail-pane").waitFor()
     assert.match(await page.locator(".primary-session-attention").textContent() ?? "", /需處理 · 無執行中 Session/)
-    assert.match(await page.locator(".summary-grid").textContent() ?? "", /主 Session 範圍.*0.*執行中 Session/s)
+    assert.match(await page.locator(".summary-grid").textContent() ?? "", /入口 Session 範圍.*0.*執行中 Session/s)
     assert.match(await page.locator(".status-note").textContent() ?? "", /請查看對話並決定下一步/)
 
     await page.getByRole("button", { name: "返回列表" }).click()
@@ -752,10 +1077,7 @@ test("primary Session attention reasons stay consistent in the list, detail, and
     ])
     assert.deepEqual((await page.locator(".instance-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-instance-id")))).sort(), ["inst-unbound", "inst-zero-busy"])
   } finally {
-    await browser?.close()
-    await app.close()
-    repository.close()
-    await rm(sandbox, { recursive: true, force: true })
+    await closeRegressionFixture("primary-attention", browser, app, repository, sandbox)
   }
 })
 
@@ -844,28 +1166,36 @@ test("mobile list-detail navigation preserves context and separates stopped hist
           markDelayedFallbackStarted?.()
           await delayedFallbackRelease
         }
-        if (queryText === "historic title") {
-          markDelayedSearchStarted?.()
-          await delayedSearchRelease
-        }
         let visible = instances.filter((instance) => !instance.trackingHidden)
         if (queryText) {
           visible = queryText === "no-match"
             ? []
             : visible.filter((instance) => [instance.projectName, instance.projectDirectory, instance.id,
-                ...instance.sessions.flatMap((session) => [session.id, session.title])]
+                ...(instance.sessions ?? []).flatMap((session) => [session.id, session.title])]
               .some((value) => value.toLocaleLowerCase("zh-TW").includes(queryText)))
         }
         if (requestedFilter === "attention") {
           visible = visible.filter((instance) => (instance.summary.pendingQuestions ?? 0) > 0 || (instance.summary.pendingPermissions ?? 0) > 0)
         }
         if (requestedFilter === "unreachable") visible = visible.filter((instance) => instance.state === "unreachable")
-        await respond(200, { shortcuts: [], instances: visible })
+        await respond(200, fixtureOverview(instances, visible, url))
+        return
+      }
+      if (request.method() === "GET" && url.pathname === "/api/v1/instances/history") {
+        if ((url.searchParams.get("q") ?? "").toLowerCase() === "historic title") {
+          markDelayedSearchStarted?.()
+          await delayedSearchRelease
+        }
+        await respond(200, fixtureHistory(instances, url))
         return
       }
       const match = /^\/api\/v1\/instances\/([^/]+)(?:\/(sessions|stop))?$/.exec(url.pathname)
       const instance = instances.find((item) => item.id === decodeURIComponent(match?.[1] ?? ""))
       const action = match?.[2]
+      if (request.method() === "GET" && !action && instance) {
+        await respond(200, fixtureCompact(instance))
+        return
+      }
       if (request.method() === "GET" && action === "sessions" && instance) {
         await respond(200, { roots: instance.sessions, unknownParent: [] })
         return
@@ -952,21 +1282,22 @@ test("mobile list-detail navigation preserves context and separates stopped hist
     await historyToggle.click()
     assert.equal(await historyToggle.getAttribute("aria-expanded"), "false")
 
-    await page.getByRole("textbox", { name: "搜尋" }).fill("Historic title")
-    assert.equal(await historyToggle.getAttribute("aria-expanded"), "false", "unsubmitted input does not expand history for the old overview")
-    await page.getByRole("button", { name: "執行搜尋" }).click()
+    await historyToggle.click()
+    await page.getByRole("textbox", { name: "停止歷史關鍵字" }).fill("Historic title")
+    assert.equal(await historyToggle.getAttribute("aria-expanded"), "true", "history search stays inside its explicit disclosure")
+    await page.getByRole("button", { name: "搜尋停止歷史" }).click()
     await delayedSearchStarted
-    assert.equal(await historyToggle.getAttribute("aria-expanded"), "false", "pending search does not apply its query before the response")
-    assert.equal(await stoppedRow.isVisible(), false)
+    assert.equal(await historyToggle.getAttribute("aria-expanded"), "true", "history search uses the explicit history entry")
     releaseDelayedSearch?.()
     await stoppedRow.waitFor()
     assert.equal(await historyToggle.getAttribute("aria-expanded"), "true", "search reveals matching stopped history")
     assert.match(await stoppedRow.locator(".instance-path").textContent() ?? "", /mobile-navigation-project/, "stopped-only results keep their path")
-    await page.getByRole("textbox", { name: "搜尋" }).fill("")
+    await page.getByRole("textbox", { name: "停止歷史關鍵字" }).fill("")
     assert.equal(await historyToggle.getAttribute("aria-expanded"), "true", "clearing input without submitting keeps the applied search visible")
-    await page.getByRole("button", { name: "執行搜尋" }).click()
+    await page.getByRole("button", { name: "搜尋停止歷史" }).click()
     await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 14)
-    assert.equal(await historyToggle.getAttribute("aria-expanded"), "false", "clearing search restores the prior collapsed preference")
+    await historyToggle.click()
+    assert.equal(await historyToggle.getAttribute("aria-expanded"), "false", "history remains an explicit disclosure")
     await historyToggle.click()
     assert.equal(await historyToggle.getAttribute("aria-expanded"), "true", "history can be expanded before selecting a stopped Instance")
     await stoppedRow.click()
@@ -979,7 +1310,7 @@ test("mobile list-detail navigation preserves context and separates stopped hist
     await historyToggle.click()
     assert.equal(await historyToggle.getAttribute("aria-expanded"), "true", "history can be expanded again after returning from a stopped Instance")
     await page.getByRole("button", { name: "需處理", exact: true }).click()
-    await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 12)
+    await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 13)
     const selectedRow = page.locator('.instance-row[data-instance-id="inst-attention-02"]')
     await selectedRow.scrollIntoViewIfNeeded()
     await page.evaluate(() => window.scrollBy(0, 120))
@@ -991,8 +1322,8 @@ test("mobile list-detail navigation preserves context and separates stopped hist
     assert.equal(await page.locator(".instance-pane").isVisible(), false, "mobile detail hides the instance list")
     assert.equal(await page.locator(".connectivity").isVisible(), false, "mobile detail hides the connectivity section")
     assert.equal(await page.getByRole("button", { name: "返回列表" }).evaluate((button) => button.getBoundingClientRect().height >= 44), true)
-    assert.equal(await page.getByRole("button", { name: "進入主 Session" }).evaluate((button) => button.getBoundingClientRect().bottom <= window.innerHeight), true, "primary action is available above the 390px mobile fold")
-    const technicalInfo = page.getByText("Technical info", { exact: true })
+    assert.equal(await page.getByRole("button", { name: "進入入口 Session" }).evaluate((button) => button.getBoundingClientRect().bottom <= window.innerHeight), true, "primary action is available above the 390px mobile fold")
+    const technicalInfo = page.getByText("技術資訊", { exact: true })
     assert.equal(await technicalInfo.evaluate((summary) => !(summary.parentElement as HTMLDetailsElement).open), true, "technical identity is collapsed by default")
     const primaryAttention = page.locator(".primary-session-attention")
     assert.match(await primaryAttention.textContent() ?? "", /1 項待回答/, "pending requests are explicit beside the primary Session")
@@ -1046,8 +1377,7 @@ test("mobile list-detail navigation preserves context and separates stopped hist
     assert.deepEqual(compactSummary, { sameRow: false, readable: true, noOverflow: true }, "360px summary uses readable stacked cards without overflow")
     await page.setViewportSize({ width: 390, height: 844 })
 
-    const screenshotDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../.scratch")
-    await mkdir(screenshotDirectory, { recursive: true })
+    const screenshotDirectory = regressionArtifacts
     await page.screenshot({ path: path.join(screenshotDirectory, "detail-390.png"), fullPage: true, animations: "disabled" })
     await page.getByRole("button", { name: "返回列表" }).click()
     assert.equal(await page.getByRole("textbox", { name: "搜尋" }).inputValue(), "")
@@ -1063,7 +1393,7 @@ test("mobile list-detail navigation preserves context and separates stopped hist
     failOverview = true
     await page.reload({ waitUntil: "networkidle" })
     assert.equal(await page.evaluate(() => history.state.omwMobileView), "detail", "an initial overview failure preserves the requested detail history entry")
-    assert.match(await page.locator('.overview-freshness[data-state="unavailable"]').textContent() ?? "", /尚未取得執行個體資料/, "first-fetch failure is unavailable, not stale")
+    assert.match(await page.locator('.overview-freshness[data-state="unavailable"]').textContent() ?? "", /尚未取得 Instance 資料/, "first-fetch failure is unavailable, not stale")
     failOverview = false
     await page.getByRole("button", { name: "重試更新" }).click()
     await page.locator(".detail-pane").waitFor()
@@ -1073,15 +1403,15 @@ test("mobile list-detail navigation preserves context and separates stopped hist
     await page.evaluate(() => window.history.replaceState({ ...window.history.state, omwMobileView: "detail", omwInstanceId: "inst-removed" }, ""))
     await page.reload({ waitUntil: "networkidle" })
     await page.locator(".instance-pane").waitFor()
-    await page.getByText("原執行個體已不存在，已返回列表。", { exact: true }).waitFor()
+    await page.getByText("原 Instance 已不存在，已返回列表。", { exact: true }).waitFor()
     assert.equal(await page.evaluate(() => history.state.omwMobileView), "list", "a confirmed missing record replaces the invalid detail history entry")
 
     await selectedRow.click()
-    await page.getByRole("button", { name: "執行個體操作" }).click()
-    await page.getByRole("button", { name: "停止執行個體" }).click()
-    const staleStopDialog = page.getByRole("alertdialog", { name: "停止整個執行個體？" })
+    await page.getByRole("button", { name: "Instance 操作" }).click()
+    await page.getByRole("button", { name: "停止 Instance" }).click()
+    const staleStopDialog = page.getByRole("alertdialog", { name: "停止整個 Instance？" })
     await page.setViewportSize({ width: 390, height: 360 })
-    assert.equal(await staleStopDialog.getByRole("button", { name: "停止執行個體" }).evaluate((button) => button.getBoundingClientRect().bottom <= window.innerHeight), true, "short mobile viewport keeps the destructive dialog action visible")
+    assert.equal(await staleStopDialog.getByRole("button", { name: "停止 Instance" }).evaluate((button) => button.getBoundingClientRect().bottom <= window.innerHeight), true, "short mobile viewport keeps the destructive dialog action visible")
     await page.setViewportSize({ width: 390, height: 844 })
     failOverview = true
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
@@ -1090,14 +1420,14 @@ test("mobile list-detail navigation preserves context and separates stopped hist
     assert.equal(await failedOverview.textContent(), "資料已過期，最後更新失敗")
     await staleStopDialog.waitFor({ state: "hidden" })
     assert.equal(stopCalls, 0, "a confirmation opened before staleness cannot mutate after the foreground check starts")
-    assert.equal(await page.getByRole("button", { name: "停止執行個體" }).isDisabled(), true, "stale overview disables capability-dependent mutations")
+    assert.equal(await page.getByRole("button", { name: "停止 Instance" }).isDisabled(), true, "stale overview disables capability-dependent mutations")
     failOverview = false
     await page.getByRole("button", { name: "重試更新" }).click()
     await page.locator('.overview-freshness[data-state="fresh"]').waitFor()
-    assert.equal(await page.getByRole("button", { name: "停止執行個體" }).isEnabled(), true, "successful refresh silently clears the stale mutation gate")
-    await page.getByRole("button", { name: "停止執行個體" }).click()
-    await page.getByRole("alertdialog", { name: "停止整個執行個體？" }).getByRole("button", { name: "停止執行個體" }).click()
-    await page.getByText("背景執行個體已停止。", { exact: true }).waitFor()
+    assert.equal(await page.getByRole("button", { name: "停止 Instance" }).isEnabled(), true, "successful refresh silently clears the stale mutation gate")
+    await page.getByRole("button", { name: "停止 Instance" }).click()
+    await page.getByRole("alertdialog", { name: "停止整個 Instance？" }).getByRole("button", { name: "停止 Instance" }).click()
+    await page.getByText("背景 Instance 已停止。", { exact: true }).waitFor()
     assert.equal(stopCalls, 1)
     assert.equal(await page.locator(".detail-pane").isVisible(), true, "a stopped selection remains in detail for resume or removal")
     assert.match(await page.locator(".detail-head .state-chip").textContent() ?? "", /已停止/)
@@ -1109,8 +1439,9 @@ test("mobile list-detail navigation preserves context and separates stopped hist
 
     await page.getByRole("textbox", { name: "搜尋" }).fill("no-match")
     await page.getByRole("button", { name: "執行搜尋" }).click()
-    await page.getByText("沒有符合目前搜尋或篩選條件的執行個體。", { exact: true }).waitFor()
-    assert.equal(await page.getByRole("button", { name: "啟動執行個體", exact: true }).count() <= 2, true, "filtered empty never multiplies start CTAs")
+    await page.getByText("沒有符合目前搜尋或篩選條件的 Instance。", { exact: true }).waitFor()
+    await page.getByText("此處只搜尋目前 Instance；請展開停止歷史搜尋完整歷史。", { exact: true }).waitFor()
+    assert.equal(await page.getByRole("button", { name: "啟動 Instance", exact: true }).count() <= 2, true, "filtered empty never multiplies start CTAs")
     await page.getByRole("button", { name: "清除篩選" }).click()
     await page.locator(".instance-row").first().waitFor()
 
@@ -1121,11 +1452,9 @@ test("mobile list-detail navigation preserves context and separates stopped hist
     assert.equal(await page.locator(".detail-pane").isVisible(), true, "desktop keeps the two-pane overview")
     await page.screenshot({ path: path.join(screenshotDirectory, "desktop-1440.png"), fullPage: true, animations: "disabled" })
   } finally {
-    await browser?.close()
     releaseDelayedFallback?.()
-    await app.close().catch(() => undefined)
-    repository.close()
-    await rm(sandbox, { recursive: true, force: true })
+    releaseDelayedSearch?.()
+    await closeRegressionFixture("mobile-navigation", browser, app, repository, sandbox)
   }
 })
 
@@ -1912,14 +2241,19 @@ test("Session-first Instance list and recovery actions honor the browser contrac
             instance.projectName,
             instance.projectDirectory,
             instance.id,
-            ...instance.sessions.flatMap((session) => [session.title, session.id]),
+            ...(instance.sessions ?? []).flatMap((session) => [session.title, session.id]),
           ].some((value) => value.toLocaleLowerCase("zh-TW").includes(queryText)))
         }
         if (requestedFilter === "active") visible = visible.filter((instance) => instance.state === "starting" || (instance.summary.busySessions ?? 0) > 0)
         if (requestedFilter === "attention") visible = visible.filter((instance) => (instance.summary.pendingQuestions ?? 0) > 0 || (instance.summary.pendingPermissions ?? 0) > 0)
         if (requestedFilter === "unreachable") visible = visible.filter((instance) => instance.state === "unreachable" || instance.state === "failed" || instance.summary.activity === "unknown")
         if (overviewCalls % 2 === 0) visible = [...visible].reverse()
-        await respond(200, { shortcuts: [], instances: visible })
+        await respond(200, fixtureOverview(instances, visible, url))
+        return
+      }
+
+      if (request.method() === "GET" && url.pathname === "/api/v1/instances/history") {
+        await respond(200, fixtureHistory(instances, url))
         return
       }
 
@@ -1949,6 +2283,10 @@ test("Session-first Instance list and recovery actions honor the browser contrac
         await respond(404, { error: { code: "INSTANCE_NOT_FOUND", message: "fixture Instance not found" } })
         return
       }
+      if (request.method() === "GET" && !action) {
+        await respond(200, fixtureCompact(instance))
+        return
+      }
       if (request.method() === "GET" && action === "sessions") {
         await respond(200, { roots: instance.sessions, unknownParent: [] })
         return
@@ -1975,7 +2313,7 @@ test("Session-first Instance list and recovery actions honor the browser contrac
           pid: 33_003,
           launchedAt: "2026-09-18T05:00:00.000Z",
           primarySession: instanceId === "inst-b2-44444444" ? null : instance.primarySession,
-          sessions: instanceId === "inst-b2-44444444" ? [] : instance.sessions,
+          sessions: instanceId === "inst-b2-44444444" ? [] : instance.sessions ?? [],
         })
         instances.push(resumed)
         if (instanceId === "inst-b2-44444444") {
@@ -2007,7 +2345,7 @@ test("Session-first Instance list and recovery actions honor the browser contrac
 
     await page.goto(origin, { waitUntil: "networkidle" })
     await page.locator('.instance-row[data-instance-id="inst-a1-11111111"]').waitFor()
-    const reducedStartTrigger = page.locator(".topbar").getByRole("button", { name: "啟動執行個體" })
+    const reducedStartTrigger = page.locator(".topbar").getByRole("button", { name: "啟動 Instance" })
     await reducedStartTrigger.click()
     const reducedOverlay = page.locator(".start-panel-overlay")
     assert.equal(await reducedOverlay.getAttribute("data-motion"), "reduced", "reduced motion uses a fade-only start panel transition")
@@ -2023,7 +2361,7 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     assert.equal(reducedMotion.panelTransform, "none", "reduced motion removes panel movement")
     assert.equal(reducedMotion.panelDuration <= 0.001, true, "reduced motion does not animate the panel transform")
     await page.getByRole("button", { name: "關閉啟動面板" }).click()
-    await page.getByRole("dialog", { name: "啟動執行個體" }).waitFor({ state: "hidden" })
+    await page.getByRole("dialog", { name: "啟動 Instance" }).waitFor({ state: "hidden" })
 
     assert.equal(await page.locator(".project-group-head").count(), 0, "the list no longer groups by Project")
        assert.deepEqual(await page.locator(".instance-list > .instance-row").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-instance-id"))),
@@ -2056,23 +2394,27 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     assert.equal(await page.evaluate(() => Reflect.get(window, "__omwStableRow") === document.querySelector(".instance-row")), true, "polling must reuse keyed rows")
     assert.equal(await page.locator(".instance-row").first().evaluate((row) => getComputedStyle(row).animationName), "none", "polling rows must not re-animate")
 
+    await page.locator(".history-toggle").click()
     await page.getByRole("textbox", { name: "搜尋" }).fill("search-only-session-metadata")
     await page.getByRole("button", { name: "執行搜尋" }).click()
-    await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 1)
+    await page.waitForFunction(() => document.querySelectorAll(".instance-list > .instance-row").length === 1)
+    assert.equal(await page.locator(".history-list .instance-row").count(), 2, "current search preserves independently loaded history")
+    assert.equal(await page.locator(".history-list").isVisible(), false, "current search does not expand history")
     assert.equal(await page.getByRole("button", { name: /shared-project.*修正跨裝置同步與背景執行狀態.*可連線.*#11001/ }).count(), 1, "search must include Session metadata")
     await page.getByRole("textbox", { name: "搜尋" }).fill("")
-      await page.getByRole("button", { name: "執行搜尋" }).click()
-      await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 6)
+       await page.getByRole("button", { name: "執行搜尋" }).click()
+       await page.locator(".history-toggle").click()
+       await page.waitForFunction(() => document.querySelectorAll(".instance-row").length === 6)
 
       await page.getByRole("button", { name: /inst-che/ }).click()
       assert.equal(await page.getByRole("heading", { level: 2, name: "recheck-project" }).count(), 1, "unbound detail falls back to the folder name")
-      assert.equal(await page.locator(".detail-unbound").textContent(), "尚未綁定主 Session")
+       assert.equal(await page.locator(".detail-unbound").textContent(), "尚未綁定入口 Session")
       assert.equal(await page.locator(".detail-folder").count(), 0, "unbound detail does not repeat the folder name")
-      await page.getByRole("button", { name: "執行個體操作" }).click()
+       await page.getByRole("button", { name: "Instance 操作" }).click()
       assert.equal(await page.getByRole("button", { name: "重新檢查" }).isEnabled(), true, "unreachable Instance exposes backend-approved recheck")
       assert.equal(await page.getByRole("button", { name: "接續對話" }).isDisabled(), true, "unbound Instance cannot resume")
       assert.equal(await page.getByRole("button", { name: "停止追蹤" }).isEnabled(), true, "unreachable Instance exposes backend-approved tracking action")
-      assert.match(await page.locator(".lifecycle-reason").textContent() ?? "", /接續：尚未綁定主要 Session，無對話可接續/)
+       assert.match(await page.locator(".lifecycle-reason").textContent() ?? "", /接續對話：尚未綁定入口 Session，無對話可接續/)
 
       await returnToInstanceList(page)
       await page.getByRole("textbox", { name: "搜尋" }).fill("legacy-recovery")
@@ -2080,7 +2422,7 @@ test("Session-first Instance list and recovery actions honor the browser contrac
       await page.getByRole("button", { name: /inst-che/ }).click()
       const legacyDiagnostic = page.locator(".lifecycle-diagnostic[role=alert]")
       await legacyDiagnostic.waitFor()
-      assert.match(await legacyDiagnostic.textContent() ?? "", /操作資訊尚未取得。可能是前後端版本不一致/, "legacy recovery diagnostic is visible")
+       await legacyDiagnostic.getByText("操作未完成，請稍後重試；若持續發生，請查看詳細資訊。", { exact: true }).waitFor()
       for (const name of ["重新檢查", "接續對話", "停止追蹤", "移除紀錄"]) {
         assert.equal(await page.getByRole("button", { name }).isDisabled(), true, `legacy recovery disables ${name}`)
       }
@@ -2096,7 +2438,7 @@ test("Session-first Instance list and recovery actions honor the browser contrac
 
       await returnToInstanceList(page)
       await page.getByRole("button", { name: /inst-che/ }).click()
-      const lifecycleTrigger = page.getByRole("button", { name: "執行個體操作" })
+       const lifecycleTrigger = page.getByRole("button", { name: "Instance 操作" })
     assert.equal(await lifecycleTrigger.getAttribute("aria-expanded"), "true", "expanded lifecycle actions persist across Instance switches")
     await page.locator(".topbar").getByRole("button", { name: "重新整理" }).click()
     assert.equal(await lifecycleTrigger.getAttribute("aria-expanded"), "true", "expanded lifecycle actions persist across refresh")
@@ -2110,8 +2452,8 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     await lifecycleTrigger.focus()
     await page.keyboard.press("Enter")
     assert.equal(await lifecycleTrigger.getAttribute("aria-expanded"), "true")
-    assert.equal(await page.getByRole("button", { name: "停止執行個體" }).count(), 1, "lifecycle actions belong only in the detail panel")
-    assert.deepEqual(await page.locator(".primary-actions button").allTextContents(), ["進入主 Session", "New Session"])
+    assert.equal(await page.getByRole("button", { name: "停止 Instance" }).count(), 1, "lifecycle actions belong only in the detail panel")
+    assert.deepEqual(await page.locator(".primary-actions button").allTextContents(), ["進入入口 Session", "New Session"])
     await page.keyboard.press("Tab")
     assert.equal(await page.getByRole("button", { name: "重新檢查" }).evaluate((button) => button === document.activeElement), true, "keyboard focus enters the first enabled lifecycle action")
     const recheckButton = page.getByRole("button", { name: "重新檢查" })
@@ -2128,9 +2470,9 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     assert.equal(reducedTransition <= 0.001, true, "reduced motion removes movement transitions")
 
     await returnToInstanceList(page)
-    await page.getByRole("textbox", { name: "搜尋" }).fill("fresh-start-project")
-    await page.getByRole("button", { name: "執行搜尋" }).click()
-    await page.getByRole("button", { name: /尚未綁定主 Session.*inst-new/ }).click()
+     await page.getByRole("textbox", { name: "停止歷史關鍵字" }).fill("fresh-start-project")
+     await page.getByRole("button", { name: "搜尋停止歷史" }).click()
+     await page.getByRole("button", { name: /尚未綁定入口 Session.*inst-new/ }).click()
     const freshStartButton = page.getByRole("button", { name: "啟動", exact: true })
     assert.equal(await freshStartButton.isEnabled(), true, "stopped unbound Instance offers a fresh start")
     const successContrast = await freshStartButton.evaluate((button) => {
@@ -2151,14 +2493,14 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     const sessionsBeforeFreshStart = runtime.createSessionCalls
     await freshStartButton.focus()
     await page.keyboard.press("Enter")
-    const keyboardConfirmation = page.getByRole("alertdialog", { name: "啟動新的執行個體？" })
+     const keyboardConfirmation = page.getByRole("alertdialog", { name: "啟動新的 Instance？" })
     assert.equal(await keyboardConfirmation.getAttribute("data-motion"), "none", "keyboard-opened confirmation is immediate")
     assert.equal(await keyboardConfirmation.evaluate((dialog) => getComputedStyle(dialog).animationName), "none")
     await page.keyboard.press("Escape")
     await keyboardConfirmation.waitFor({ state: "hidden" })
     assert.equal(startCalls, 0, "cancelled fresh start makes no API call")
     await freshStartButton.click()
-    const reducedConfirmation = page.getByRole("alertdialog", { name: "啟動新的執行個體？" })
+     const reducedConfirmation = page.getByRole("alertdialog", { name: "啟動新的 Instance？" })
     assert.equal(await reducedConfirmation.getAttribute("data-motion"), "reduced")
     assert.equal(await reducedConfirmation.evaluate((dialog) => getComputedStyle(dialog).animationName), "confirmation-fade-in", "reduced motion removes dialog displacement")
     await reducedConfirmation.getByRole("button", { name: "啟動", exact: true }).click()
@@ -2178,7 +2520,7 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     const resumeButton = page.getByRole("button", { name: "接續對話" })
     await page.waitForFunction(() => Array.from(document.querySelectorAll<HTMLButtonElement>("button")).some((button) => button.textContent?.includes("接續對話") && !button.disabled))
     await resumeButton.click()
-    const resumeConfirmation = page.getByRole("alertdialog", { name: "接續主要對話？" })
+     const resumeConfirmation = page.getByRole("alertdialog", { name: "接續入口 Session？" })
     assert.match(await resumeConfirmation.textContent() ?? "", /新的背景程序與 PID.*不會停止舊程序.*不會傳送模型訊息/)
     await resumeConfirmation.getByRole("button", { name: "取消" }).click()
     await resumeConfirmation.waitFor({ state: "hidden" })
@@ -2186,8 +2528,8 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     assert.equal(resumeCalls, 0, "cancelled resume makes no API call")
     assert.equal(popupCount, 0, "cancelled resume opens no popup")
     await resumeButton.click()
-    await page.getByRole("alertdialog", { name: "接續主要對話？" }).getByRole("button", { name: "接續對話" }).click()
-    await page.getByText(/已啟動新的背景執行個體（inst-res）；請確認後再進入主 Session/).waitFor()
+     await page.getByRole("alertdialog", { name: "接續入口 Session？" }).getByRole("button", { name: "接續對話" }).click()
+     await page.getByText("已啟動新的背景 Instance（inst-res）；請確認後再進入入口 Session。", { exact: true }).waitFor()
     await page.locator(".technical-info", { hasText: "inst-resumed-77777777" }).waitFor()
     await page.locator(".primary-session-card").getByText("Local TUI recovery work", { exact: true }).waitFor()
     assert.equal(await page.locator(".search-row input").inputValue(), "", "resume clears a query that excludes the new Instance")
@@ -2201,29 +2543,30 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     await page.getByRole("button", { name: "已失聯", exact: true }).click()
     await page.getByRole("button", { name: /Partial resume fixture.*inst-b2-/ }).click()
     await page.getByRole("button", { name: "接續對話" }).click()
-    await page.getByRole("alertdialog", { name: "接續主要對話？" }).getByRole("button", { name: "接續對話" }).click()
-    await page.getByText(/新的背景執行個體 inst-par 已啟動，但尚未完成主要 Session 綁定.*列表已顯示並選取.*不要重複接續/).waitFor()
+     await page.getByRole("alertdialog", { name: "接續入口 Session？" }).getByRole("button", { name: "接續對話" }).click()
+     await page.getByText(/新的背景 Instance inst-par 已啟動，但尚未完成入口 Session 綁定.*列表已顯示並選取.*不要重複接續/).waitFor()
     await page.locator(".technical-info", { hasText: "inst-partial-88888888" }).waitFor()
-    await page.locator(".primary-session-card").getByText("尚未綁定主 Session", { exact: true }).waitFor()
+     await page.locator(".primary-session-card").getByText("尚未綁定入口 Session", { exact: true }).waitFor()
     assert.equal(await page.locator(".search-row input").inputValue(), "", "partial resume clears a query that excludes the new Instance")
     assert.equal(await page.locator(".filters button.active").textContent(), "全部", "partial resume resets the state filter to all")
-    assert.match(await page.locator(".instance-row.selected").getAttribute("aria-label") ?? "", /尚未綁定主 Session.*可連線.*#33003/, "partial resume keeps the new ready unbound Instance visible and selected")
+     assert.match(await page.locator(".instance-row.selected").getAttribute("aria-label") ?? "", /尚未綁定入口 Session.*可連線.*#33003/, "partial resume keeps the new ready unbound Instance visible and selected")
 
     await returnToInstanceList(page)
     await page.getByRole("button", { name: /Partial resume fixture.*inst-b2-/ }).click()
     await page.getByRole("button", { name: "停止追蹤" }).click()
-    await page.getByText("已從主列表隱藏；程序與保留的連線埠不受影響。", { exact: true }).waitFor()
+     await page.getByText("已停止追蹤並從主列表隱藏；程序與保留的連線埠不受影響。", { exact: true }).waitFor()
     await page.waitForFunction(() => !document.body.textContent?.includes("Partial resume fixture"))
     await page.getByLabel("顯示已停止追蹤").check()
     await page.getByRole("button", { name: /Partial resume fixture.*inst-b2-/ }).waitFor()
     await page.getByRole("button", { name: /Partial resume fixture.*inst-b2-/ }).click()
     await page.getByRole("button", { name: "恢復追蹤" }).click()
-    await page.getByText("已恢復追蹤此執行個體。", { exact: true }).waitFor()
+     await page.getByText("已恢復追蹤此 Instance。", { exact: true }).waitFor()
 
     await returnToInstanceList(page)
     assert.equal(await page.getByLabel("顯示已停止追蹤").isChecked(), true, "returning from detail preserves the include-hidden list context")
-    await page.getByRole("textbox", { name: "搜尋" }).fill("archived-project")
-    await page.getByRole("button", { name: "執行搜尋" }).click()
+    if (await page.locator(".history-toggle").getAttribute("aria-expanded") !== "true") await page.locator(".history-toggle").click()
+    await page.getByRole("textbox", { name: "停止歷史關鍵字" }).fill("archived-project")
+    await page.getByRole("button", { name: "搜尋停止歷史" }).click()
     await page.getByRole("button", { name: /inst-hid/ }).click()
     await page.getByRole("button", { name: "移除紀錄" }).click()
     const cancelledRemove = page.getByRole("alertdialog", { name: "移除 OMW 紀錄與綁定？" })
@@ -2234,16 +2577,15 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     assert.equal(await page.locator('.instance-row[data-instance-id="inst-hidden-66666666"]').count(), 1, "cancelled removal preserves the record")
     await page.getByRole("button", { name: "移除紀錄" }).click()
     const firstRemoveDialog = page.getByRole("alertdialog", { name: "移除 OMW 紀錄與綁定？" })
-    assert.match(await firstRemoveDialog.textContent() ?? "", /OMW 追蹤紀錄與綁定.*不會刪除 OpenCode Sessions、專案檔案或其他資料/)
+     assert.match(await firstRemoveDialog.textContent() ?? "", /OMW 追蹤紀錄與綁定.*不會刪除 OpenCode Sessions、Project 檔案或其他資料/)
     await firstRemoveDialog.getByRole("button", { name: "移除紀錄" }).click()
-    await page.getByText("remove failure fixture", { exact: true }).waitFor()
+     await assertUnknownFixtureError(page.locator(".lifecycle-error"), "REMOVE_FAILED", "remove failure fixture")
     await page.getByRole("button", { name: "移除紀錄" }).click()
     await page.getByRole("alertdialog", { name: "移除 OMW 紀錄與綁定？" }).getByRole("button", { name: "移除紀錄" }).click()
     await page.waitForFunction(() => !document.body.textContent?.includes("archived-project"))
     assert.equal(removeCalls, 2)
 
-    const screenshotDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../.scratch")
-    await mkdir(screenshotDirectory, { recursive: true })
+    const screenshotDirectory = regressionArtifacts
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.screenshot({ path: path.join(screenshotDirectory, "session-first-recovery-fake-1440.png"), fullPage: true })
     await page.setViewportSize({ width: 390, height: 844 })
@@ -2252,7 +2594,7 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     const touchPage = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true })
     await touchPage.goto(origin, { waitUntil: "networkidle" })
     assert.equal(await touchPage.evaluate(() => matchMedia("(pointer: coarse)").matches), true, "touch fixture exposes a coarse pointer")
-    const touchStart = touchPage.locator(".topbar").getByRole("button", { name: "啟動執行個體" })
+     const touchStart = touchPage.locator(".topbar").getByRole("button", { name: "啟動 Instance" })
     const touchBounds = await touchStart.boundingBox()
     assert.ok(touchBounds)
     await touchPage.mouse.move(touchBounds.x + touchBounds.width / 2, touchBounds.y + touchBounds.height / 2)
@@ -2262,10 +2604,7 @@ test("Session-first Instance list and recovery actions honor the browser contrac
     assert.notEqual(touchPressedTransform, "none", "coarse-pointer press gives primary buttons scale feedback")
     await touchPage.close()
   } finally {
-    await browser?.close()
-    await app.close().catch(() => undefined)
-    repository.close()
-    await rm(sandbox, { recursive: true, force: true })
+    await closeRegressionFixture("session-first", browser, app, repository, sandbox)
   }
 })
 

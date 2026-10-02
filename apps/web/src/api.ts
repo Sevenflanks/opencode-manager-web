@@ -9,7 +9,9 @@ import type {
   SessionChildrenResponse,
   SessionRootsResponse,
   PrimaryTodosResponse,
+  HistoryResponse,
 } from "@omw/contracts"
+import { createOverviewTransport } from "./overview-transport"
 
 export class ApiError extends Error {
   constructor(readonly code: string, message: string, readonly status: number, readonly details?: unknown) {
@@ -44,6 +46,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return await response.json() as T
 }
 
+const overviewTransport = createOverviewTransport((url, signal) => request<OverviewResponse>(url, { signal }))
+
 export const managerApi = {
   async updateCredentials(payload: { currentPassword: string; username: string; password: string }) {
     await request<void>("/api/v1/settings/credentials", { method: "PATCH", body: JSON.stringify(payload) })
@@ -68,13 +72,21 @@ export const managerApi = {
     return request<ConnectivityInfo>("/api/v1/connectivity/register", { method: "POST", body: "{}" })
   },
   overview(query: string, filter: OverviewFilter, includeHidden = false, signal?: AbortSignal) {
-    const params = new URLSearchParams({ q: query, filter })
+    const params = new URLSearchParams({ q: query, filter, view: "compact", scope: "current" })
     if (includeHidden) params.set("includeHidden", "true")
-    return request<OverviewResponse>(`/api/v1/overview?${params}`, signal ? { signal } : undefined)
+    return overviewTransport.overview(`/api/v1/overview?${params}`, signal)
   },
   notificationOverview(signal?: AbortSignal) {
     // 通知不能沿用畫面搜尋或 filter；已停止追蹤的 Instance 不屬於通知範圍。
-    return request<OverviewResponse>("/api/v1/overview?q=&filter=all", signal ? { signal } : undefined)
+    return overviewTransport.notifications(signal)
+  },
+  history(query: string, includeHidden: boolean, offset = 0, revision?: string, signal?: AbortSignal) {
+    const params = new URLSearchParams({ q: query, includeHidden: String(includeHidden), offset: String(offset) })
+    if (revision) params.set("revision", revision)
+    return request<HistoryResponse>(`/api/v1/instances/history?${params}`, signal ? { signal } : undefined)
+  },
+  instance(id: string, signal?: AbortSignal) {
+    return request<ManagedInstance | null>(`/api/v1/instances/${encodeURIComponent(id)}`, signal ? { signal } : undefined)
   },
   browse(directory: string) {
     return request<DirectoryListing>(`/api/v1/directories?path=${encodeURIComponent(directory)}`)
