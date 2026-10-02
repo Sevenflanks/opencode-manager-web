@@ -431,7 +431,7 @@ const connectivityTone = computed(() => {
 const connectivityHeadline = computed(() => {
   if (connectivityStale.value) return t("connectivity.stale")
   if (!connectivity.value) return connectivityLoading.value ? t("connectivity.pending") : t("connectivity.unknown")
-  if (workerMode.value) return t("worker.title")
+  if (workerMode.value) return t("worker.modeTitle")
   if (connectivityRegistering.value || connectivity.value.registration.state === "registering") return t("connectivity.registering")
   if (connectivity.value.registration.state === "failed") {
     return connectivity.value.registration.trigger === "manual" ? t("connectivity.registrationFailed") : t("connectivity.notRegistered")
@@ -2112,7 +2112,7 @@ function displayedError(area: ErrorArea, current: string): string {
   <div class="shell" :inert="startPanelBlocking || managerSettingsOpen || undefined">
     <header class="topbar">
       <div class="topbar-brand">
-        <p class="eyebrow">{{ t('ui.eyebrow') }}</p>
+        <p class="eyebrow">{{ workerMode ? t('worker.brandEyebrow') : t('ui.eyebrow') }}</p>
         <div class="topbar-title">
           <h1>{{ t('ui.productName') }}</h1>
           <small v-if="connectivity?.manager.version" class="version-chip">{{ connectivity.manager.version }}</small>

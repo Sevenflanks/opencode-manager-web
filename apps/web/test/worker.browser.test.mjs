@@ -55,6 +55,7 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
     } })
     let page
     let connectivity = structuredClone(workerConnectivity)
+    let connectivityFailure = false
     let instances = []
     let stopped = []
     let capacity = { state: "available", maxInstances: 1 }
@@ -72,7 +73,10 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
       const url = new URL(route.request().url())
       apiEvents.push(`${route.request().method()} ${url.pathname}`)
       if (/settings\/credentials|manager\/shutdown|connectivity\/(register|enable)|launcher/.test(url.pathname)) unsupportedRequests.push(url.pathname)
-      if (url.pathname === "/api/v1/connectivity") return route.fulfill({ json: connectivity })
+      if (url.pathname === "/api/v1/connectivity") {
+        if (connectivityFailure) return route.fulfill({ status: 503, json: { error: { code: "HTTP_ERROR", message: "unavailable" } } })
+        return route.fulfill({ json: connectivity })
+      }
       if (url.pathname === "/api/v1/worker/capacity") {
         capacityRequests.push(route.request())
         if (capacityNetworkFailure) return route.abort("failed")
@@ -136,6 +140,7 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
     }
     t.beforeEach(async () => {
       connectivity = structuredClone(workerConnectivity)
+      connectivityFailure = false
       instances = []
       stopped = []
       capacity = { state: "available", maxInstances: 1 }
@@ -152,12 +157,37 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
       await freshPage()
     })
 
-    await t.test("deployment-managed Worker hides local/Tailscale controls and keeps browser notifications", async () => {
+    await t.test("Worker identity is clear across viewport sizes and stale connectivity remains degraded", async () => {
       await page.goto(origin)
-      await page.getByRole("heading", { name: "Worker", exact: true }).waitFor()
+      const modeHeading = page.getByRole("heading", { name: "Worker 模式", exact: true })
+      await modeHeading.waitFor()
+      assert.equal(await page.locator(".topbar-brand .eyebrow").innerText(), "WORKER · 執行管理")
+      assert.doesNotMatch(await page.locator(".topbar-brand").innerText(), /WINDOWS/)
+      assert.equal(await page.locator(".connectivity").getAttribute("data-tone"), "ready")
+      const mobileHeadingBox = await modeHeading.boundingBox()
+      assert.ok(mobileHeadingBox && mobileHeadingBox.width > 0)
+      await page.setViewportSize({ width: 1440, height: 900 })
+      await modeHeading.waitFor({ state: "visible" })
+      assert.equal(await page.locator(".topbar-brand .eyebrow").innerText(), "WORKER · 執行管理")
+      assert.equal(await page.locator(".connectivity").getAttribute("data-tone"), "ready")
+      await page.setViewportSize({ width: 390, height: 844 })
       await page.getByText("每次使用一個 Instance；Project 目錄位於 Worker 執行環境。", { exact: true }).waitFor()
       assert.doesNotMatch(await page.locator(".connectivity").innerText(), /Tailscale|Serve|離線|本機/)
-      assert.equal(await page.locator(".connectivity").getAttribute("data-tone"), "ready")
+      connectivityFailure = true
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+      await page.getByRole("heading", { name: "連線資料已過期", exact: true }).waitFor()
+      assert.equal(await page.locator(".connectivity").getAttribute("data-tone"), "unknown")
+      assert.equal(await page.locator(".topbar-brand .eyebrow").innerText(), "WORKER · 執行管理")
+      connectivity = { ...workerConnectivity, mode: "tailnet", tailscale: { state: "connected", dnsName: null, version: null }, registration: { state: "idle", trigger: null, diagnostic: null } }
+      connectivityFailure = false
+      await freshPage()
+      await page.goto(origin)
+      await page.getByRole("heading", { name: "本機 Tailscale 在線", exact: true }).waitFor()
+      assert.equal(await page.locator(".connectivity").getAttribute("data-mode"), "tailnet")
+      assert.equal(await page.locator(".topbar-brand .eyebrow").innerText(), "WINDOWS · 連線管理")
+      connectivity = structuredClone(workerConnectivity)
+      await freshPage()
+      await page.goto(origin)
       await page.getByRole("button", { name: "OMW 設定", exact: true }).click()
       const settings = page.getByRole("dialog", { name: "OMW 設定" })
       await settings.getByRole("checkbox", { name: "頁面開啟期間通知所有 Instance 的待回答與待授權" }).waitFor()
@@ -431,7 +461,7 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
         await freshPage()
         connectivity = { ...workerConnectivity, nativeWebOrigin: value }
         await page.goto(origin)
-        await page.locator("#connectivity-title").filter({ hasText: /^Worker$/ }).waitFor({ state: "attached" })
+        await page.locator("#connectivity-title").filter({ hasText: /^Worker 模式$/ }).waitFor({ state: "attached" })
         await page.getByRole("button", { name: /Worker Project/ }).click()
         assert.equal(await page.getByRole("link", { name: "開啟原生 OpenCode Web", exact: true }).count(), 0)
       }

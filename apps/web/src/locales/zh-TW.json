@@ -1,6 +1,8 @@
 {
   "worker": {
     "title": "Worker",
+    "modeTitle": "Worker 模式",
+    "brandEyebrow": "WORKER · 執行管理",
     "connection": "執行環境",
     "openNative": "開啟原生 OpenCode Web",
     "nativeEntry": "原生 Web 入口",

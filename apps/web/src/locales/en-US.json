@@ -1,6 +1,8 @@
 {
   "worker": {
     "title": "Worker",
+    "modeTitle": "Worker mode",
+    "brandEyebrow": "WORKER · EXECUTION MANAGEMENT",
     "connection": "Execution environment",
     "openNative": "Open native OpenCode Web",
     "nativeEntry": "Native Web entry",
