@@ -1,5 +1,6 @@
 import type { AgentCapabilities, InstanceSummary, SessionMetadata, SessionTodo } from "@omw/contracts"
 import type { InstanceRecord } from "./repository.js"
+import type { DirectoryPort } from "./directory.js"
 
 // 保留既有 import contract；Agent 協定與啟動細節只存在 adapter namespace。
 export { OpenCodeRuntime, managedServerEnvironment } from "./agents/opencode/runtime.js"
@@ -51,10 +52,12 @@ export interface InitialLocalReadiness {
 }
 
 export interface RuntimePort {
+  readonly directories?: DirectoryPort
+  allocationScope?(): Promise<{ scope: string; state: "available" | "occupied" | "unknown" }>
   // legacy OpenCode adapter 可省略 metadata；其他 family 須宣告可用能力。
   readonly agentFamily?: string
   capabilities?(instance: InstanceRecord): RuntimeCapabilities
-  launch(directory: string, port: number, instanceId: string): Promise<LaunchResult>
+  launch(directory: string, port: number, instanceId: string, allocationScope?: string): Promise<LaunchResult>
   adoptLocal?(directory: string, port: number, instanceId: string, pid: number): Promise<LaunchResult>
   cleanupLaunch(instanceId: string): Promise<StopResult>
   readiness(instance: LaunchResult | InstanceRecord, initialVerification?: InitialLocalReadiness): Promise<{ version: string; directory: string }>

@@ -1,0 +1,66 @@
+services:
+  manager:
+    image: ${OMW_WORKER_IMAGE:-omw-worker:1.18.34}
+    build:
+      context: ../..
+      dockerfile: deploy/worker/Dockerfile
+    init: true
+    command: ["node", "apps/manager/dist/src/server.js"]
+    environment:
+      OMW_MODE: worker
+      OMW_DATA_DIR: /data/manager
+      OMW_PUBLIC_ORIGIN: ${OMW_PUBLIC_ORIGIN:-http://127.0.0.1:4174}
+      OMW_NATIVE_ORIGIN: ${OMW_NATIVE_ORIGIN:-http://127.0.0.1:4180}
+      OMW_EXECUTION_ORIGIN: http://execution:4175
+      OMW_EXECUTION_TOKEN_FILE: /run/secrets/execution_token
+      OMW_BROWSER_USERNAME: ${OMW_BROWSER_USERNAME:?請先執行 scripts/worker/setup.mjs}
+      OMW_BROWSER_PASSWORD_FILE: /run/secrets/browser_password
+      OMW_PORT: "4174"
+      OMW_RUNTIME_PORT: "4096"
+    secrets: [execution_token, browser_password]
+    volumes:
+      - manager-data:/data/manager
+      - workspace:/workspace
+    ports:
+      - "127.0.0.1:${OMW_MANAGER_HOST_PORT:-4174}:4174"
+    depends_on:
+      execution:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "scripts/worker/healthcheck.mjs"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
+    stop_grace_period: 15s
+  execution:
+    image: ${OMW_WORKER_IMAGE:-omw-worker:1.18.34}
+    init: true
+    # Node 必須是 docker-init PID 1 的直接 child；禁止 npm/shell wrapper 與 shared/host PID。
+    command: ["node", "apps/manager/dist/src/worker/execution-server.js"]
+    environment:
+      OMW_EXECUTION_TOKEN_FILE: /run/secrets/execution_token
+      OMW_BROWSER_USERNAME: ${OMW_BROWSER_USERNAME:?請先執行 scripts/worker/setup.mjs}
+      OMW_BROWSER_PASSWORD_FILE: /run/secrets/browser_password
+      OMW_NATIVE_ORIGIN: ${OMW_NATIVE_ORIGIN:-http://127.0.0.1:4180}
+      OMW_EXECUTION_PORT: "4175"
+      OMW_NATIVE_PORT: "4180"
+      OMW_RUNTIME_PORT: "4096"
+      OMW_OPENCODE_EXECUTABLE: /usr/local/bin/opencode
+    secrets: [execution_token, browser_password]
+    volumes:
+      - execution-home:/home/node
+      - workspace:/workspace
+    ports:
+      - "127.0.0.1:${OMW_NATIVE_HOST_PORT:-4180}:4180"
+    # 不在 live execution 啟動 healthcheck/docker exec；supervisor 的 ownership 包含 namespace 全部工具。
+    stop_grace_period: 10s
+secrets:
+  execution_token:
+    file: ${OMW_EXECUTION_TOKEN_SOURCE:?必須指定外部 token file}
+  browser_password:
+    file: ${OMW_BROWSER_PASSWORD_SOURCE:?必須指定外部 password file}
+volumes:
+  manager-data:
+  execution-home:
+  workspace:

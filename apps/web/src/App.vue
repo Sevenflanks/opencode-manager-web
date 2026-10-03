@@ -30,7 +30,7 @@ import {
   XIcon,
 } from "lucide-vue-next"
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
-import { ApiError, managerApi } from "@/api"
+import { ApiError, managerApi, type WorkerCapacity } from "@/api"
 import { createNotificationPreference, createPendingTracker } from "@/browser-notifications"
 import { createOverviewRefresh } from "@/overview-refresh"
 import { createStoppedHistory } from "@/stopped-history"
@@ -86,6 +86,10 @@ const connectivityLoading = ref(false)
 const connectivityRegistering = ref(false)
 const connectivityError = ref("")
 const connectivityStale = ref(false)
+const workerCapacity = ref<WorkerCapacity["state"]>("unknown")
+let capacityGeneration = 0
+let capacityFlight: Promise<WorkerCapacity["state"]> | null = null
+let capacityController: AbortController | null = null
 const connectivityFallbackOpen = ref(false)
 const connectivityFallback = ref<HTMLElement | null>(null)
 const connectivityCopyMessage = ref<MessageKey | "">("")
@@ -254,6 +258,8 @@ const refresh = createOverviewRefresh({
     return { overview: next, query: requested.query, filter: requested.filter }
   },
   applied: async (result, requested, route, source, current) => {
+    if (current() && workerMode.value) await loadWorkerCapacity()
+    if (!current()) return
     if (result.query !== requested.query || result.filter !== requested.filter) {
       restoringFilteredDetail = true
       try {
@@ -365,10 +371,28 @@ const visibleSessionRoots = computed(() => sortedSessionRoots.value.slice(
   (sessionPage.value - 1) * SESSION_PAGE_SIZE,
   sessionPage.value * SESSION_PAGE_SIZE,
 ))
-const connectivityMode = computed<"loopback" | "tailnet" | "unknown">(() => {
+const connectivityMode = computed<"loopback" | "tailnet" | "worker" | "unknown">(() => {
   const value = connectivity.value?.mode as string | undefined
-  return value === "loopback" || value === "tailnet" ? value : "unknown"
+  return value === "loopback" || value === "tailnet" || value === "worker" ? value : "unknown"
 })
+const workerMode = computed(() => connectivityMode.value === "worker")
+// 舊 Manager 沒有 capabilities；保留原模式行為，Worker 則不把缺欄位當成本機功能授權。
+const tailscaleSupported = computed(() => Boolean(connectivity.value) && !workerMode.value && connectivity.value?.capabilities?.tailscale !== false)
+const credentialUpdateSupported = computed(() => Boolean(connectivity.value) && !workerMode.value && connectivity.value?.capabilities?.credentialUpdate !== false)
+const managerShutdownSupported = computed(() => Boolean(connectivity.value) && !workerMode.value && connectivity.value?.capabilities?.managerShutdown !== false)
+const nativeWebRoot = computed(() => {
+  if (!workerMode.value || connectivityStale.value || connectivity.value?.capabilities?.nativeWeb !== true) return null
+  const value = safeManagerUrl(connectivity.value.nativeWebOrigin)
+  if (!value) return null
+  const parsed = new URL(value)
+  return parsed.pathname === "/" ? `${parsed.origin}/` : null
+})
+const nativeWebAvailable = computed(() => nativeWebRoot.value && selected.value?.state === "ready" && !overviewStale.value)
+const workerCapacityState = computed(() => connectivityStale.value || overviewStale.value ? "unknown" : workerCapacity.value)
+const instanceCapacityBlocked = computed(() => workerMode.value && workerCapacityState.value !== "available")
+const workerCapacityMessage = computed<MessageKey>(() => ({
+  available: "worker.capacityAvailable", occupied: "worker.capacityFull", unknown: "worker.capacityUnknown",
+} as const)[workerCapacityState.value])
 const tailscaleState = computed<ConnectivityInfo["tailscale"]["state"]>(() => {
   const value = connectivity.value?.tailscale.state as string | undefined
   return ["connected", "offline", "needs-login", "unavailable", "unknown"].includes(value ?? "")
@@ -393,19 +417,21 @@ const remoteUrl = computed(() => {
 })
 const canRegisterConnectivity = computed(() => {
   const state = connectivity.value?.registration.state
-  return connectivityMode.value === "tailnet"
+  return tailscaleSupported.value && connectivityMode.value === "tailnet"
     && !connectivityRegistering.value
     && (state === "failed" || (state === "idle" && !remoteUrl.value))
 })
 const localUrl = computed(() => safeManagerUrl(connectivity.value?.manager.localUrl) ?? t("common.unknown"))
 const connectivityTone = computed(() => {
   if (connectivityStale.value || !connectivity.value) return "unknown"
+  if (workerMode.value) return "ready"
   if (tailscaleState.value !== "connected" || serveState.value === "mismatch" || connectivity.value.serve.funnel === "enabled") return "warning"
   return serveState.value === "verified" ? "ready" : "unknown"
 })
 const connectivityHeadline = computed(() => {
   if (connectivityStale.value) return t("connectivity.stale")
   if (!connectivity.value) return connectivityLoading.value ? t("connectivity.pending") : t("connectivity.unknown")
+  if (workerMode.value) return t("worker.modeTitle")
   if (connectivityRegistering.value || connectivity.value.registration.state === "registering") return t("connectivity.registering")
   if (connectivity.value.registration.state === "failed") {
     return connectivity.value.registration.trigger === "manual" ? t("connectivity.registrationFailed") : t("connectivity.notRegistered")
@@ -434,6 +460,7 @@ const registrationFailure = computed(() => {
 const connectivityWarnings = computed(() => {
   const warnings: string[] = []
   if (connectivityStale.value) warnings.push(t("connectivity.warningStale"))
+  if (!tailscaleSupported.value) return warnings
   if (tailscaleState.value === "offline") warnings.push(t("connectivity.warningOffline"))
   if (tailscaleState.value === "needs-login") warnings.push(t("connectivity.warningLogin"))
   if (tailscaleState.value === "unavailable") warnings.push(t("connectivity.warningUnavailable"))
@@ -525,6 +552,8 @@ onBeforeUnmount(() => {
   if (startPanelBlocking.value) document.body.style.overflow = previousBodyOverflow
   if (managerSettingsOpen.value) document.body.style.overflow = managerSettingsBodyOverflow
   refresh.dispose()
+  capacityGeneration++
+  capacityController?.abort()
   todoRefresh.dispose()
   stoppedHistory.dispose()
   connectivityReadGeneration++
@@ -547,6 +576,7 @@ async function loadConnectivity(source: "user" | "background" = "user"): Promise
     connectivity.value = next
     connectivityStale.value = false
     connectivityError.value = ""
+    if (workerMode.value && (source === "user" || workerCapacity.value === "unknown")) await loadWorkerCapacity()
   } catch (cause) {
     if (generation !== connectivityReadGeneration) return
     // 保留最後一次成功結果供診斷，但一定降級為 stale，避免舊的綠色狀態被當成目前可用。
@@ -555,6 +585,35 @@ async function loadConnectivity(source: "user" | "background" = "user"): Promise
   } finally {
     if (generation === connectivityReadGeneration) connectivityLoading.value = false
   }
+}
+
+function loadWorkerCapacity(fresh = false): Promise<WorkerCapacity["state"]> {
+  if (!workerMode.value || connectivityStale.value || appDisposed) return Promise.resolve("unknown")
+  if (!fresh && capacityFlight) return capacityFlight
+  // 操作前不可共用已起始的背景讀取。capacity 僅指目前 execution；歷史失聯紀錄仍保留原狀。
+  // 這是 UI 提示與 fail-closed seam，併發操作最後仍由 backend mutation 原子重驗。
+  capacityController?.abort()
+  const generation = ++capacityGeneration
+  const controller = new AbortController()
+  capacityController = controller
+  workerCapacity.value = "unknown"
+  const timeout = window.setTimeout(() => controller.abort(), 15_000)
+  const flight = (async (): Promise<WorkerCapacity["state"]> => {
+    try {
+      const next = await managerApi.workerCapacity(controller.signal)
+      if (generation !== capacityGeneration || appDisposed) return "unknown"
+      workerCapacity.value = next.state
+      return next.state
+    } catch {
+      if (generation === capacityGeneration) workerCapacity.value = "unknown"
+      return "unknown"
+    } finally {
+      window.clearTimeout(timeout)
+      if (generation === capacityGeneration) { capacityFlight = null; capacityController = null }
+    }
+  })()
+  capacityFlight = flight
+  return flight
 }
 
 async function registerConnectivity(): Promise<void> {
@@ -1148,6 +1207,7 @@ function updateBrowserPath(value: string): void {
 async function start(directory: string): Promise<void> {
   if (browsingPath.value || !listing.value || browserPath.value !== listing.value.current || directory !== listing.value.current) return
   await mutate(async () => {
+    if (!await ensureInstanceCapacity("action")) return
     const instance = await managerApi.start(directory)
     await selectNewInstance(instance)
     lifecycleError.value = ""
@@ -1211,6 +1271,7 @@ function startFreshInstance(instance: ManagedInstance): void {
 
 async function performFreshStart(instance: ManagedInstance): Promise<void> {
   await lifecycleMutation("start", async () => {
+    if (!await ensureInstanceCapacity("lifecycle")) return
     const started = await managerApi.start(instance.projectDirectory)
     await selectNewInstance(started)
     showNotice("notice.freshStart", { id: shortId(started.id) })
@@ -1238,6 +1299,7 @@ function resumeInstance(instance: ManagedInstance): void {
 
 async function performResumeInstance(instance: ManagedInstance): Promise<void> {
   await lifecycleMutation("resume", async () => {
+    if (!await ensureInstanceCapacity("lifecycle")) return
     const resumed = await managerApi.resume(instance.id)
     await selectNewInstance(resumed)
     showNotice("notice.resumed", { id: shortId(resumed.id) })
@@ -1593,7 +1655,12 @@ function openManagerSettings(): void {
   nextManagerPassword.value = ""
   confirmManagerPassword.value = ""
   managerSettingsOpen.value = true
-  void nextTick(() => managerSettingsDialog.value?.querySelector<HTMLElement>('input[autocomplete="username"]')?.focus())
+  void nextTick(() => {
+    const dialog = managerSettingsDialog.value
+    const initialFocus = dialog?.querySelector<HTMLElement>('input[autocomplete="username"]')
+      ?? dialog?.querySelector<HTMLElement>('input[type="checkbox"]:not([disabled]), button:not([disabled])')
+    initialFocus?.focus()
+  })
 }
 
 function closeManagerSettings(force = false): void {
@@ -1609,6 +1676,7 @@ function closeManagerSettings(force = false): void {
 }
 
 async function updateManagerCredentials(): Promise<void> {
+  if (!credentialUpdateSupported.value) return
   managerSettingsError.value = ""
   managerSettingsSuccess.value = ""
   if (nextManagerPassword.value !== confirmManagerPassword.value) {
@@ -1635,6 +1703,7 @@ async function updateManagerCredentials(): Promise<void> {
 }
 
 function stopManager(): void {
+  if (!managerShutdownSupported.value) return
   requestConfirmation({
     titleKey: "confirm.stopManagerTitle",
     descriptionKey: "confirm.stopManagerDescription",
@@ -1976,7 +2045,16 @@ function ensureFreshOverviewMutation(target: "lifecycle" | "action" = "lifecycle
 function recoveryActionAllowed(action: RecoveryAction): boolean {
   const recovery = selected.value?.recovery
   const key = recoveryActionKeys[action]
-  return recoveryMetadataValid.value && recovery?.[key] === true
+  return recoveryMetadataValid.value && recovery?.[key] === true && (action !== "resume" || !instanceCapacityBlocked.value)
+}
+async function ensureInstanceCapacity(area: "action" | "lifecycle"): Promise<boolean> {
+  if (!workerMode.value) return true
+  const state = await loadWorkerCapacity(true)
+  if (state === "available") return true
+  const key = state === "occupied" ? "worker.capacityFull" : "worker.capacityUnknown"
+  if (area === "action") actionError.value = localError(area, key)
+  else lifecycleError.value = localError(area, key)
+  return false
 }
 function recoveryActionLabel(instance: ManagedInstance, action: RecoveryAction): string {
   return action === "tracking" && instance.trackingHidden ? t("ui.trackResume") : {
@@ -1990,6 +2068,7 @@ function lifecycleReason(instance: ManagedInstance, action: RecoveryAction): str
     return t("recovery.recheckUnavailable")
   }
   if (action === "resume") {
+    if (instanceCapacityBlocked.value) return t(workerCapacityMessage.value)
     if (instance.state === "ready") return t("recovery.resumeReady")
     if (!instance.primarySession) return t("session.unboundCannotResume")
     return t("session.stateNotEligible")
@@ -2033,7 +2112,7 @@ function displayedError(area: ErrorArea, current: string): string {
   <div class="shell" :inert="startPanelBlocking || managerSettingsOpen || undefined">
     <header class="topbar">
       <div class="topbar-brand">
-        <p class="eyebrow">{{ t('ui.eyebrow') }}</p>
+        <p class="eyebrow">{{ workerMode ? t('worker.brandEyebrow') : t('ui.eyebrow') }}</p>
         <div class="topbar-title">
           <h1>{{ t('ui.productName') }}</h1>
           <small v-if="connectivity?.manager.version" class="version-chip">{{ connectivity.manager.version }}</small>
@@ -2053,20 +2132,21 @@ function displayedError(area: ErrorArea, current: string): string {
       <div><strong>{{ t('ui.managerStopped') }}</strong><p>{{ t('ui.managerStoppedDescription') }}</p></div>
     </section>
 
-    <section class="connectivity" :data-tone="connectivityTone" aria-labelledby="connectivity-title" :aria-busy="connectivityLoading">
+    <section class="connectivity" :data-tone="connectivityTone" :data-mode="connectivityMode" aria-labelledby="connectivity-title" :aria-busy="connectivityLoading">
       <div class="connectivity-status">
-        <span class="connectivity-signal"><WifiIcon /></span>
+        <span class="connectivity-signal" aria-hidden="true"><ServerIcon v-if="workerMode" /><WifiIcon v-else /></span>
         <div class="connectivity-status-copy">
-          <p class="eyebrow">{{ t('connectivity.eyebrow') }}</p>
+          <p class="eyebrow">{{ workerMode ? t('worker.connection') : t('connectivity.eyebrow') }}</p>
           <h2 id="connectivity-title">{{ connectivityHeadline }}</h2>
-          <p class="connectivity-qualifier">{{ serveLabel }} · {{ t('ui.tailnetNotice') }}</p>
+          <p v-if="workerMode" class="connectivity-qualifier">{{ t('worker.description') }}</p>
+          <p v-else-if="tailscaleSupported" class="connectivity-qualifier">{{ serveLabel }} · {{ t('ui.tailnetNotice') }}</p>
         </div>
         <Button v-if="canRegisterConnectivity" variant="outline" size="sm" class="connectivity-register no-press-transform" :disabled="connectivityLoading" @click="registerConnectivity">
           <RefreshCwIcon />{{ t('ui.register') }}
         </Button>
-        <Button v-if="connectivity?.remoteAccess === 'available'" variant="outline" size="sm" :disabled="connectivityRegistering" @click="remoteEnableOpen = true">{{ t('ui.remoteEnable') }}</Button>
+        <Button v-if="tailscaleSupported && connectivity?.remoteAccess === 'available'" variant="outline" size="sm" :disabled="connectivityRegistering" @click="remoteEnableOpen = true">{{ t('ui.remoteEnable') }}</Button>
       </div>
-      <div class="connectivity-access">
+      <div v-if="tailscaleSupported" class="connectivity-access">
         <div class="connectivity-entry">
           <span>{{ t('ui.remoteEntry') }}<span v-if="remoteUrl">{{ t('ui.verified') }}</span></span>
           <code :title="remoteUrl ?? undefined">{{ remoteUrl ?? t('ui.remoteNotVerified') }}</code>
@@ -2078,11 +2158,11 @@ function displayedError(area: ErrorArea, current: string): string {
       </div>
       <div v-if="connectivityWarnings.length || registrationFailure || connectivityError" class="connectivity-warnings" aria-live="polite">
         <p v-for="warning in connectivityWarnings" :key="warning"><AlertTriangleIcon />{{ warning }}</p>
-        <p v-if="registrationFailure"><AlertTriangleIcon /><ErrorDetails :summary="registrationFailure.summary" :code="registrationFailure.code" /></p>
+        <p v-if="tailscaleSupported && registrationFailure"><AlertTriangleIcon /><ErrorDetails :summary="registrationFailure.summary" :code="registrationFailure.code" /></p>
         <p v-if="connectivityError"><AlertTriangleIcon /><ErrorDetails :summary="displayedError('connectivity', connectivityError)" :code="errorDetails.connectivity?.code" :diagnostic="errorDetails.connectivity?.diagnostic" /></p>
       </div>
-      <p v-if="connectivity?.remoteAccess === 'disabled'" class="connectivity-warnings">{{ t('ui.remoteDisabled') }}</p>
-      <form v-if="remoteEnableOpen" class="credential-form connectivity-warnings" :aria-label="t('ui.confirmRemote')" @submit.prevent="enableRemoteAccess">
+      <p v-if="tailscaleSupported && connectivity?.remoteAccess === 'disabled'" class="connectivity-warnings">{{ t('ui.remoteDisabled') }}</p>
+      <form v-if="tailscaleSupported && remoteEnableOpen" class="credential-form connectivity-warnings" :aria-label="t('ui.confirmRemote')" @submit.prevent="enableRemoteAccess">
         <h3>{{ t('ui.confirmRemote') }}</h3>
         <p>{{ t('ui.remotePrivacy') }}</p>
         <p>{{ t('ui.remoteCredentials') }}</p>
@@ -2101,14 +2181,14 @@ function displayedError(area: ErrorArea, current: string): string {
       <details class="connectivity-details">
         <summary>{{ t('ui.connectionDetails') }}</summary>
         <dl>
-          <div><dt>{{ t('ui.localEndpoint') }}</dt><dd><code>{{ localUrl }}</code></dd></div>
-          <div><dt>{{ t('ui.tailscaleVersion') }}</dt><dd><code>{{ connectivity?.tailscale.version ?? t('common.unknown') }}</code></dd></div>
+          <div v-if="!workerMode"><dt>{{ t('ui.localEndpoint') }}</dt><dd><code>{{ localUrl }}</code></dd></div>
+          <div v-if="tailscaleSupported"><dt>{{ t('ui.tailscaleVersion') }}</dt><dd><code>{{ connectivity?.tailscale.version ?? t('common.unknown') }}</code></dd></div>
           <div><dt>{{ t('ui.nodeVersion') }}</dt><dd><code>{{ connectivity?.nodeVersion ?? t('common.unknown') }}</code></dd></div>
-          <div><dt>{{ t('ui.serveMatch') }}</dt><dd>{{ managerMappingLabel(connectivity?.serve.managerMapped) }}</dd></div>
-          <div><dt>{{ t('ui.portsMatched') }}</dt><dd><code>{{ connectivity?.serve.mappedInstancePorts ?? t('common.unknown') }} / {{ connectivity?.serve.expectedInstancePorts ?? t('common.unknown') }}</code></dd></div>
+          <div v-if="tailscaleSupported"><dt>{{ t('ui.serveMatch') }}</dt><dd>{{ managerMappingLabel(connectivity?.serve.managerMapped) }}</dd></div>
+          <div v-if="tailscaleSupported"><dt>{{ t('ui.portsMatched') }}</dt><dd><code>{{ connectivity?.serve.mappedInstancePorts ?? t('common.unknown') }} / {{ connectivity?.serve.expectedInstancePorts ?? t('common.unknown') }}</code></dd></div>
           <div><dt>{{ t('ui.checkedAt') }}</dt><dd><time :datetime="connectivity?.checkedAt">{{ checkedAtLabel(connectivity?.checkedAt) }}</time></dd></div>
         </dl>
-        <p>{{ t('ui.serveNote') }}</p>
+        <p v-if="tailscaleSupported">{{ t('ui.serveNote') }}</p>
       </details>
     </section>
 
@@ -2261,9 +2341,10 @@ function displayedError(area: ErrorArea, current: string): string {
           >
             <div class="lifecycle-copy">
               <p id="instance-lifecycle-title">{{ t('ui.instanceActions') }}</p>
-              <span>{{ selected.kind === 'local-tui' ? t('ui.localSource') : t('ui.backgroundSource') }} · {{ instancePid(selected) }}</span>
+              <span>{{ workerMode ? t('worker.title') : selected.kind === 'local-tui' ? t('ui.localSource') : t('ui.backgroundSource') }} · {{ instancePid(selected) }}</span>
             </div>
             <p class="lifecycle-note">{{ t('ui.resumeNote') }}</p>
+            <p v-if="workerMode" class="lifecycle-note" role="status">{{ t(workerCapacityMessage) }}</p>
             <p v-if="recoveryDiagnostic" class="lifecycle-diagnostic" role="alert"><AlertTriangleIcon />{{ recoveryDiagnostic }}</p>
             <div class="lifecycle-actions">
               <Button variant="destructive" size="sm" :disabled="overviewMutationsBlocked || Boolean(lifecyclePending) || !selected.stopAllowed" @click="stopInstance(selected)">
@@ -2272,7 +2353,7 @@ function displayedError(area: ErrorArea, current: string): string {
               <Button variant="outline" size="sm" :disabled="overviewMutationsBlocked || Boolean(lifecyclePending) || !recoveryActionAllowed('recheck')" @click="recheckInstance(selected)">
                 <RefreshCwIcon :class="{ spin: actionPending('recheck') }" />{{ actionPending('recheck') ? t('ui.rechecking') : t('ui.recheck') }}
               </Button>
-              <Button v-if="selected.state === 'stopped' && !selected.primarySession" variant="success" size="sm" :disabled="overviewMutationsBlocked || Boolean(lifecyclePending)" @click="startFreshInstance(selected)">
+              <Button v-if="selected.state === 'stopped' && !selected.primarySession" variant="success" size="sm" :disabled="overviewMutationsBlocked || Boolean(lifecyclePending) || instanceCapacityBlocked" @click="startFreshInstance(selected)">
                 <PlayIcon />{{ actionPending('start') ? t('ui.starting') : t('ui.start') }}
               </Button>
               <Button variant="success" size="sm" :disabled="overviewMutationsBlocked || Boolean(lifecyclePending) || !recoveryActionAllowed('resume')" @click="resumeInstance(selected)">
@@ -2303,9 +2384,11 @@ function displayedError(area: ErrorArea, current: string): string {
           <p v-if="statusCategory(selected) === 'attention'" class="status-attention primary-session-attention"><AlertTriangleIcon />{{ attentionSummary(selected) }}</p>
           <p v-else-if="selected.state === 'ready' && selected.primarySummary.scope === 'unknown'" class="inline-error primary-session-attention"><AlertTriangleIcon />{{ t('session.unknownWorkScope') }}</p>
           <div class="detail-actions primary-actions">
+            <a v-if="nativeWebAvailable" class="native-web-link" :href="nativeWebRoot!" target="_blank" rel="noopener noreferrer">{{ t('worker.openNative') }}<ExternalLinkIcon /></a>
             <Button :disabled="opening || selected.state !== 'ready' || !selected.primarySession" @click="openPrimarySession(selected)"><ExternalLinkIcon />{{ opening ? t('ui.connecting') : t('session.openPrimary') }}</Button>
             <Button variant="outline" class="new-session-button" :disabled="overviewMutationsBlocked || opening || selected.state !== 'ready'" @click="openNewSession(selected)"><PlusIcon />{{ opening ? t('ui.connecting') : t('terms.newSession') }}</Button>
           </div>
+          <p v-if="workerMode" class="status-note">{{ t('worker.providerLogin') }}</p>
           <section class="primary-todos" :aria-label="t('todo.heading')" :aria-busy="todosLoading">
             <div class="primary-todos-head">
               <h3>{{ t('todo.heading') }}</h3>
@@ -2342,7 +2425,7 @@ function displayedError(area: ErrorArea, current: string): string {
             <summary>{{ t('terms.technicalInfo') }}</summary>
             <div class="identity-strip">
               <span><small>{{ t('ui.technicalInstance') }}</small><code>{{ selected.id }}</code></span>
-              <span><small>{{ t('ui.technicalEndpoint') }}</small><code>127.0.0.1:{{ selected.port }}</code></span>
+              <span><small>{{ workerMode ? t('worker.nativeEntry') : t('ui.technicalEndpoint') }}</small><code>{{ workerMode ? nativeWebRoot ?? t('common.unknown') : `127.0.0.1:${selected.port}` }}</code></span>
               <span><small>{{ t('ui.technicalPid') }}</small><code>{{ selected.pid ?? t('common.unknown') }}</code></span>
               <span><small>{{ t('ui.technicalVersion') }}</small><code>{{ selected.healthVersion ?? t('common.unknown') }}</code></span>
             </div>
@@ -2355,7 +2438,7 @@ function displayedError(area: ErrorArea, current: string): string {
           <p v-if="selected.primarySummary.scope === 'known' && selected.primarySummary.busySessions === 0 && selected.primarySummary.retrySessions === 0" class="status-note">{{ t('session.noBusy') }}</p>
           <p v-if="selected.primarySummary.scope === 'known' && selected.primarySummary.busySessions === 0 && (selected.primarySummary.retrySessions ?? 0) > 0" class="status-note">{{ t('session.retrying') }}</p>
            <p v-if="selectedSummaryFailure" class="inline-error"><ErrorDetails :summary="selectedSummaryFailure.summary" :code="selectedSummaryFailure.code" /></p>
-          <p v-if="selected.remoteUrlUnavailableReason" class="inline-error"><ErrorDetails :summary="t('ui.remoteUnavailable')" :diagnostic="safeDiagnostic(selected.remoteUrlUnavailableReason)" /></p>
+          <p v-if="tailscaleSupported && selected.remoteUrlUnavailableReason" class="inline-error"><ErrorDetails :summary="t('ui.remoteUnavailable')" :diagnostic="safeDiagnostic(selected.remoteUrlUnavailableReason)" /></p>
            <p v-if="selectedFailure" class="inline-error"><ErrorDetails :summary="selectedFailure.summary" :code="selectedFailure.code" /></p>
 
           <details :key="selected.id" class="advanced-sessions">
@@ -2421,6 +2504,8 @@ function displayedError(area: ErrorArea, current: string): string {
         <Button variant="ghost" size="icon" :aria-label="t('aria.closeStart')" :disabled="mutating" @click="closeStartPanel()"><XIcon /></Button>
       </header>
       <div class="start-panel-body">
+        <p v-if="workerMode" class="lifecycle-note" role="status">{{ t(workerCapacityMessage) }}</p>
+        <p v-if="actionError" class="lifecycle-error" role="alert"><ErrorDetails :summary="displayedError('action', actionError)" :code="errorDetails.action?.code" :diagnostic="errorDetails.action?.diagnostic" /></p>
         <section class="shortcut-rail" aria-labelledby="shortcuts-title">
           <div class="section-heading">
             <div><p class="eyebrow">{{ t('ui.shortcutEyebrow') }}</p><h3 id="shortcuts-title">{{ t('terms.directoryShortcut') }}</h3></div>
@@ -2449,7 +2534,7 @@ function displayedError(area: ErrorArea, current: string): string {
         <section class="browser-panel">
           <div class="section-heading"><div><p class="eyebrow">{{ t('ui.directoryEyebrow') }}</p><h3>{{ t('ui.browseAndStart') }}</h3></div></div>
           <form class="browse-form" @submit.prevent="browse(browserPath)">
-            <Input :model-value="browserPath" :placeholder="t('ui.browsePlaceholder')" :aria-label="t('ui.browseAndStart')" @update:model-value="updateBrowserPath" />
+            <Input :model-value="browserPath" :placeholder="workerMode ? t('worker.directoryPlaceholder') : t('ui.browsePlaceholder')" :aria-label="t('ui.browseAndStart')" @update:model-value="updateBrowserPath" />
             <Button type="submit" variant="outline" :aria-label="t('ui.browse')"><SearchIcon /><span class="button-label">{{ t('ui.browse') }}</span></Button>
           </form>
           <p v-if="browsingPath" class="browse-status" role="status">{{ t('ui.browsing', { path: browsingPath }) }}</p>
@@ -2460,7 +2545,7 @@ function displayedError(area: ErrorArea, current: string): string {
           <template v-if="listing">
             <div class="current-directory">
               <code>{{ listing.current }}</code>
-              <Button variant="success" :disabled="mutating || Boolean(browsingPath) || browserPath !== listing.current" @click="start(listing.current)"><PlusIcon />{{ t('ui.startFresh') }}</Button>
+              <Button variant="success" :disabled="mutating || Boolean(browsingPath) || browserPath !== listing.current || instanceCapacityBlocked" @click="start(listing.current)"><PlusIcon />{{ t('ui.startFresh') }}</Button>
             </div>
             <button v-if="listing.parent" type="button" class="directory-row" @click="browse(listing.parent)"><ChevronLeftIcon />{{ t('ui.parentDirectory') }}</button>
             <button v-for="child in listing.children" :key="child.path" type="button" class="directory-row" @click="browse(child.path)"><FolderIcon />{{ child.name }}</button>
@@ -2492,7 +2577,8 @@ function displayedError(area: ErrorArea, current: string): string {
           <p v-if="notificationError" role="alert">{{ t(notificationError) }}</p>
           <small>{{ t('ui.notifyCaveat') }}</small>
         </section>
-        <form class="credential-form" @submit.prevent="updateManagerCredentials">
+        <p v-if="workerMode">{{ t('worker.credentials') }}</p>
+        <form v-if="credentialUpdateSupported" class="credential-form" @submit.prevent="updateManagerCredentials">
           <div><p class="eyebrow">{{ t('ui.account') }}</p><h3>{{ t('ui.accountHeading') }}</h3></div>
           <p>{{ t('ui.accountDescription') }}</p>
           <label><span>{{ t('ui.account') }}</span><Input v-model="managerUsername" autocomplete="username" required /></label>
@@ -2503,7 +2589,7 @@ function displayedError(area: ErrorArea, current: string): string {
           <!-- 對話框開啟時 toast-region 為 inert，成功訊息需留在對話框內供讀屏讀取。 -->
           <p v-if="managerSettingsSuccess" role="status">{{ t(managerSettingsSuccess) }}</p>
         </form>
-        <section class="manager-shutdown-panel">
+        <section v-if="managerShutdownSupported" class="manager-shutdown-panel">
           <div><p class="eyebrow">{{ t('ui.managerLifecycle') }}</p><h3>{{ t('ui.stopManager') }}</h3></div>
           <p>{{ t('ui.stopManagerDescription') }}</p>
           <Button variant="destructive" :disabled="managerSettingsBusy" @click="stopManager"><PowerIcon />{{ t('ui.stopManager') }}</Button>

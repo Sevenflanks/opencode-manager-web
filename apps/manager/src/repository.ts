@@ -61,6 +61,7 @@ interface PrimarySessionRow {
 }
 
 export interface PortAllocation {
+  allocationScope?: string
   id: string
   kind: InstanceKind
   clientInvocationId: string | null
@@ -72,6 +73,7 @@ export interface PortAllocation {
 }
 
 interface PortAllocationRow {
+  allocation_scope: string | null
   id: string
   kind: InstanceKind
   client_invocation_id: string | null
@@ -144,6 +146,8 @@ export class ManagerRepository {
     this.ensureManagedInstanceColumn("kind", "TEXT NOT NULL DEFAULT 'headless'")
     this.ensureManagedInstanceColumn("client_invocation_id", "TEXT")
     this.ensureManagedInstanceColumn("tracking_hidden", "INTEGER NOT NULL DEFAULT 0")
+    const allocationColumns = this.database.prepare("PRAGMA table_info(port_allocations)").all() as Array<{ name: string }>
+    if (!allocationColumns.some((column) => column.name === "allocation_scope")) this.database.exec("ALTER TABLE port_allocations ADD COLUMN allocation_scope TEXT")
     this.database.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS managed_instances_client_invocation
         ON managed_instances(client_invocation_id) WHERE client_invocation_id IS NOT NULL;
@@ -317,16 +321,26 @@ export class ManagerRepository {
     return row ? mapInstance(row) : null
   }
 
-  tryCreateAllocation(allocation: PortAllocation): boolean {
+  allocationScopes(): Array<{ id: string; scope: string | null }> {
+    // 舊 Worker 成功啟動已保存 epoch；沒有 scope/identity 的 reservation 不推測為可釋放。
+    return this.database.prepare(`SELECT a.id, COALESCE(a.allocation_scope, i.creation_time_ticks) AS scope
+      FROM port_allocations a LEFT JOIN managed_instances i ON i.id = a.instance_id`).all() as Array<{ id: string; scope: string | null }>
+  }
+
+  tryCreateAllocation(allocation: PortAllocation, obsoleteScopeIds: string[] = []): boolean {
     this.database.exec("BEGIN IMMEDIATE")
     try {
+      // 僅人工啟動提供 fresh authority 之前讀取的舊 scope IDs；不觸碰歷史 Instance，也不釋放並行建立的 slot。
+      if (allocation.allocationScope) for (const id of obsoleteScopeIds) {
+        this.database.prepare("DELETE FROM port_allocations WHERE id = ?").run(id)
+      }
       const result = this.database.prepare(`
         INSERT OR IGNORE INTO port_allocations (
-          id, kind, client_invocation_id, project_directory, port, created_at, expires_at, instance_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          id, kind, client_invocation_id, project_directory, port, created_at, expires_at, instance_id, allocation_scope
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         allocation.id, allocation.kind, allocation.clientInvocationId, allocation.projectDirectory,
-        allocation.port, allocation.createdAt, allocation.expiresAt, allocation.instanceId,
+        allocation.port, allocation.createdAt, allocation.expiresAt, allocation.instanceId, allocation.allocationScope ?? null,
       )
       this.database.exec("COMMIT")
       return result.changes === 1
@@ -424,6 +438,7 @@ function mapInstance(row: InstanceRow): InstanceRecord {
 
 function mapAllocation(row: PortAllocationRow): PortAllocation {
   return {
+    ...(row.allocation_scope === null ? {} : { allocationScope: row.allocation_scope }),
     id: row.id,
     kind: row.kind,
     clientInvocationId: row.client_invocation_id,
