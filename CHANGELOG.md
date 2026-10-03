@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.6.1...v0.7.0) (2026-10-03)
+
+
+### Features
+
+* **worker:** 完成 Linux Worker、Compose 與真實訂閱驗收 ([#103](https://github.com/Sevenflanks/opencode-manager-web/issues/103)) ([ece9cdd](https://github.com/Sevenflanks/opencode-manager-web/commit/ece9cdd4fb7f2cd3acc8aa40b27fc8f73dfb2aab))
+
 ## [0.6.1](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.6.0...v0.6.1) (2026-10-02)
 
 
