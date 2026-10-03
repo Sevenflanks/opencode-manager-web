@@ -1,7 +1,7 @@
 {
   "worker": {
     "title": "Worker",
-    "modeTitle": "Worker 模式",
+    "modeTitle": "Worker · 單機",
     "brandEyebrow": "WORKER · 執行管理",
     "connection": "執行環境",
     "openNative": "開啟原生 OpenCode Web",
@@ -11,7 +11,7 @@
     "capacityAvailable": "Worker 目前執行環境可用，可啟動或接續 Instance。",
     "capacityFull": "Worker 目前執行環境已占用；請先停止目前的 Instance，再啟動或接續。",
     "capacityUnknown": "無法確認 Worker 目前執行環境容量；請重新整理或重新檢查後再啟動或接續。",
-    "description": "每次使用一個 Instance；Project 目錄位於 Worker 執行環境。",
+    "description": "獨立運作，未由 Coordinator 管理。每次使用一個 Instance；Project 目錄位於 Worker 執行環境。",
     "credentials": "Worker 帳密由部署設定管理。原生 Web 會由瀏覽器另行要求登入。"
   },
   "common": {

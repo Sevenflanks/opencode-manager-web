@@ -159,8 +159,12 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
 
     await t.test("Worker identity is clear across viewport sizes and stale connectivity remains degraded", async () => {
       await page.goto(origin)
-      const modeHeading = page.getByRole("heading", { name: "Worker 模式", exact: true })
+      const modeHeading = page.getByRole("heading", { name: "Worker · 單機", exact: true })
       await modeHeading.waitFor()
+      const signal = page.locator(".connectivity-signal")
+      assert.equal(await signal.locator(".lucide-server-icon").count(), 1)
+      assert.equal(await signal.locator(".lucide-wifi-icon").count(), 0)
+      assert.equal(await signal.getAttribute("aria-hidden"), "true")
       assert.equal(await page.locator(".topbar-brand .eyebrow").innerText(), "WORKER · 執行管理")
       assert.doesNotMatch(await page.locator(".topbar-brand").innerText(), /WINDOWS/)
       assert.equal(await page.locator(".connectivity").getAttribute("data-tone"), "ready")
@@ -171,12 +175,14 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
       assert.equal(await page.locator(".topbar-brand .eyebrow").innerText(), "WORKER · 執行管理")
       assert.equal(await page.locator(".connectivity").getAttribute("data-tone"), "ready")
       await page.setViewportSize({ width: 390, height: 844 })
-      await page.getByText("每次使用一個 Instance；Project 目錄位於 Worker 執行環境。", { exact: true }).waitFor()
+      await page.getByText("獨立運作，未由 Coordinator 管理。每次使用一個 Instance；Project 目錄位於 Worker 執行環境。", { exact: true }).waitFor()
       assert.doesNotMatch(await page.locator(".connectivity").innerText(), /Tailscale|Serve|離線|本機/)
       connectivityFailure = true
       await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
       await page.getByRole("heading", { name: "連線資料已過期", exact: true }).waitFor()
       assert.equal(await page.locator(".connectivity").getAttribute("data-tone"), "unknown")
+      assert.equal(await signal.locator(".lucide-server-icon").count(), 1)
+      assert.equal(await signal.locator(".lucide-wifi-icon").count(), 0)
       assert.equal(await page.locator(".topbar-brand .eyebrow").innerText(), "WORKER · 執行管理")
       connectivity = { ...workerConnectivity, mode: "tailnet", tailscale: { state: "connected", dnsName: null, version: null }, registration: { state: "idle", trigger: null, diagnostic: null } }
       connectivityFailure = false
@@ -184,6 +190,8 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
       await page.goto(origin)
       await page.getByRole("heading", { name: "本機 Tailscale 在線", exact: true }).waitFor()
       assert.equal(await page.locator(".connectivity").getAttribute("data-mode"), "tailnet")
+      assert.equal(await page.locator(".connectivity-signal .lucide-wifi-icon").count(), 1)
+      assert.equal(await page.locator(".connectivity-signal .lucide-server-icon").count(), 0)
       assert.equal(await page.locator(".topbar-brand .eyebrow").innerText(), "WINDOWS · 連線管理")
       connectivity = structuredClone(workerConnectivity)
       await freshPage()
@@ -461,7 +469,7 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
         await freshPage()
         connectivity = { ...workerConnectivity, nativeWebOrigin: value }
         await page.goto(origin)
-        await page.locator("#connectivity-title").filter({ hasText: /^Worker 模式$/ }).waitFor({ state: "attached" })
+        await page.locator("#connectivity-title").filter({ hasText: /^Worker · 單機$/ }).waitFor({ state: "attached" })
         await page.getByRole("button", { name: /Worker Project/ }).click()
         assert.equal(await page.getByRole("link", { name: "開啟原生 OpenCode Web", exact: true }).count(), 0)
       }

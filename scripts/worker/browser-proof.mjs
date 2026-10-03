@@ -109,7 +109,7 @@ export async function browserProof({ origins, password, evidenceDirectory, scree
     const page = await context.newPage()
     page.setDefaultTimeout(20_000)
     await page.goto(origins.manager, { waitUntil: "domcontentloaded", timeout: 30_000 })
-    await page.getByRole("heading", { name: "Worker 模式", exact: true }).waitFor()
+    await page.getByRole("heading", { name: "Worker · 單機", exact: true }).waitFor()
     await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
     const panel = page.getByRole("dialog", { name: "啟動 Instance", exact: true })
     await panel.locator(".browse-form input").fill("/workspace/verification-project")

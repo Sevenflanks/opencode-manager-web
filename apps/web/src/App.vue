@@ -2134,7 +2134,7 @@ function displayedError(area: ErrorArea, current: string): string {
 
     <section class="connectivity" :data-tone="connectivityTone" :data-mode="connectivityMode" aria-labelledby="connectivity-title" :aria-busy="connectivityLoading">
       <div class="connectivity-status">
-        <span class="connectivity-signal"><WifiIcon /></span>
+        <span class="connectivity-signal" aria-hidden="true"><ServerIcon v-if="workerMode" /><WifiIcon v-else /></span>
         <div class="connectivity-status-copy">
           <p class="eyebrow">{{ workerMode ? t('worker.connection') : t('connectivity.eyebrow') }}</p>
           <h2 id="connectivity-title">{{ connectivityHeadline }}</h2>

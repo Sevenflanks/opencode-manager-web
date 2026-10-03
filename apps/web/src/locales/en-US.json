@@ -1,7 +1,7 @@
 {
   "worker": {
     "title": "Worker",
-    "modeTitle": "Worker mode",
+    "modeTitle": "Worker · Standalone",
     "brandEyebrow": "WORKER · EXECUTION MANAGEMENT",
     "connection": "Execution environment",
     "openNative": "Open native OpenCode Web",
@@ -11,7 +11,7 @@
     "capacityAvailable": "Worker's current execution environment is available to start or resume an Instance.",
     "capacityFull": "Worker's current execution environment is occupied. Stop its current Instance before starting or resuming.",
     "capacityUnknown": "Worker's current execution capacity could not be verified. Refresh or recheck before starting or resuming.",
-    "description": "Use one Instance at a time. Project directories belong to the Worker execution environment.",
+    "description": "Operates independently, not managed by a Coordinator. Use one Instance at a time. Project directories belong to the Worker execution environment.",
     "credentials": "Worker credentials are managed by the deployment. Your browser will request a separate login for native Web."
   }
 }
