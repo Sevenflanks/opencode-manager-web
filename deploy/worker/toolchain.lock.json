@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "base": {
+    "image": "node:24.14.0-bookworm-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8",
+    "source": "https://hub.docker.com/_/node",
+    "license": "MIT (Node.js); Debian package licenses in /usr/share/doc"
+  },
+  "debian": {
+    "snapshot": "20260930T000000Z",
+    "source": "https://snapshot.debian.org",
+    "packages": [
+      "ca-certificates", "git", "bash", "curl", "openssh-client", "ripgrep", "jq",
+      "unzip", "zip", "tar", "gzip", "xz-utils", "procps", "python3",
+      "libicu72", "libssl3", "zlib1g", "libstdc++6"
+    ],
+    "license": "Per-package copyright files in /usr/share/doc; resolved versions in toolchain-debian.tsv"
+  },
+  "tools": {
+    "java": {
+      "version": "25.0.4.1+1",
+      "source": "https://github.com/adoptium/temurin25-binaries/releases/tag/jdk-25.0.4.1%2B1",
+      "license": "GPL-2.0-with-classpath-exception (see JDK legal/)",
+      "amd64": {
+        "url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/OpenJDK25U-jdk_x64_linux_hotspot_25.0.4.1_1.tar.gz",
+        "sha256": "dbb698396d478e7fa2b1e50f4103324b2a99b90569ee27c33f2261f9215cf41e"
+      },
+      "arm64": {
+        "url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/OpenJDK25U-jdk_aarch64_linux_hotspot_25.0.4.1_1.tar.gz",
+        "sha256": "69df11a02cfa3ef7d7ca645e03edce6778ec090e100f6ae2b42097865730ac52"
+      }
+    },
+    "maven": {
+      "version": "3.9.11",
+      "source": "https://archive.apache.org/dist/maven/maven-3/3.9.11/",
+      "license": "Apache-2.0 (see Maven LICENSE and NOTICE)",
+      "url": "https://archive.apache.org/dist/maven/maven-3/3.9.11/binaries/apache-maven-3.9.11-bin.tar.gz",
+      "sha512": "bcfe4fe305c962ace56ac7b5fc7a08b87d5abd8b7e89027ab251069faebee516b0ded8961445d6d91ec1985dfe30f8153268843c89aa392733d1a3ec956c9978"
+    },
+    "gh": {
+      "version": "2.102.0",
+      "source": "https://github.com/cli/cli/releases/tag/v2.102.0",
+      "license": "MIT (see gh LICENSE)",
+      "amd64": {
+        "url": "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_amd64.tar.gz",
+        "sha256": "bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386"
+      },
+      "arm64": {
+        "url": "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_arm64.tar.gz",
+        "sha256": "7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484"
+      }
+    },
+    "officecli": {
+      "version": "1.0.153",
+      "source": "https://github.com/iOfficeAI/OfficeCLI/releases/tag/v1.0.153",
+      "license": "Apache-2.0; https://github.com/iOfficeAI/OfficeCLI/blob/v1.0.153/LICENSE",
+      "amd64": {
+        "url": "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.153/officecli-linux-x64",
+        "sha256": "dc1bf7ec9e0bf3ac45c5bd32934842ca2f8939775660526e057642ea68606a80"
+      },
+      "arm64": {
+        "url": "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.153/officecli-linux-arm64",
+        "sha256": "29c2527491331ac7b1ad6ebb4aa5ff9a666f06353675463aae9a832237ef0fda"
+      }
+    }
+  },
+  "runtime": {
+    "node": "24.14.0",
+    "npm": "11.9.0",
+    "opencode": "1.18.34",
+    "opencodeSource": "https://www.npmjs.com/package/opencode-ai/v/1.18.34",
+    "opencodeLicense": "MIT",
+    "installRoot": "/opt/omw-worker/toolchain",
+    "manifest": "/opt/omw-worker/toolchain-versions.json"
+  }
+}

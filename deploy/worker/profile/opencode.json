@@ -1,0 +1,8 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "compaction": { "auto": false },
+  "plugin": ["file:///opt/omw-worker/acp/acp.mjs"],
+  "instructions": ["/home/node/.config/omw-profile/AGENTS.md"],
+  "skills": { "paths": ["/home/node/.config/omw-profile/skills"] }
+}

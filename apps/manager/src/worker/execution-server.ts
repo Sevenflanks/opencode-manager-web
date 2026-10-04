@@ -3,6 +3,10 @@ import { workerBrowserCredentials, workerOrigin, workerPort, workerSecret } from
 
 await requireNamespaceOwner()
 const environment = process.env
+// 同程序 await，讓 Node 維持 PID 1/tini 的直接 child；初始化失敗時尚未建立 supervisor/listener。
+const bootstrapUrl = new URL(import.meta.url.includes("/dist/src/") ? "../../../../../scripts/worker/bootstrap.mjs" : "../../../../scripts/worker/bootstrap.mjs", import.meta.url)
+const { initializeWorker }: { initializeWorker: (environment: NodeJS.ProcessEnv) => Promise<unknown> } = await import(bootstrapUrl.href)
+await initializeWorker(environment)
 const credentials = await workerBrowserCredentials(environment)
 const nativeOrigin = workerOrigin(environment.OMW_NATIVE_ORIGIN, "OMW_NATIVE_ORIGIN")
 const controlPort = workerPort(environment.OMW_EXECUTION_PORT, 4175)
