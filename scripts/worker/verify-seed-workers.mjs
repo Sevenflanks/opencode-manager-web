@@ -87,6 +87,34 @@ export function publicWorkerRequest({ managerUrl, nativeUrl, headers, deadlineAt
     return response.json()
   }
 }
+export function validateSeedSourceVolume({ owner, context, sourceVolume }) {
+  const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value)
+  const list = value => {
+    assert.ok(value === undefined || Array.isArray(value), "SOURCE_OWNER_RECORD_INVALID")
+    return value ?? []
+  }
+  const names = value => list(value).map(name => {
+    assert.ok(typeof name === "string" && name.length > 0, "SOURCE_OWNER_RECORD_INVALID")
+    return name
+  })
+  assert.ok(isRecord(owner) && typeof owner.context === "string" && owner.context.length > 0, "SOURCE_OWNER_RECORD_INVALID")
+  assert.equal(owner.context, context, "SOURCE_CONTEXT_MISMATCH")
+  for (const group of [owner.shutdownAudit, owner.a, owner.b]) {
+    assert.ok(group === undefined || isRecord(group), "SOURCE_OWNER_RECORD_INVALID")
+  }
+  // 本腳本記錄 retainedVolumes 與 a/b；舊 lab 格式仍可讀，但不可把任意 root key 當成 worker。
+  const recorded = new Set([...names(owner.shutdownAudit?.preservedVolumes), ...names(owner.privateVolumes),
+    ...names(owner.retainedVolumes),
+    ...[owner.containers, owner.a?.containers, owner.b?.containers].flatMap(containers =>
+      list(containers).flatMap(c => {
+        assert.ok(isRecord(c), "SOURCE_OWNER_RECORD_INVALID")
+        return names(list(c.volumes).map(v => {
+          assert.ok(isRecord(v), "SOURCE_OWNER_RECORD_INVALID")
+          return v.name
+        }))
+      }))])
+  assert.ok(recorded.has(sourceVolume), "SOURCE_NOT_IN_APPROVED_OWNER_RECORD")
+}
 export function validateSeedResume({ owner, binding, evidence, context, repo, seedSource, allowProvider, seedFile }) {
   assert.equal(owner.context, context, "RESUME_CONTEXT_MISMATCH")
   assert.equal(binding.context, context, "RESUME_CONTEXT_MISMATCH")
@@ -134,10 +162,7 @@ async function main() {
     assert.match(sourceVolume, /^[a-zA-Z0-9_.-]+$/)
     assert.ok(authPath?.startsWith("/") && !authPath.includes(".."), "SEED_AUTH_PATH_REQUIRED")
     const previous = JSON.parse(await readFile(option("--seed-owner-record"), "utf8"))
-    assert.equal(previous.context, context, "SOURCE_CONTEXT_MISMATCH")
-    const recorded = new Set([...(previous.shutdownAudit?.preservedVolumes ?? []), ...(previous.privateVolumes ?? []),
-      ...(previous.containers ?? []).flatMap(c => (c.volumes ?? []).map(v => v.name))])
-    assert.ok(recorded.has(sourceVolume), "SOURCE_NOT_IN_APPROVED_OWNER_RECORD")
+    validateSeedSourceVolume({ owner: previous, context, sourceVolume })
   }
   const tempRoot = await realpath(option("--temp-root") ?? path.join(os.tmpdir(), "opencode"))
   const relative = path.relative(repo, tempRoot)
