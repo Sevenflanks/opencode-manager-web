@@ -59,6 +59,34 @@ export async function observeNativePrompt({ url, headers, sessionId, deadlineAt,
   })()
   return { stop: async () => { controller.abort(); await done } }
 }
+export function publicWorkerRequest({ managerUrl, nativeUrl, headers, deadlineAt }) {
+  return async (native, route, body, timeout = 60_000) => {
+    const method = body === undefined ? "GET" : "POST"
+    const pathname = route.split(/[?#]/, 1)[0]
+    const safePath = /^\/[a-zA-Z0-9_./-]{0,256}$/.test(pathname) ? pathname : "PUBLIC_PATH_REDACTED"
+    const failure = (httpStatus, errorCode) => {
+      const reason = httpStatus === null ? "PUBLIC_REQUEST_FAILED" : `PUBLIC_HTTP_${httpStatus}`
+      const error = new Error(`${reason} ${method} ${safePath} ${errorCode}`)
+      error.publicRequest = { method, path: safePath, httpStatus, errorCode }
+      return error
+    }
+    const remaining = deadlineAt - Date.now()
+    if (remaining <= 0) throw failure(null, "PUBLIC_OWNER_DEADLINE")
+    let response
+    try {
+      response = await fetch((native ? nativeUrl : managerUrl) + route, { method,
+        headers: { ...headers, origin: native ? nativeUrl : managerUrl },
+        body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(Math.min(timeout, remaining)) })
+    } catch { throw failure(null, "PUBLIC_TRANSPORT_FAILED") }
+    if (!response.ok) {
+      // 舊 evidence 只保留 409，無法分辨 Start／primary／Stop；只發布路徑與安全 code，不保留 body 或 query。
+      const value = await response.json().catch(() => null)
+      const code = value?.error?.code
+      throw failure(response.status, typeof code === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(code) ? code : "PUBLIC_ERROR_REDACTED")
+    }
+    return response.json()
+  }
+}
 async function main() {
   if (process.argv.includes("--help")) {
     console.log("node scripts/worker/verify-seed-workers.mjs --context desktop-linux [--image IMAGE] [--temp-root ABSOLUTE_DIR] [--prepare-login | --allow-provider --seed-source ABSOLUTE_FILE | --allow-provider --seed-source-volume VOLUME --seed-auth-path /RELATIVE/auth.json --seed-owner-record ABSOLUTE_JSON] [--resume-owned ABSOLUTE_OWNER_JSON]")
@@ -152,7 +180,9 @@ async function main() {
     try { const detail = await operation(); const status = detail?.status === "blocked" ? "blocked" : "passed"; evidence.checks.push({ name, startedAt, finishedAt: now(), status, detail }); console.log(`${status === "blocked" ? "BLOCKED" : "PASS"} ${name}`); return detail }
     catch (error) { evidence.checks.push({ name, startedAt, finishedAt: now(), status: "failed", errorKind: error.name,
       phase: binding.workers.find(w => name.startsWith(`worker-${w.side}-`))?.phase,
-      reason: /^(PUBLIC_HTTP_\d+|DOCKER_[A-Z_]+)$/.test(error.message) ? error.message : "ASSERTION_OR_OPERATION_FAILED" }); throw new Error(`CHECK_FAILED:${name}`) }
+      reason: error.publicRequest ? error.publicRequest.httpStatus === null ? "PUBLIC_REQUEST_FAILED" : `PUBLIC_HTTP_${error.publicRequest.httpStatus}`
+        : /^(PUBLIC_HTTP_\d+|DOCKER_[A-Z_]+)$/.test(error.message) ? error.message : "ASSERTION_OR_OPERATION_FAILED",
+      ...(error.publicRequest ? { publicRequest: error.publicRequest } : {}) }); throw new Error(`CHECK_FAILED:${name}`) }
     finally { await save() }
   }
   let watchdog, local = false, preserved = false, exportedReady = false, sourceBaseline
@@ -234,15 +264,7 @@ async function main() {
       })
       const password = (await readFile(worker.passwordFile, "utf8")).trim()
       const headers = { authorization: `Basic ${Buffer.from(`worker:${password}`).toString("base64")}`, "content-type": "application/json", origin: worker.managerUrl, "x-omw-csrf": "1" }
-      const request = async (native, route, body, timeout = 60_000) => {
-        const remaining = binding.deadlineAt - Date.now()
-        if (remaining <= 0) throw new Error("PUBLIC_OWNER_DEADLINE")
-        const response = await fetch((native ? worker.nativeUrl : worker.managerUrl) + route, { method: body === undefined ? "GET" : "POST",
-          headers: { ...headers, origin: native ? worker.nativeUrl : worker.managerUrl },
-          body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(Math.min(timeout, remaining)) })
-        if (!response.ok) throw new Error(`PUBLIC_HTTP_${response.status}`)
-        return response.json()
-      }
+      const request = publicWorkerRequest({ ...worker, headers, deadlineAt: binding.deadlineAt })
       request.watchPrompt = detail => observeNativePrompt({ url: worker.nativeUrl, headers, sessionId: worker.sessionId,
         deadlineAt: binding.deadlineAt, detail, onRetry: () => request(true, `/session/${worker.sessionId}/abort`, {}) })
       requests.set(worker.side, request)
