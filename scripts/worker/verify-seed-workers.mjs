@@ -87,6 +87,36 @@ export function publicWorkerRequest({ managerUrl, nativeUrl, headers, deadlineAt
     return response.json()
   }
 }
+export function validateSeedResume({ owner, binding, evidence, context, repo, seedSource, allowProvider, seedFile }) {
+  assert.equal(owner.context, context, "RESUME_CONTEXT_MISMATCH")
+  assert.equal(binding.context, context, "RESUME_CONTEXT_MISMATCH")
+  assert.equal(path.resolve(owner.repo), path.resolve(repo), "RESUME_WORKTREE_MISMATCH")
+  assert.equal(path.resolve(binding.repo), path.resolve(repo), "RESUME_WORKTREE_MISMATCH")
+  assert.equal(owner.lifecycle_result?.status, "stopped", "RESUME_REQUIRES_CONFIRMED_STOP")
+  assert.deepEqual(owner.seedSource, seedSource, "RESUME_SOURCE_MISMATCH")
+  assert.equal(owner.realDataRetained, allowProvider)
+  assert.ok(Array.isArray(evidence?.prompts) && evidence.prompts.length === 0, "OWNED_RUN_PROMPT_BUDGET_ALREADY_USED")
+  assert.equal(binding.runId, owner.runId, "RESUME_RUN_IDENTITY_MISMATCH")
+  assert.equal(evidence.runId, owner.runId, "RESUME_RUN_IDENTITY_MISMATCH")
+  assert.equal(path.resolve(owner.exportedSeed), path.resolve(seedFile), "RESUME_SEED_BOUNDARY_MISMATCH")
+}
+export async function prepareLocalSeed({ sourceFile, seedFile, repo, resume }) {
+  let sourceBaseline
+  const synthetic = JSON.stringify({ openai: { type: "oauth", access: "synthetic-access", refresh: "synthetic-refresh", expires: 0 } })
+  if (sourceFile) {
+    assert.ok(path.isAbsolute(sourceFile), "ABSOLUTE_SEED_SOURCE_REQUIRED")
+    const location = path.relative(repo, await realpath(sourceFile))
+    assert.ok(location.startsWith("..") || path.isAbsolute(location), "SEED_SOURCE_MUST_BE_OUTSIDE_CHECKOUT")
+    const { copyFile, constants } = await import("node:fs/promises")
+    const bytes = await readFile(sourceFile)
+    sourceBaseline = createHash("sha256").update(bytes).digest("hex")
+    // resume 只稽核原 seed；缺失或不符不能重新匯出，否則可能替換本輪 auth 來源。
+    if (resume) assert.ok((await readFile(seedFile)).equals(bytes), "OWNED_SEED_MISMATCH")
+    else await copyFile(sourceFile, seedFile, constants.COPYFILE_EXCL)
+  } else if (resume) assert.ok((await readFile(seedFile)).equals(Buffer.from(synthetic)), "OWNED_SEED_MISMATCH")
+  else await writeFile(seedFile, synthetic, { flag: "wx", mode: 0o600 })
+  return { sourceBaseline, detail: { freshVersionedFile: true, reusedOwnedVersion: Boolean(resume), sourceReadOnly: true, originalNeverModified: true } }
+}
 async function main() {
   if (process.argv.includes("--help")) {
     console.log("node scripts/worker/verify-seed-workers.mjs --context desktop-linux [--image IMAGE] [--temp-root ABSOLUTE_DIR] [--prepare-login | --allow-provider --seed-source ABSOLUTE_FILE | --allow-provider --seed-source-volume VOLUME --seed-auth-path /RELATIVE/auth.json --seed-owner-record ABSOLUTE_JSON] [--resume-owned ABSOLUTE_OWNER_JSON]")
@@ -115,14 +145,7 @@ async function main() {
   const resumePath = option("--resume-owned")
   assert.ok(!login || !resumePath, "LOGIN_REQUIRES_NEW_ENVIRONMENT")
   const resume = resumePath ? JSON.parse(await readFile(resumePath, "utf8")) : undefined
-  if (resume) {
-    assert.equal(resume.context, context)
-    assert.equal(path.resolve(resume.repo), path.resolve(repo))
-    assert.equal(resume.lifecycle_result.status, "stopped", "RESUME_REQUIRES_CONFIRMED_STOP")
-    assert.equal(resume.seedSource.volume, sourceVolume)
-    assert.equal(resume.seedSource.path, authPath)
-    assert.equal(resume.realDataRetained, allowProvider)
-  }
+  const seedSource = sourceVolume ? { volume: sourceVolume, path: authPath } : sourceFile ? { file: sourceFile } : { synthetic: true }
   const runId = resume?.runId ?? `omw-seed-${randomBytes(8).toString("hex")}`
   const directory = resume ? path.dirname(path.resolve(resumePath)) : await mkdtemp(path.join(tempRoot, `${runId}-`))
   assert.equal(path.dirname(directory).toLowerCase(), tempRoot.toLowerCase(), "OWNER_BOUNDARY_MISMATCH")
@@ -149,14 +172,14 @@ async function main() {
   const owner = seedWorkerOwner(binding), ownerPath = path.join(directory, "owner.json"), bindingPath = path.join(directory, "binding.json")
   const evidencePath = path.join(directory, "evidence.json"), proofPath = path.join(directory, "proof-ready.md")
   const previousEvidence = resume ? JSON.parse(await readFile(evidencePath, "utf8")) : undefined
-  assert.ok(!previousEvidence?.prompts.length, "OWNED_RUN_PROMPT_BUDGET_ALREADY_USED")
   if (resume) {
+    validateSeedResume({ owner: resume, binding, evidence: previousEvidence, context, repo, seedSource, allowProvider, seedFile })
     const archive = `previous-${Date.now()}`
     for (const file of ["owner.json", "evidence.json", "proof-ready.md"]) await writeFile(path.join(directory, `${archive}-${file}`), await readFile(path.join(directory, file)), { flag: "wx" })
   }
   const evidence = { runId, startedAt: now(), model: `openai/${modelID}`, allowProvider, synthetic: !allowProvider,
     checks: [], workers: [], prompts: [], loginEnvironment: login, managerRestarted: false, pat: { status: "blocked", reason: "NOT_PROVIDED" } }
-  const record = { ...binding, seedSource: sourceVolume ? { volume: sourceVolume, path: authPath } : sourceFile ? { file: sourceFile } : { synthetic: true },
+  const record = { ...binding, seedSource,
     exportedSeed: login ? null : seedFile, createdAt: now(), later_owner: "main session + user", realDataRetained: allowProvider || login,
     platform: "Windows", selected_tier: "external-launcher", owner_binding: { kind: "official-interface-current-run", runId, context },
     os_inspection_performed: false, lifecycle_shell_calls: [],
@@ -225,15 +248,10 @@ async function main() {
         const result = JSON.parse(await sourceRun(resume ? "source-audit" : "export"))
         assert.ok(resume ? result.sourceUnchanged && result.exportedSeedUnchanged : result.exported)
         return { ...result, freshVersionedFile: true, reusedOwnedVersion: Boolean(resume), sourceReadOnly: true }
-       } else if (sourceFile) {
-         assert.ok(path.isAbsolute(sourceFile), "ABSOLUTE_SEED_SOURCE_REQUIRED")
-         const location = path.relative(repo, await realpath(sourceFile))
-         assert.ok(location.startsWith("..") || path.isAbsolute(location), "SEED_SOURCE_MUST_BE_OUTSIDE_CHECKOUT")
-         const { copyFile, constants } = await import("node:fs/promises")
-         sourceBaseline = createHash("sha256").update(await readFile(sourceFile)).digest("hex")
-         await copyFile(sourceFile, seedFile, constants.COPYFILE_EXCL)
-      } else await writeFile(seedFile, JSON.stringify({ openai: { type: "oauth", access: "synthetic-access", refresh: "synthetic-refresh", expires: 0 } }), { flag: "wx", mode: 0o600 })
-      return { freshVersionedFile: true, sourceReadOnly: true, originalNeverModified: true }
+      }
+      const prepared = await prepareLocalSeed({ sourceFile, seedFile, repo, resume: Boolean(resume) })
+      sourceBaseline = prepared.sourceBaseline
+      return prepared.detail
     })
     exportedReady = !login
     for (const worker of binding.workers) {
