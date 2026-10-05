@@ -1,0 +1,5 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ranxianglei/opencode-acp/v1.18.3/dcp.schema.json",
+  "enabled": true,
+  "autoUpdate": false
+}

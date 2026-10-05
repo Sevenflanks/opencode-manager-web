@@ -1,0 +1,11 @@
+# Opt-in auth seed；沿用 base compose 的 command、PID namespace 與 persistent volumes。
+# GitHub PAT 是另一個可選 override，見 docs/worker-auth-seed.md。
+services:
+  execution:
+    environment:
+      OMW_AUTH_SEED_FILE: /run/secrets/auth_seed
+    secrets:
+      - auth_seed
+secrets:
+  auth_seed:
+    file: ${OMW_AUTH_SEED_SOURCE:?請指定版本庫外受保護的完整 OpenCode auth seed file}

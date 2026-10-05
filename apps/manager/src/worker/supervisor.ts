@@ -214,9 +214,11 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
 
 function executionEnvironment(source: NodeJS.ProcessEnv, password: string): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = {}
-  // 原生 auth 由 execution 的 HOME/XDG volume 持有；不可把 manager secret 路徑或 host provider credentials 傳給工具。
+  // 只傳精選 profile、工具鏈與同程序 bootstrap 的 gh 設定；manager secret／seed 路徑不可進工具環境。
   for (const name of ["HOME", "PATH", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP", "LANG", "TZ", "TERM", "COLORTERM",
-    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"]) {
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+    "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "GH_TOKEN", "GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL", "JAVA_HOME", "MAVEN_HOME",
+    "OFFICECLI_SKIP_UPDATE", "OFFICECLI_NO_AUTO_INSTALL", "OFFICECLI_NO_AUTO_RESIDENT"]) {
     if (source[name] !== undefined) result[name] = source[name]
   }
   for (const name of Object.keys(source)) if (/^LC_[A-Z_]+$/.test(name)) result[name] = source[name]

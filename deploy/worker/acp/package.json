@@ -1,0 +1,17 @@
+{
+  "name": "omw-worker-acp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.34",
+    "@opencode-ai/sdk": "1.18.34",
+    "opencode-acp": "1.18.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10"
+  }
+}
