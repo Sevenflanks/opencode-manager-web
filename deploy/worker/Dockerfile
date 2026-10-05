@@ -18,6 +18,8 @@ LABEL org.opencontainers.image.title="OMW Worker" \
       io.omw.opencode.version="1.18.34"
 # Linux execution namespace 僅供 OpenCode 與其工具；沒有 Docker socket 或 host credentials。
 COPY deploy/worker /opt/omw/deploy/worker
+# tini 由 lock/installer 安裝；K8s 明確 command /usr/bin/tini -- node ...。
+# Compose 已有 init:true，image 不設 ENTRYPOINT，避免形成兩層 init。
 RUN node /opt/omw/deploy/worker/toolchain-install.mjs \
     && test "$OPENCODE_VERSION" = "1.18.34" \
     && npm install -g "opencode-ai@$OPENCODE_VERSION" --no-audit --no-fund \

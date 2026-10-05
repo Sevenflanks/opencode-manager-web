@@ -30,3 +30,9 @@ export function workerPort(value: string | undefined, fallback: number): number 
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Worker port 必須是 1..65535。")
   return port
 }
+
+export function workerExecutionHost(value: string | undefined): "127.0.0.1" | "0.0.0.0" {
+  if (value === undefined) return "0.0.0.0"
+  if (value !== "127.0.0.1" && value !== "0.0.0.0") throw new Error("OMW_EXECUTION_HOST 必須是 127.0.0.1 或 0.0.0.0。")
+  return value
+}

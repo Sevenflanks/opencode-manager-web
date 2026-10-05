@@ -28,12 +28,15 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
   let root: ChildProcess | null = null
   let listenerIdentity: string | null = null
   let mutation = false
+  let draining = false
+  let shutdown: Promise<{ stopped: boolean; reason: string | null }> | undefined
   let startupFailure: { phase: string; code: string } | null = null
   let lastAcceptedAttempt: { instanceId: string; stopped: boolean } | null = null
   const app = Fastify({ logger: false, bodyLimit: 4096 })
   app.addHook("onRequest", async (request, reply) => {
     if (request.headers.origin !== undefined) return reply.code(403).send({ error: "BROWSER_NOT_ALLOWED" })
     if (!equalSecret(request.headers.authorization ?? "", `Bearer ${options.token}`)) return reply.code(401).send({ error: "AUTH_REQUIRED" })
+    if (draining) return reply.code(503).send({ error: "EXECUTION_DRAINING" })
   })
   app.setErrorHandler((_error, _request, reply) => reply.code(503).send({ error: "EXECUTION_UNAVAILABLE" }))
   // 只讀目錄操作使用 execution 自己的 filesystem；不 spawn helper，不接受外部 target/command。
@@ -74,13 +77,16 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
     startupFailure = null
     try {
       await requireNamespaceOwner()
+      if (draining) return reply.code(503).send({ error: "EXECUTION_DRAINING" })
       if (current?.instanceId === body.instanceId) {
         if (current.directory !== await realpath(body.directory)) return reply.code(409).send({ error: "IDENTITY_MISMATCH" })
         if (!listenerIdentity || root?.exitCode !== null || root?.signalCode !== null
           || (await listenerOwners(options.runtimePort)).join() !== listenerIdentity) return reply.code(409).send({ error: "EXECUTION_NOT_READY" })
+        if (draining) return reply.code(503).send({ error: "EXECUTION_DRAINING" })
         return current
       }
       if ((await namespaceProcesses()).length) return reply.code(409).send({ error: "EXECUTION_BUSY" })
+      if (draining) return reply.code(503).send({ error: "EXECUTION_DRAINING" })
       // 只有通過 preflight 的 Start 才持有 cleanup authority；下一個已接受 attempt 立即撤銷舊身分。
       acceptedAttempt = lastAcceptedAttempt = { instanceId: body.instanceId, stopped: false }
       current = null
@@ -88,6 +94,8 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
       listenerIdentity = null
       phase = "directory"
       const directory = await realpath(body.directory)
+      // TERM 可在任一 await 到達；最後一個 await 後重新檢查，避免 cleanup 掃完才又 spawn。
+      if (draining) return reply.code(503).send({ error: "EXECUTION_DRAINING" })
       phase = "spawn"
       const child = spawn(options.executable, options.arguments ?? ["serve", "--hostname", "127.0.0.1", "--port", String(options.runtimePort)], {
         cwd: directory, env: executionEnvironment(options.environment ?? process.env, runtimePassword), stdio: "ignore", detached: true,
@@ -102,7 +110,7 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
       // spawn 只證明建立程序，不代表 listener 已就緒。Start 回傳前建立同一次 execution 的 listener 身分。
       const deadline = Date.now() + 30_000
       try {
-        while (Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
+        while (!draining && Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
           phase = "listener-owners"
           const owners = await listenerOwners(options.runtimePort)
           if (owners.length === 1) {
@@ -114,7 +122,7 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
               })
               const health = await response.json() as { healthy?: boolean }
               if (response.ok && health.healthy === true && child.exitCode === null && child.signalCode === null
-                && (await listenerOwners(options.runtimePort)).join() === owners.join()) {
+                && (await listenerOwners(options.runtimePort)).join() === owners.join() && !draining) {
                 listenerIdentity = owners[0]!
                 return current
               }
@@ -125,8 +133,11 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
         if (child.exitCode !== null || child.signalCode !== null) phase = "child-exited"
         throw new Error("Execution startup did not establish an authenticated listener")
       } catch (error) {
-        const cleanup = await stopNamespace()
-        if (!cleanup.stopped) return reply.code(503).send({ error: "STARTUP_CLEANUP_UNCONFIRMED" })
+        // Draining 時由 final owner 在 mutation 解鎖後做一次 cleanup，不能與 Start cleanup 同時掃 namespace。
+        if (!draining) {
+          const cleanup = await stopNamespace()
+          if (!cleanup.stopped) return reply.code(503).send({ error: "STARTUP_CLEANUP_UNCONFIRMED" })
+        }
         throw error
       }
     } catch (error) {
@@ -174,6 +185,7 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
     const params = request.params as Identity
     if (!matches(params)) return reply.code(409).send({ error: "IDENTITY_MISMATCH" })
     if (!await listenerMatches()) return reply.code(503).send({ error: "EXECUTION_NOT_READY" })
+    if (draining) return reply.code(503).send({ error: "EXECUTION_DRAINING" })
     const prefix = `/runtime/${params.epoch}/${params.instanceId}`
     if (!request.raw.url?.startsWith(`${prefix}/`)) return reply.code(400).send({ error: "PATH_INVALID" })
     reply.hijack()
@@ -190,26 +202,43 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
     const expected = `Basic ${Buffer.from(`${options.browserUsername}:${options.browserPassword}`).toString("base64")}`
     if (!equalSecret(request.headers.authorization ?? "", expected)) return reply.header("www-authenticate", 'Basic realm="OpenCode Worker", charset="UTF-8"').code(401).send()
     if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && request.headers.origin !== origin.origin) return reply.code(403).send()
+    if (draining) return reply.code(503).send({ error: "EXECUTION_DRAINING" })
     if (!current) return reply.code(503).send({ error: "EXECUTION_NOT_STARTED" })
     if (!await listenerMatches()) return reply.code(503).send({ error: "EXECUTION_NOT_READY" })
+    if (draining) return reply.code(503).send({ error: "EXECUTION_DRAINING" })
     reply.hijack()
     proxyRuntime(request.raw, reply.raw, options.runtimePort, request.raw.url ?? "/", runtimePassword)
   })
   native.all("/*", async () => undefined)
   native.server.on("upgrade", (request, socket, head) => {
-    const authorized = options.nativeOrigin && options.browserUsername && options.browserPassword && current
+    const authorized = !draining && options.nativeOrigin && options.browserUsername && options.browserPassword && current
       && request.headers.host === new URL(options.nativeOrigin).host && request.headers.origin === options.nativeOrigin
       && request.headers["sec-fetch-site"] !== "cross-site"
       && equalSecret(request.headers.authorization ?? "", `Basic ${Buffer.from(`${options.browserUsername}:${options.browserPassword}`).toString("base64")}`)
     if (!authorized) { socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"); return }
     void listenerMatches().then((matched) => {
-      if (!matched) { socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n"); return }
+      if (!matched || draining) { socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n"); return }
       proxyRuntimeUpgrade(request, socket, head, options.runtimePort, runtimePassword)
     }).catch(() => socket.destroy())
   })
   app.decorate("nativeGateway", native)
   app.addHook("onClose", async () => { await native.close() })
-  return Object.assign(app, { nativeGateway: native })
+  const beginDrain = () => { draining = true }
+  const shutdownExecution = () => {
+    beginDrain()
+    shutdown ??= (async () => {
+      await requireNamespaceOwner()
+      // 在途 Start/Stop 先退出 mutation；超時只交給容器 final owner，不並行啟動另一輪掃描。
+      const deadline = Date.now() + 5_000
+      while (mutation && Date.now() < deadline) await delay(20)
+      if (mutation) return { stopped: false, reason: "execution mutation did not drain" }
+      mutation = true
+      try { return await stopNamespace() }
+      finally { mutation = false }
+    })()
+    return shutdown
+  }
+  return Object.assign(app, { nativeGateway: native, beginDrain, shutdownExecution })
 }
 
 function executionEnvironment(source: NodeJS.ProcessEnv, password: string): NodeJS.ProcessEnv {

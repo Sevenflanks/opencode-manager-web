@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync, symlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync, symlinkSync, accessSync, constants } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,8 +10,8 @@ const lock = JSON.parse(readFileSync(new URL('./toolchain.lock.json', import.met
 const arch = { x64: 'amd64', arm64: 'arm64' }[process.arch];
 if (!arch) throw new Error(`Unsupported Worker architecture: ${process.arch}`);
 const root = lock.runtime.installRoot;
-const run = (command, args, timeout = 180_000, capture = false) => {
-  const result = spawnSync(command, args, { timeout, encoding: 'utf8', stdio: capture ? 'pipe' : 'inherit' });
+const run = (command, args, timeout = 180_000, capture = false, cwd) => {
+  const result = spawnSync(command, args, { timeout, encoding: 'utf8', stdio: capture ? 'pipe' : 'inherit', cwd });
   if (result.error || result.status !== 0) throw new Error(`${command} failed: ${result.error?.message ?? result.stderr ?? result.status}`);
   return result.stdout?.trim();
 };
@@ -25,7 +25,24 @@ writeFileSync('/etc/apt/sources.list', [
   '',
 ].join('\n'));
 run('apt-get', ['-o', 'Acquire::Retries=2', '-o', 'Acquire::http::Timeout=30', 'update'], 240_000);
-run('apt-get', ['-o', 'Acquire::Retries=2', '-o', 'Acquire::http::Timeout=30', 'install', '-y', '--no-install-recommends', ...lock.debian.packages], 300_000);
+const initTemporary = mkdtempSync(join(tmpdir(), 'omw-init-'));
+try {
+  const tini = lock.debian.tini;
+  if (!lock.debian.packages.includes(`tini=${tini.version}`)) throw new Error('tini package version mismatch');
+  // 仍由 frozen、signed apt index 選取套件；另驗固定 bytes，避免 init 被浮動版本取代。
+  run('apt-get', ['-o', 'Acquire::Retries=2', '-o', 'Acquire::http::Timeout=30', 'download', `tini=${tini.version}`], 120_000, false, initTemporary);
+  const archive = join(initTemporary, `tini_${tini.version}_${arch}.deb`);
+  const expected = tini[arch].sha256;
+  if (!/^[a-f0-9]{64}$/.test(expected) || createHash('sha256').update(readFileSync(archive)).digest('hex') !== expected) throw new Error('tini checksum mismatch');
+  run('apt-get', ['-o', 'Acquire::Retries=2', '-o', 'Acquire::http::Timeout=30', 'install', '-y', '--no-install-recommends',
+    ...lock.debian.packages.filter((entry) => !entry.startsWith('tini=')), archive], 300_000);
+} finally {
+  rmSync(initTemporary, { recursive: true, force: true });
+}
+if (run('dpkg-query', ['-W', '-f=${Version}', 'tini'], 30_000, true) !== lock.debian.tini.version) throw new Error('Installed tini version mismatch');
+if (!run('dpkg-query', ['-L', 'tini'], 30_000, true).split('\n').includes(lock.debian.tini.executable)) throw new Error('Installed tini path mismatch');
+accessSync(lock.debian.tini.executable, constants.X_OK);
+run(lock.debian.tini.executable, ['--version'], 30_000);
 mkdirSync(root, { recursive: true });
 const packages = run('dpkg-query', ['-W', '-f=${binary:Package}\t${Version}\t${Architecture}\n'], 30_000, true);
 writeFileSync('/opt/omw-worker/toolchain-debian.tsv', `${packages}\n`);

@@ -48,3 +48,24 @@ test("Start requires exact supervisor epoch and rejects malformed input without 
     assert.equal((await app.inject({ method: "POST", url: "/v1/inspect", headers, payload: { epoch: "stale", instanceId: "fixture" } })).json().processState, "unknown")
   } finally { await app.close() }
 })
+
+test("execution draining rejects new control work over HTTP while retaining authentication", { timeout: 10_000 }, async () => {
+  const app = buildExecutionApp({ token, executable: process.execPath, runtimePort: 4096 })
+  const lifetime = setTimeout(() => { app.server.closeAllConnections(); void app.close() }, 8_000)
+  try {
+    const origin = await app.listen({ host: "127.0.0.1", port: 0 })
+    const get = (headers: Record<string, string>) => fetch(`${origin}/v1/execution`, { headers, signal: AbortSignal.timeout(1_000) })
+    assert.equal((await get({ authorization: `Bearer ${token}` })).status, 200)
+    app.beginDrain()
+    assert.equal((await get({})).status, 401)
+    assert.equal((await get({ authorization: `Bearer ${token}` })).status, 503)
+    const start = await fetch(`${origin}/v1/start`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ epoch: "stale", instanceId: "must-not-start", directory: process.cwd() }), signal: AbortSignal.timeout(1_000) })
+    assert.equal(start.status, 503)
+    assert.deepEqual(await start.json(), { error: "EXECUTION_DRAINING" })
+  } finally {
+    clearTimeout(lifetime)
+    app.server.closeAllConnections()
+    await app.close()
+  }
+})
