@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync, symlinkSync, accessSync, constants } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync, symlinkSync, lstatSync, accessSync, constants } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +10,13 @@ const lock = JSON.parse(readFileSync(new URL('./toolchain.lock.json', import.met
 const arch = { x64: 'amd64', arm64: 'arm64' }[process.arch];
 if (!arch) throw new Error(`Unsupported Worker architecture: ${process.arch}`);
 const root = lock.runtime.installRoot;
+// OpenCode 1.18.34 的 Bash login shell 由 /etc/profile 重設 PATH；不能只靠 Docker ENV。
+// 只連到 image 固定、唯讀工具，不加入 workspace/HOME 路徑，也不取代既有命令。
+const commands = { java: 'java/bin/java', javac: 'java/bin/javac', mvn: 'maven/bin/mvn', gh: 'gh/bin/gh', officecli: 'officecli/officecli' };
+for (const name of Object.keys(commands)) {
+  const destination = `/usr/local/bin/${name}`;
+  if (lstatSync(destination, { throwIfNoEntry: false })) throw new Error(`Toolchain command collision: ${destination}`);
+}
 const run = (command, args, timeout = 180_000, capture = false, cwd) => {
   const result = spawnSync(command, args, { timeout, encoding: 'utf8', stdio: capture ? 'pipe' : 'inherit', cwd });
   if (result.error || result.status !== 0) throw new Error(`${command} failed: ${result.error?.message ?? result.stderr ?? result.status}`);
@@ -63,7 +70,6 @@ try {
     mkdirSync(destination);
     if (name === 'officecli') {
       run('install', ['-m', '0555', archive, join(destination, 'officecli')]);
-      symlinkSync(join(destination, 'officecli'), '/usr/local/bin/officecli');
     } else {
       run('tar', ['-xzf', archive, '--strip-components=1', '--no-same-owner', '-C', destination]);
     }
@@ -71,6 +77,11 @@ try {
   }
   // Runtime node 不可更新 image 工具，只有 HOME/cache/workspace 是工作副本。
   run('chmod', ['-R', 'a-w', root]);
+  for (const [name, relative] of Object.entries(commands)) {
+    const source = join(root, relative);
+    accessSync(source, constants.X_OK);
+    symlinkSync(source, `/usr/local/bin/${name}`);
+  }
   const npm = run('npm', ['--version'], 30_000, true);
   if (process.versions.node !== lock.runtime.node || npm !== lock.runtime.npm) throw new Error('Base Node/npm version mismatch');
   writeFileSync(lock.runtime.manifest, `${JSON.stringify({ ...lock, architecture: arch, resolved: { node: process.versions.node, npm }, debianVersions: '/opt/omw-worker/toolchain-debian.tsv' }, null, 2)}\n`);
