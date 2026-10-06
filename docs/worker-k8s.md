@@ -29,6 +29,10 @@ kubectl kustomize C:/private/omw/render-001 --output C:/private/omw/render-001/r
 
 UID/GID/fsGroup 1000，drop ALL capabilities、`allowPrivilegeEscalation=false`、RuntimeDefault seccomp、不掛 ServiceAccount token、不使用 hostPID 或 shareProcessNamespace。每 Worker 的 manager-data、execution-home、workspace 都是私有 emptyDir；manager 不掛 workspace，filesystem 操作走 execution。預設每容器 request 100m/256Mi/256Mi ephemeral，limit 2 CPU/2Gi/4Gi ephemeral，Pod termination grace 30 秒；這是待目標容量 preflight 的提案，不是 cluster 容量保證。
 
+Start／Resume 僅能在 execution 的固定 `/workspace` 本身或其子目錄開 Instance。候選目錄及 root 都先解析 `realpath`，以 canonical containment 拒絕外部目錄、`/workspace-sibling`、`..` 逃逸及指向外部的 symlink；指向內部的 symlink 可用。Manager 在 allocation 前檢查，直接 authenticated execution `/v1/start` 也必須通過同一邊界，違反時回 HTTP 400、`WORKER_DIRECTORY_OUTSIDE_WORKSPACE`；沒有可設定的外部 root。
+
+這是 Worker 開 Instance 的規則，不是 filesystem 全面 sandbox：readonly browse／解析及 Directory Shortcut 可仍指向外部，但不能在該目錄 Start／Resume。Shortcut 不作為 allowlist，Windows local runtime 不套此邊界。
+
 ## Secrets 與首次登入
 
 公開 artifact 不包含 Secret、dummy Secret、Basic value 或 OIDC secret。每 Worker 私有 Secret 的 key 為 `browser_password`、`execution_token`；username 在 Worker 宣告，必須非空且不可含冒號、CR、LF 或 NUL。兩容器 read-only 掛載該 Worker Secret，不掛 gateway OIDC config。password 至少 16 字元、executionToken 至少 32 字元，UTF-8 掛載檔各不得超過 4096 bytes；兩者不可含 CR、LF 或 NUL，password 不接受首尾空白，token 不接受任何 whitespace。renderer 不 trim 原值，內部空白 password 原樣保留；`workerSecret()` 僅移除檔尾一個 LF／CRLF，不 trim，生成的 Secret value 不附換行。Basic password 必須與 gateway 私有輸入完全一致；控制 token 每 Worker 獨立。

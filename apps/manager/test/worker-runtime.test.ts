@@ -12,11 +12,12 @@ test("Worker launch is pinned to reserved scope even if supervisor incarnation c
   const requests: string[] = []
   const runtime = new WorkerRuntime({ controlOrigin: "http://execution:4175", token: "fixture", nativeOrigin: "http://localhost:4180", fetch: async (url, init) => {
     requests.push(new URL(String(url)).pathname)
+    if (new URL(String(url)).pathname === "/v1/directories/resolve-start") return Response.json({ directory: "/workspace" })
     assert.equal(JSON.parse(String(init?.body)).epoch, "reserved-epoch")
     return Response.json({ error: "EPOCH_MISMATCH" }, { status: 409 })
   } })
   await assert.rejects(runtime.launch("/workspace", 4096, "instance", "reserved-epoch"), { code: "EXECUTION_REJECTED" })
-  assert.deepEqual(requests, ["/v1/start"])
+  assert.deepEqual(requests, ["/v1/directories/resolve-start", "/v1/start"])
 })
 
 test("Worker adapter uses persisted epoch for authenticated control and never exposes internal endpoint in open URL", async () => {
@@ -49,7 +50,7 @@ test("ManagerService restart reuses persisted execution identity; shutdown and u
   const runtime = () => new WorkerRuntime({ controlOrigin: "http://execution:4175", token: "fixture-secret", nativeOrigin: "http://127.0.0.1:4180", fetch: async (url, init) => {
     const request = new URL(String(url))
     calls.push(request.pathname)
-    if (request.pathname === "/v1/directories/resolve") return Response.json({ directory })
+    if (request.pathname === "/v1/directories/resolve" || request.pathname === "/v1/directories/resolve-start") return Response.json({ directory })
     if (request.pathname === "/v1/execution") return Response.json({ epoch: "epoch-one", capacity: "available" })
     if (request.pathname === "/v1/start") {
       const body = JSON.parse(String(init?.body))

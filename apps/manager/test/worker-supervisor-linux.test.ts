@@ -34,16 +34,17 @@ test(`Manager manual Start recovers in the same epoch after ${failure}`, { skip:
   if (failure === "executable EACCES before spawn") await writeFile(executable, repairedExecutable, { mode: 0o600 })
   if (failure === "directory race before spawn") await writeFile(executable, repairedExecutable, { mode: 0o700 })
   if (failure === "readiness failure after spawn") await writeFile(executable, `#!/bin/sh\nexec "${process.execPath}" -e 'process.exit(1)'\n`, { mode: 0o700 })
-  let removeAfterResolve = failure === "directory race before spawn"
+  let removeAfterResolve = false
+  let triggerDirectoryRace = failure === "directory race before spawn"
   const app = buildExecutionApp({ token, executable, runtimePort: 4096 }, {
     ...localDirectories,
     async resolve(input) {
       const resolved = await localDirectories.resolve(input)
-      // 真正 execution filesystem 在 public resolve 與 Start realpath 間消失，不 mock spawn/error。
-      if (removeAfterResolve) { removeAfterResolve = false; await rm(project, { recursive: true }) }
+      // 真正 filesystem 在 /v1/start preflight 與 spawn 前的再次解析間消失，不 mock spawn/error。
+      if (removeAfterResolve && input === project) { removeAfterResolve = false; await rm(project, { recursive: true }) }
       return resolved
     },
-  })
+  }, directory)
   const sockets = new Set<Socket>()
   app.server.on("connection", (socket) => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)) })
   const lifetime = setTimeout(() => { for (const socket of sockets) socket.destroy() }, 25_000)
@@ -55,8 +56,16 @@ test(`Manager manual Start recovers in the same epoch after ${failure}`, { skip:
   try {
     const origin = await app.listen({ host: "127.0.0.1", port: 0 })
     runtime = new WorkerRuntime({ controlOrigin: origin, token, nativeOrigin: "http://native.fixture.test", fetch: async (url, init) => {
-      if (new URL(String(url)).pathname === "/v1/start") attempts.push(JSON.parse(String(init?.body)))
-      return await fetch(url, init)
+      if (new URL(String(url)).pathname === "/v1/start") {
+        attempts.push(JSON.parse(String(init?.body)))
+        if (triggerDirectoryRace) { triggerDirectoryRace = false; removeAfterResolve = true }
+      }
+      const response = await fetch(url, init)
+      if (new URL(String(url)).pathname === "/v1/start" && !response.ok) {
+        assert.equal((await response.clone().json() as { startRejected?: unknown }).startRejected, undefined,
+          "accepted failure cannot claim preaccept rejection, including directory race before spawn")
+      }
+      return response
     } })
     service = new ManagerService(repository, runtime, { min: 4096, max: 4096 })
     const control = async (pathname: string, body?: unknown) => await fetch(`${origin}${pathname}`, {
@@ -108,6 +117,11 @@ test(`Manager manual Start recovers in the same epoch after ${failure}`, { skip:
     assert.deepEqual(await service.workerCapacity(), { state: "occupied", maxInstances: 1 })
     assert.equal((await control("/v1/inspect", { epoch, instanceId: started.id })).status, 200)
     assert.equal((await runtime.inspect(repository.getInstance(started.id)!)).portOwnerMatched, true)
+    const rejectedResend = await control("/v1/start", { epoch, instanceId: started.id, directory: path.join(directory, "missing-resend") })
+    assert.equal(rejectedResend.status, 400)
+    assert.equal((await rejectedResend.json() as { startRejected?: unknown }).startRejected, undefined,
+      "same-ID resend cannot deny its earlier accepted execution")
+    assert.equal((await runtime.inspect(repository.getInstance(started.id)!)).running, true)
     assert.equal((await runtime.cleanupLaunch(started.id)).stopped, true)
     replacement = undefined
     // 前一個 current 已 stopped；下一個 accepted attempt 即使還沒 spawn，也撤銷前一個 ID。
@@ -138,7 +152,7 @@ test("lost successful Start response and unreachable cleanup stay fail-closed de
     const server=http.createServer((req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({healthy:true,version:'fixture'}))}).listen(4096,'127.0.0.1');
     setTimeout(()=>process.exit(0),20000);process.on('SIGTERM',()=>{server.close();process.exit(0)});`)
   const token = "fixture-control-token-32-characters"
-  const app = buildExecutionApp({ token, executable: process.execPath, arguments: [fixture], runtimePort: 4096 })
+  const app = buildExecutionApp({ token, executable: process.execPath, arguments: [fixture], runtimePort: 4096 }, localDirectories, directory)
   const sockets = new Set<Socket>()
   app.server.on("connection", (socket) => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)) })
   const lifetime = setTimeout(() => { for (const socket of sockets) socket.destroy() }, 25_000)
@@ -255,7 +269,7 @@ test("execution Stop covers an orphaned detached tool after its parent exits; st
     }).listen(4096,'127.0.0.1'),350);`)
   const token = "fixture-control-token-32-characters"
   const app = buildExecutionApp({ token, executable: process.execPath, arguments: [fixture], runtimePort: 4096,
-    environment: { ...process.env, OMW_EXECUTION_TOKEN_FILE: '/fixture/control-secret', OMW_BROWSER_PASSWORD_FILE: '/fixture/browser-secret', OPENAI_API_KEY: 'must-not-seed-tools', HOME: directory } })
+    environment: { ...process.env, OMW_EXECUTION_TOKEN_FILE: '/fixture/control-secret', OMW_BROWSER_PASSWORD_FILE: '/fixture/browser-secret', OPENAI_API_KEY: 'must-not-seed-tools', HOME: directory } }, localDirectories, directory)
   const headers = { authorization: `Bearer ${token}` }
   let identity: { epoch: string; instanceId: string } | undefined
   try {
@@ -282,7 +296,7 @@ test("execution Stop covers an orphaned detached tool after its parent exits; st
     assert.equal((await app.inject({ method: "GET", url: `${runtimePrefix}/global/health`, headers })).statusCode, 503)
     assert.ok(orphan.managedProcessCount >= 1)
     // 新 supervisor epoch 的 current 為空仍不代表 namespace 已空；不可啟動或 Stop 舊身分。
-    const replacementSupervisor = buildExecutionApp({ token, executable: process.execPath, arguments: [fixture], runtimePort: 4096 })
+    const replacementSupervisor = buildExecutionApp({ token, executable: process.execPath, arguments: [fixture], runtimePort: 4096 }, localDirectories, directory)
     try {
       const fresh = (await replacementSupervisor.inject({ url: "/v1/execution", headers })).json()
       assert.equal(fresh.execution, null)
@@ -311,7 +325,7 @@ test("Start failure cleans an orphan before reporting failure and leaves no runn
   const fixture = path.join(directory, "failed.cjs")
   await writeFile(fixture, `const child=require('node:child_process').spawn(process.execPath,['-e',"setTimeout(()=>process.exit(0),15000);process.on('SIGTERM',()=>{})"],{detached:true,stdio:'ignore'});child.unref();setTimeout(()=>process.exit(1),200);`)
   const token = "fixture-control-token-32-characters"
-  const app = buildExecutionApp({ token, executable: process.execPath, arguments: [fixture], runtimePort: 4096 })
+  const app = buildExecutionApp({ token, executable: process.execPath, arguments: [fixture], runtimePort: 4096 }, localDirectories, directory)
   const headers = { authorization: `Bearer ${token}` }
   let identity: { epoch: string; instanceId: string } | undefined
   try {
@@ -364,8 +378,8 @@ test("native gateway TCP upgrade enforces current listener and browser guards, r
   const nativeOrigin = "http://native.fixture.test"
   const options = { token, executable: process.execPath, arguments: [fixture], runtimePort: 4096,
     nativeOrigin, browserUsername: "fixture-browser", browserPassword: "synthetic-browser-only" }
-  const app = buildExecutionApp(options)
-  const empty = buildExecutionApp(options)
+  const app = buildExecutionApp(options, localDirectories, directory)
+  const empty = buildExecutionApp(options, localDirectories, directory)
   const control = { authorization: `Bearer ${token}` }
   const browser = `Basic ${Buffer.from(`${options.browserUsername}:${options.browserPassword}`).toString("base64")}`
   const headers = { host: new URL(nativeOrigin).host, origin: nativeOrigin, authorization: browser,

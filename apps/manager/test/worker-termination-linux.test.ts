@@ -6,6 +6,7 @@ import path from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { buildExecutionApp, requireNamespaceOwner } from "../src/worker/supervisor.js"
 import { startHealthServer } from "../src/worker/health.js"
+import { localDirectories } from "../src/directory.js"
 
 // 僅能由專用 PID namespace 的 Node PID 1 或 tini 直接 child 執行；不可在一般 Linux host 掃程序。
 for (const phase of ["ready", "starting"] as const) {
@@ -21,7 +22,7 @@ for (const phase of ["ready", "starting"] as const) {
       const server=http.createServer((req,res)=>{res.setHeader('content-type','application/json');if(req.headers.authorization!==authorization){res.writeHead(401).end('{}');return}res.end(JSON.stringify({healthy:${phase === "ready"}}))}).listen(4096,'127.0.0.1');
       process.on('SIGTERM',()=>{fs.writeFileSync(${JSON.stringify(rootTerm)},'term');server.close();process.exit(0)});setTimeout(()=>process.exit(0),12000);`)
     const token = "fixture-control-token-32-characters"
-    const app = buildExecutionApp({ token, executable: process.execPath, arguments: [fixture], runtimePort: 4096 })
+    const app = buildExecutionApp({ token, executable: process.execPath, arguments: [fixture], runtimePort: 4096 }, localDirectories, directory)
     const health = await startHealthServer(0)
     const lifetime = setTimeout(() => { app.server.closeAllConnections(); void health?.close() }, 15_000)
     let start: Promise<Response> | undefined

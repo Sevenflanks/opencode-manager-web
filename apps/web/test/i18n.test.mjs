@@ -33,12 +33,17 @@ try {
     assert.match(capacityError.summary, /current execution capacity could not be verified/)
     assert.equal(capacityError.code, "WORKER_CAPACITY_UNAVAILABLE")
     assert.equal(capacityError.diagnostic, null)
+    const workspaceError = () => presentError(new ApiError("WORKER_DIRECTORY_OUTSIDE_WORKSPACE", "internal execution detail", 400), key => i18n.global.t(key))
+    assert.match(workspaceError().summary, /Choose \/workspace or a subdirectory/)
+    assert.equal(workspaceError().code, "WORKER_DIRECTORY_OUTSIDE_WORKSPACE")
+    assert.equal(workspaceError().diagnostic, null)
     i18n.global.locale.value = "zh-TW"
     assert.match(await render("worker.openNative"), /開啟原生 OpenCode Web/)
     assert.match(await render("worker.credentials"), /Worker 帳密由部署設定管理/)
     assert.match(await render("worker.capacityAvailable"), /目前執行環境可用/)
     assert.match(await render("worker.capacityFull"), /目前執行環境已占用/)
     assert.match(await render("worker.capacityUnknown"), /無法確認 Worker 目前執行環境容量/)
+    assert.match(workspaceError().summary, /請選擇 \/workspace 或其子目錄/)
   })
 
   await test("named parameters reorder and missing test-locale messages fall back to zh-TW", async () => {

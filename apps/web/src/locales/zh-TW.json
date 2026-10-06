@@ -7,6 +7,7 @@
     "openNative": "開啟原生 OpenCode Web",
     "nativeEntry": "原生 Web 入口",
     "directoryPlaceholder": "輸入 Worker 執行環境中的 Project 目錄",
+    "directoryOutsideWorkspace": "請選擇 /workspace 或其子目錄來啟動或接續 Worker Instance；symlink 解析後也必須位於 /workspace 內。",
     "providerLogin": "Provider 登入與重新登入請在原生 OpenCode Web 中操作。",
     "capacityAvailable": "Worker 目前執行環境可用，可啟動或接續 Instance。",
     "capacityFull": "Worker 目前執行環境已占用；請先停止目前的 Instance，再啟動或接續。",

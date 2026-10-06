@@ -53,6 +53,8 @@ export interface InitialLocalReadiness {
 
 export interface RuntimePort {
   readonly directories?: DirectoryPort
+  // Start／Resume 的 runtime 專屬 preflight；未宣告時沿用本機目錄解析，不套 Worker 邊界。
+  validateStartDirectory?(input: string): Promise<string>
   allocationScope?(): Promise<{ scope: string; state: "available" | "occupied" | "unknown" }>
   // legacy OpenCode adapter 可省略 metadata；其他 family 須宣告可用能力。
   readonly agentFamily?: string

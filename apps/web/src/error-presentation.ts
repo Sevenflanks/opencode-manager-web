@@ -8,6 +8,7 @@ const knownCodes: Record<string, MessageKey> = {
   DIRECTORY_REQUIRED: "error.directoryRequired", DIRECTORY_NOT_ACCESSIBLE: "error.directoryNotAccessible",
   PORT_UNAVAILABLE: "error.portUnavailable", PORT_POOL_EXHAUSTED: "error.portExhausted",
   WORKER_CAPACITY_UNAVAILABLE: "worker.capacityUnknown",
+  WORKER_DIRECTORY_OUTSIDE_WORKSPACE: "worker.directoryOutsideWorkspace",
   REMOTE_URL_UNAVAILABLE: "error.remoteUnavailable", TAILSCALE_OFFLINE: "error.tailscaleOffline",
   TAILSCALE_NEEDS_LOGIN: "error.tailscaleLogin", SESSION_CREATED_URL_FAILED: "error.sessionCreatedUrlFailed",
   AUTH_REQUIRED: "error.unauthorized", CURRENT_PASSWORD_INVALID: "error.invalidCredentials",

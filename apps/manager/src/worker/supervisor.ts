@@ -1,13 +1,14 @@
 import { randomUUID, timingSafeEqual } from "node:crypto"
 import Fastify from "fastify"
 import { spawn, type ChildProcess } from "node:child_process"
-import { readdir, readFile, readlink, realpath } from "node:fs/promises"
+import { readdir, readFile, readlink } from "node:fs/promises"
 import path from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import type { LaunchResult } from "../runtime.js"
 import { proxyRuntime, proxyRuntimeUpgrade } from "./proxy.js"
 import { localDirectories, type DirectoryPort } from "../directory.js"
 import { ManagerError } from "../errors.js"
+import { resolveStartDirectory } from "./directory.js"
 
 export interface ExecutionOptions {
   token: string
@@ -20,7 +21,14 @@ export interface ExecutionOptions {
   browserPassword?: string
 }
 
-export function buildExecutionApp(options: ExecutionOptions, directories: DirectoryPort = localDirectories) {
+export interface StartRejectionAcknowledgment {
+  epoch: string
+  instanceId: string
+  accepted: false
+}
+
+// 第三參數只供 filesystem fixture 注入；production 固定 /workspace，沒有環境或設定可改 root。
+export function buildExecutionApp(options: ExecutionOptions, directories: DirectoryPort = localDirectories, testWorkspaceRoot = "/workspace") {
   if (options.token.length < 32) throw new Error("Execution control token 至少 32 字元。")
   const epoch = randomUUID()
   const runtimePassword = randomUUID()
@@ -40,12 +48,13 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
   })
   app.setErrorHandler((_error, _request, reply) => reply.code(503).send({ error: "EXECUTION_UNAVAILABLE" }))
   // 只讀目錄操作使用 execution 自己的 filesystem；不 spawn helper，不接受外部 target/command。
-  for (const operation of ["resolve", "browse"] as const) {
+  for (const operation of ["resolve", "browse", "resolve-start"] as const) {
     app.get<{ Querystring: { directory: string } }>(`/v1/directories/${operation}`, {
       schema: { querystring: { type: "object", required: ["directory"], additionalProperties: false,
         properties: { directory: { type: "string", maxLength: 4096 } } } },
     }, async (request, reply) => {
       try {
+        if (operation === "resolve-start") return { directory: await resolveStartDirectory(request.query.directory, directories, testWorkspaceRoot) }
         return operation === "resolve" ? { directory: await directories.resolve(request.query.directory) }
           : await directories.browse(request.query.directory)
       } catch (error) {
@@ -69,6 +78,17 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
     if (!body || body.epoch !== epoch) return reply.code(409).send({ error: "EPOCH_MISMATCH" })
     if (typeof body.instanceId !== "string" || !/^[a-zA-Z0-9-]{1,80}$/.test(body.instanceId)
       || typeof body.directory !== "string" || !path.isAbsolute(body.directory)) return reply.code(400).send({ error: "START_INVALID" })
+    try { await resolveStartDirectory(body.directory, directories, testWorkspaceRoot) }
+    catch (error) {
+      if (error instanceof ManagerError) {
+        // 只有本次 preaccept 拒絕可回收 reservation；不授予 Stop，也不能替既有／在途 attempt 宣告未接受。
+        const startRejected: StartRejectionAcknowledgment | undefined = !mutation && current?.instanceId !== body.instanceId
+          && lastAcceptedAttempt?.instanceId !== body.instanceId ? { epoch, instanceId: body.instanceId, accepted: false } : undefined
+        return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message, details: error.details },
+          ...(startRejected ? { startRejected } : {}) })
+      }
+      throw error
+    }
     if (mutation) return reply.code(409).send({ error: "EXECUTION_BUSY" })
     mutation = true
     let phase = "namespace-owner"
@@ -79,7 +99,7 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
       await requireNamespaceOwner()
       if (draining) return reply.code(503).send({ error: "EXECUTION_DRAINING" })
       if (current?.instanceId === body.instanceId) {
-        if (current.directory !== await realpath(body.directory)) return reply.code(409).send({ error: "IDENTITY_MISMATCH" })
+        if (current.directory !== await resolveStartDirectory(body.directory, directories, testWorkspaceRoot)) return reply.code(409).send({ error: "IDENTITY_MISMATCH" })
         if (!listenerIdentity || root?.exitCode !== null || root?.signalCode !== null
           || (await listenerOwners(options.runtimePort)).join() !== listenerIdentity) return reply.code(409).send({ error: "EXECUTION_NOT_READY" })
         if (draining) return reply.code(503).send({ error: "EXECUTION_DRAINING" })
@@ -93,7 +113,7 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
       root = null
       listenerIdentity = null
       phase = "directory"
-      const directory = await realpath(body.directory)
+      const directory = await resolveStartDirectory(body.directory, directories, testWorkspaceRoot)
       // TERM 可在任一 await 到達；最後一個 await 後重新檢查，避免 cleanup 掃完才又 spawn。
       if (draining) return reply.code(503).send({ error: "EXECUTION_DRAINING" })
       phase = "spawn"
@@ -147,8 +167,10 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
         acceptedAttempt.stopped = await namespaceProcesses().then((members) => members.length === 0).catch(() => false)
       }
       // Control-only 固定 enum：不回傳原始錯誤、路徑、環境或 runtime credential。
-      const code = (error as NodeJS.ErrnoException).code
+      const details = error instanceof ManagerError ? error.details as { reason?: string } | undefined : undefined
+      const code = details?.reason === "NOT_FOUND" ? "ENOENT" : (error as NodeJS.ErrnoException).code
       startupFailure = { phase, code: ["EACCES", "EPERM", "ENOENT", "ESRCH"].includes(code ?? "") ? code! : "START_FAILED" }
+      if (error instanceof ManagerError) return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message, details: error.details } })
       throw error
     } finally { mutation = false }
   })

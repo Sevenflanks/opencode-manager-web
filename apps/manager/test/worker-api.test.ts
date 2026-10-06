@@ -23,7 +23,7 @@ test("public Worker manual start/resume uses fresh scope without retiring unknow
     if (offline) throw new Error("network lost")
     const pathname = new URL(String(url)).pathname
     const body = init?.body ? JSON.parse(String(init.body)) : {}
-    if (pathname === "/v1/directories/resolve") return Response.json({ directory })
+    if (pathname === "/v1/directories/resolve" || pathname === "/v1/directories/resolve-start") return Response.json({ directory })
     if (pathname === "/v1/execution") {
       if (scopeOffline) throw new Error("fixture control endpoint unavailable")
       return Response.json({ epoch, capacity: current || orphan ? "occupied" : "available" })
