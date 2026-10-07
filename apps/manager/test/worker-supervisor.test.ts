@@ -1,6 +1,38 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { buildExecutionApp } from "../src/worker/supervisor.js"
+import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import path from "node:path"
+import { localDirectories } from "../src/directory.js"
+
+test("authenticated direct Start rejects a canonical directory outside workspace before accepting an attempt", async () => {
+  const disk = await mkdtemp(path.join(tmpdir(), "omw-start-boundary-"))
+  await mkdir(path.join(disk, "workspace"))
+  await mkdir(path.join(disk, "workspace-sibling"))
+  await mkdir(path.join(disk, "outside"))
+  await symlink(path.join(disk, "outside"), path.join(disk, "workspace", "escape"), "junction")
+  const app = buildExecutionApp({ token: "a".repeat(32), executable: process.execPath, runtimePort: 4096 }, {
+    ...localDirectories,
+    async resolve(input) {
+      const resolved = await localDirectories.resolve(path.join(disk, input))
+      return `/${path.relative(disk, resolved).split(path.sep).join("/")}`
+    },
+  })
+  const headers = { authorization: `Bearer ${"a".repeat(32)}` }
+  try {
+    const epoch = (await app.inject({ url: "/v1/execution", headers })).json().epoch
+    for (const [index, directory] of ["/outside", "/workspace-sibling", "/workspace/../outside", "/workspace/escape"].entries()) {
+      const identity = { epoch, instanceId: `outside-workspace-${index}` }
+      const response = await app.inject({ method: "POST", url: "/v1/start", headers, payload: { ...identity, directory } })
+      assert.equal(response.statusCode, 400, response.body)
+      assert.equal(response.json().error.code, "WORKER_DIRECTORY_OUTSIDE_WORKSPACE")
+      assert.equal((await app.inject({ method: "POST", url: "/v1/stop", headers, payload: identity })).statusCode, 409,
+        "rejected directory does not grant cleanup authority")
+    }
+    assert.equal((await app.inject({ url: "/v1/execution", headers })).json().execution, null)
+  } finally { await app.close(); await rm(disk, { recursive: true, force: true }) }
+})
 
 test("native root gateway challenges unauthenticated access and rejects cross-origin requests", async () => {
   const app = buildExecutionApp({ token: "a".repeat(32), executable: process.execPath, runtimePort: 4096,
@@ -34,7 +66,7 @@ test("execution public HTTP requires control auth and rejects browser Origin; em
 })
 
 test("Start requires exact supervisor epoch and rejects malformed input without launching", async () => {
-  const app = buildExecutionApp({ token, executable: process.execPath, runtimePort: 4096 })
+  const app = buildExecutionApp({ token, executable: process.execPath, runtimePort: 4096 }, localDirectories, process.cwd())
   const headers = { authorization: `Bearer ${token}` }
   try {
     const epoch = (await app.inject({ method: "GET", url: "/v1/execution", headers })).json().epoch
@@ -47,4 +79,25 @@ test("Start requires exact supervisor epoch and rejects malformed input without 
     }
     assert.equal((await app.inject({ method: "POST", url: "/v1/inspect", headers, payload: { epoch: "stale", instanceId: "fixture" } })).json().processState, "unknown")
   } finally { await app.close() }
+})
+
+test("execution draining rejects new control work over HTTP while retaining authentication", { timeout: 10_000 }, async () => {
+  const app = buildExecutionApp({ token, executable: process.execPath, runtimePort: 4096 })
+  const lifetime = setTimeout(() => { app.server.closeAllConnections(); void app.close() }, 8_000)
+  try {
+    const origin = await app.listen({ host: "127.0.0.1", port: 0 })
+    const get = (headers: Record<string, string>) => fetch(`${origin}/v1/execution`, { headers, signal: AbortSignal.timeout(1_000) })
+    assert.equal((await get({ authorization: `Bearer ${token}` })).status, 200)
+    app.beginDrain()
+    assert.equal((await get({})).status, 401)
+    assert.equal((await get({ authorization: `Bearer ${token}` })).status, 503)
+    const start = await fetch(`${origin}/v1/start`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ epoch: "stale", instanceId: "must-not-start", directory: process.cwd() }), signal: AbortSignal.timeout(1_000) })
+    assert.equal(start.status, 503)
+    assert.deepEqual(await start.json(), { error: "EXECUTION_DRAINING" })
+  } finally {
+    clearTimeout(lifetime)
+    app.server.closeAllConnections()
+    await app.close()
+  }
 })

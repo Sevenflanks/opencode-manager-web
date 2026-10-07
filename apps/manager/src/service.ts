@@ -197,7 +197,9 @@ export class ManagerService {
 
   async start(directoryInput: string, observeActivity = true, resumeRuntime?: RuntimePort): Promise<ManagedInstance> {
     const runtime = resumeRuntime ?? (typeof this.runtime === "function" ? undefined : this.runtime)
-    const directory = await (runtime?.directories ?? this.directories).resolve(directoryInput)
+    const directory = runtime?.validateStartDirectory
+      ? await runtime.validateStartDirectory(directoryInput)
+      : await (runtime?.directories ?? this.directories).resolve(directoryInput)
     const allocation = runtime?.allocationScope
       ? await this.reserveScopedExecution(directory, runtime)
       : await this.reservePort("headless", directory, null)

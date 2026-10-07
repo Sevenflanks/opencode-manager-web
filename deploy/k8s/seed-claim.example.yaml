@@ -1,0 +1,22 @@
+# 獨立 operator 範本；不加入 generated Kustomize、inventory 或部署刪除流程。
+# create 前核對名稱不存在、storage-path 未與其他 claim／應用共用；存在即停止，不 apply。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: omw-auth-seed-v1
+  namespace: ai-tools
+  labels:
+    app.kubernetes.io/part-of: omw
+    omw.io/identity: auth-seed
+  annotations:
+    volume.beta.kubernetes.io/storage-class: 'managed-nfs-storage'
+    # 相對 managed NFS root 的專屬位置；不是 infra 位址或 Worker subPath。
+    nfs.io/storage-path: 'omw/auth-seed-v1'
+spec:
+  storageClassName: managed-nfs-storage
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      # 宣告容量，不保證 NFS disk quota。
+      storage: 1Gi

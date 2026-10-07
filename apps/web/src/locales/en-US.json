@@ -7,6 +7,7 @@
     "openNative": "Open native OpenCode Web",
     "nativeEntry": "Native Web entry",
     "directoryPlaceholder": "Enter a Project directory in the Worker execution environment",
+    "directoryOutsideWorkspace": "Choose /workspace or a subdirectory to start or resume a Worker Instance. Symlinks must also resolve within /workspace.",
     "providerLogin": "Sign in or reauthenticate your provider in native OpenCode Web.",
     "capacityAvailable": "Worker's current execution environment is available to start or resume an Instance.",
     "capacityFull": "Worker's current execution environment is occupied. Stop its current Instance before starting or resuming.",

@@ -33,6 +33,10 @@
 
 HOME `/home/node`、XDG_DATA_HOME `/home/node/.local/share`、XDG_STATE_HOME `/home/node/.local/state`、XDG_CONFIG_HOME `/home/node/.config`、XDG_CACHE_HOME `/home/node/.cache`。Image 使用非 root `node` (UID/GID 1000)，上述目錄連同 `.local` 由 image 預先配置 ownership，新 named volumes 繼承該權限，避免 OpenCode 首次啟動因無法建立 state 而退出。固定 image 的 recreation 不會刪 volumes；process identity 不持久化成可重新使用的 authority。
 
+Worker 開 Instance 時，Start／Resume 只允許 execution 的 `/workspace` 本身及其子目錄。候選目錄與固定 root 都先做 `realpath` 再檢查 containment：`/workspace-sibling`、`..` 逃逸、指向外部的 symlink 都會拒絕，指向內部的 symlink 可用。Manager 在配置 execution slot 前檢查，supervisor 對直接 authenticated `/v1/start` 也再次檢查；拒絕回 HTTP 400、`WORKER_DIRECTORY_OUTSIDE_WORKSPACE`。root 沒有外部設定選項。
+
+此規則只限制啟動 Instance，不是 filesystem 全面 sandbox；readonly browse／目錄解析與 Directory Shortcut 仍可指向外部，但不能在該外部目錄 Start／Resume。Shortcut 是操作捷徑，不是 allowlist。Windows local runtime 沿用既有本機目錄行為。
+
 ## 外部秘密初始化
 
 先安裝 Docker Desktop（Linux engine）／本機 Linux Docker Engine、Compose v2 與 Node 24。所有命令在 repository root 執行。範例 PowerShell：

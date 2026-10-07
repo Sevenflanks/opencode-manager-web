@@ -16,6 +16,49 @@ const curatedSkills = ["development-test", "git-github-workflow", "git-commit-co
 const allowed = ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "GH_TOKEN", "GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL", "JAVA_HOME", "MAVEN_HOME", "OFFICECLI_SKIP_UPDATE", "OFFICECLI_NO_AUTO_INSTALL", "OFFICECLI_NO_AUTO_RESIDENT"]
 const forbidden = ["OMW_BROWSER_PASSWORD", "OMW_BROWSER_PASSWORD_FILE", "OMW_EXECUTION_TOKEN", "OMW_EXECUTION_TOKEN_FILE", "OMW_AUTH_SEED_FILE", "OMW_GITHUB_TOKEN_FILE", "OMW_WORKER_PROFILE_SOURCE", "OMW_WORKER_DEPENDENCIES_SOURCE", "UNRELATED_FIXTURE_ENV"]
 
+async function nativeShellSmoke(request) {
+  const session = await request("/session", { title: "offline native toolchain" })
+  const commands = [
+    'printf "OPT_PATH="; case "$PATH" in *"/opt/omw-worker/toolchain/gh/bin"*) echo yes;; *) echo no;; esac',
+    `node -e 'console.log("PROFILE_PATH="+JSON.stringify(require("fs").readFileSync("/etc/profile","utf8").split("\\n").filter(line=>/PATH=|export PATH/.test(line))))'`,
+    ...["gh", "java", "javac", "mvn", "officecli", "node", "python3", "git"].map(name =>
+      `location=$(command -v ${name} || true); printf "LOOKUP ${name}=%s\\n" "$location"; ${name} ${name === "java" || name === "javac" ? "-version" : "--version"}; printf "EXIT ${name}=%s\\n" "$?"`),
+    'printf "JAVA_HOME="; test "$JAVA_HOME" = /opt/omw-worker/toolchain/java && echo fixed || echo wrong',
+    'scratch=$(mktemp -d); printf "class NativeSmoke { public static void main(String[] args) { System.out.print(25); } }" > "$scratch/NativeSmoke.java"; javac --release 25 -d "$scratch" "$scratch/NativeSmoke.java" && java -cp "$scratch" NativeSmoke; printf "\\nCOMPILER_EXIT=%s\\n" "$?"; rm -rf "$scratch"',
+    ...["java", "javac", "mvn", "gh"].map(name => `test ! -w "$(readlink -f "$(command -v ${name})")"; printf "READONLY ${name}=%s\\n" "$?"`),
+    'test ! -w /usr/local/bin && test ! -w /opt/omw-worker/toolchain && test ! -w "$JAVA_HOME/bin"; printf "IMAGE_BIN_BOUNDARY=%s\\n" "$?"',
+    // product helper 以 PATH 尋找 gh；只檢查公開 synthetic token 的 boolean，不輸出 credential response。
+    `node -e 'const r=require("child_process").spawnSync("git",["credential","fill"],{input:"protocol=https\\nhost=github.com\\n\\n",encoding:"utf8",timeout:5000}); console.log("GIT_HELPER="+(r.status===0&&r.stdout.includes("password="+process.env.GH_TOKEN)))'`,
+  ]
+  // 固定版 eval 的 JSON quoting 不接受 multiline command；script 不設定 PATH，繼承原生 login shell。
+  await writeFile("/workspace/native-toolchain.sh", commands.join("\n"))
+  const result = await request(`/session/${session.id}/shell`, { agent: "build", model: { providerID: "openai", modelID: "gpt-6-luna-fast" },
+    command: "shopt -q login_shell && echo LOGIN=yes; /bin/bash /workspace/native-toolchain.sh" })
+  const tool = result.parts.find(part => part.type === "tool" && part.tool === "bash")
+  assert.equal(tool?.state.status, "completed")
+  const output = tool.state.output
+  // Native shell 不回傳 exit code；command 自己留下 marker，避免 HTTP200 被誤當工具成功。
+  console.log(`NATIVE_SHELL_OUTPUT\n${output}`)
+  assert.match(output, /LOGIN=yes/)
+  for (const name of ["gh", "java", "javac", "mvn", "officecli", "node", "python3", "git"]) {
+    assert.match(output, new RegExp(`LOOKUP ${name}=/`), `${name} missing from native login shell`)
+    assert.match(output, new RegExp(`EXIT ${name}=0\\b`), `${name} version failed`)
+  }
+  assert.match(output, /JAVA_HOME=fixed/)
+  assert.match(output, /javac 25\./)
+  assert.match(output, /Apache Maven 3\.9\.11/)
+  assert.match(output, /Java version: 25\./)
+  assert.match(output, /runtime: \/opt\/omw-worker\/toolchain\/java/)
+  assert.match(output, /25\nCOMPILER_EXIT=0/)
+  for (const name of ["java", "javac", "mvn", "gh"]) assert.match(output, new RegExp(`READONLY ${name}=0\\b`))
+  assert.match(output, /IMAGE_BIN_BOUNDARY=0/)
+  assert.match(output, /GIT_HELPER=true/)
+  assert.equal(result.info.cost, 0)
+  assert.equal(result.info.tokens.input, 0)
+  assert.equal(result.info.tokens.output, 0)
+  return { shell: "native-login", tools: 8, modelCalls: 0, pathOverride: false }
+}
+
 async function linuxSmoke(fixtureOnly) {
   assert.equal(process.platform, "linux")
   assert.notEqual(process.getuid(), 0)
@@ -103,8 +146,9 @@ async function linuxSmoke(fixtureOnly) {
     assert.equal(info.capacity, "available", "bootstrap/build helpers 不可留在 execution namespace")
     identity = { epoch: info.epoch, instanceId: "profile-smoke" }
     await control("/v1/start", { ...identity, directory: "/workspace" })
-    const get = async pathname => {
-      const response = await fetch(nativeOrigin + pathname, { headers: { authorization: `Basic ${Buffer.from("fixture:synthetic-browser-fixture").toString("base64")}` }, signal: AbortSignal.timeout(15_000) })
+    const get = async (pathname, body) => {
+      const response = await fetch(nativeOrigin + pathname, { headers: { authorization: `Basic ${Buffer.from("fixture:synthetic-browser-fixture").toString("base64")}`, origin: nativeOrigin, "content-type": "application/json" },
+        ...(body ? { method: "POST", body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(35_000) })
       assert.equal(response.status, 200, `native ${pathname}`)
       return response.json()
     }
@@ -137,6 +181,7 @@ async function linuxSmoke(fixtureOnly) {
         acpTools: ids.filter(id => acpTools.includes(id)), skills: skills.filter(skill => curatedSkills.includes(skill.name)).map(skill => skill.name),
         commands: commands.filter(command => ["task-plan", "verify", "deliver", "acp"].includes(command.name)).map(command => command.name),
         responseCounts: { tools: ids.length, skills: skills.length, commands: commands.length }, ordinaryConfigMerged: true })
+      checks.push({ name: "native-shell-toolchain", ...await nativeShellSmoke(get) })
     }
     const after = []
     for (const directory of [runtime, global]) for (const filename of ["package.json", "package-lock.json"]) after.push(await readFile(path.join(directory, filename), "utf8"))
@@ -180,7 +225,8 @@ async function hostVerification() {
   await writeFile(envFile, "")
   await writeFile(composeFile, `services:\n  unused:\n    image: ${image}\n`)
   const binding = { context, project, repo, image, envFile, composeFile, secretDirectory: path.join(runDirectory, "unused-secrets"),
-    watchdogMilliseconds: 25 * 60_000, watchdogEvidence: path.join(runDirectory, "watchdog-cleanup.json") }
+    watchdogMilliseconds: option("--image") && process.argv.includes("--shell-only") ? 3 * 60_000 : 25 * 60_000,
+    watchdogEvidence: path.join(runDirectory, "watchdog-cleanup.json") }
   const owner = dockerOwner(binding)
   const evidence = { project, context, image, startedAt: new Date().toISOString(), checks: [], versions: {}, noModelCalls: true, noCredentials: true }
   let watchdog, authorized = false
@@ -230,7 +276,7 @@ async function hostVerification() {
     evidence.versions.imageId = await owner.docker(["image", "inspect", image, "--format", "{{.Id}}"])
     const run = (name, args, timeout = 100_000) => owner.docker(["run", "--rm", "--init", "--network", "none", "--name", `${project}-${name}`,
       "--label", `com.docker.compose.project=${project}`, "--entrypoint", "/usr/bin/timeout", image, "--signal=TERM", "--kill-after=5s", "90s", "node", ...args], timeout)
-    await check("linux-bootstrap-20-zero-skips", async () => {
+    if (!process.argv.includes("--shell-only")) await check("linux-bootstrap-20-zero-skips", async () => {
       const output = await run("bootstrap", ["--test", "scripts/worker/bootstrap.test.mjs"])
       await writeFile(path.join(runDirectory, "bootstrap.log"), output)
       assert.match(output, /(?:#|ℹ) pass 20\b/)
@@ -238,15 +284,25 @@ async function hostVerification() {
       assert.match(output, /(?:#|ℹ) skipped 0\b/)
       return { passed: 20, failed: 0, skipped: 0 }
     })
-    for (const mode of ["fixture", "native"]) await check(`${mode}-profile-no-network`, async () => {
+    for (const mode of process.argv.includes("--shell-only") ? ["native"] : ["fixture", "native"]) await check(`${mode}-profile-no-network`, async () => {
       // supervisor 必須直接為 tini child，不能用 timeout/shell 當 namespace owner。
       const output = await owner.docker(["run", "--rm", "--init", "--network", "none", "--name", `${project}-${mode}`,
-        "--label", `com.docker.compose.project=${project}`, "--entrypoint", "node", image, "scripts/worker/verify-profile.mjs", `--${mode}`], 100_000)
+        "--label", `com.docker.compose.project=${project}`, "--mount", `type=bind,source=${path.join(repo, "scripts/worker/verify-profile.mjs")},target=/opt/omw/scripts/worker/verify-profile.mjs,readonly`,
+        "--entrypoint", "node", image, "scripts/worker/verify-profile.mjs", `--${mode}`], 100_000)
+      await writeFile(path.join(runDirectory, `${mode}.log`), output)
       const json = output.split("\n").findLast(line => line.startsWith('{"mode"'))
       assert.ok(json, "profile evidence missing")
       return JSON.parse(json)
     })
-    await check("toolchain-bounded-version-smoke", async () => {
+    await check("toolchain-command-collision-fail-closed", async () => {
+      const output = await owner.docker(["run", "--rm", "--init", "--network", "none", "--user", "0", "--name", `${project}-collision`,
+        "--label", `com.docker.compose.project=${project}`, "--entrypoint", "/usr/bin/timeout", image, "--signal=TERM", "--kill-after=5s", "30s",
+        "node", "--test", "scripts/worker/toolchain-command-collision.test.mjs"], 45_000)
+      await writeFile(path.join(runDirectory, "collision.log"), output)
+      assert.match(output, /COLLISION_CASES=10/)
+      return { cases: 10, existingCommandsPreserved: true }
+    })
+    if (!process.argv.includes("--shell-only")) await check("toolchain-bounded-version-smoke", async () => {
       const output = await run("toolchain", ["scripts/worker/toolchain-smoke.mjs"])
       return JSON.parse(output)
     })

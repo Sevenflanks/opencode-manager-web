@@ -11,8 +11,16 @@
     "packages": [
       "ca-certificates", "git", "bash", "curl", "openssh-client", "ripgrep", "jq",
       "unzip", "zip", "tar", "gzip", "xz-utils", "procps", "python3",
-      "libicu72", "libssl3", "zlib1g", "libstdc++6"
+      "libicu72", "libssl3", "zlib1g", "libstdc++6", "tini=0.19.0-1+b3"
     ],
+    "tini": {
+      "version": "0.19.0-1+b3",
+      "executable": "/usr/bin/tini",
+      "source": "https://snapshot.debian.org/package/tini/0.19.0-1/",
+      "license": "MIT; /usr/share/doc/tini/copyright",
+      "amd64": { "sha256": "7d1947665fa40e55f218fefad773dc6de66458d0b39eaa292cdcadfc7c996632" },
+      "arm64": { "sha256": "335dee1e36c0bf61f11c9fe9740012966a3183bd50405b73ed19477293c28f7f" }
+    },
     "license": "Per-package copyright files in /usr/share/doc; resolved versions in toolchain-debian.tsv"
   },
   "tools": {
@@ -33,7 +41,7 @@
       "version": "3.9.11",
       "source": "https://archive.apache.org/dist/maven/maven-3/3.9.11/",
       "license": "Apache-2.0 (see Maven LICENSE and NOTICE)",
-      "url": "https://archive.apache.org/dist/maven/maven-3/3.9.11/binaries/apache-maven-3.9.11-bin.tar.gz",
+      "url": "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.11/apache-maven-3.9.11-bin.tar.gz",
       "sha512": "bcfe4fe305c962ace56ac7b5fc7a08b87d5abd8b7e89027ab251069faebee516b0ded8961445d6d91ec1985dfe30f8153268843c89aa392733d1a3ec956c9978"
     },
     "gh": {

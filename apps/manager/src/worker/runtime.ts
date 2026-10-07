@@ -4,6 +4,7 @@ import type { InspectResult, LaunchResult, StopResult } from "../runtime.js"
 import { ManagerError } from "../errors.js"
 import type { DirectoryPort } from "../directory.js"
 import type { DirectoryListing } from "@omw/contracts"
+import type { StartRejectionAcknowledgment } from "./supervisor.js"
 
 export interface WorkerRuntimeOptions {
   controlOrigin: string
@@ -15,7 +16,7 @@ export interface WorkerRuntimeOptions {
 // 共用 OpenCode session/readiness/SSE 投影；只有程序 authority 與 HTTP transport 改由 supervisor 持有。
 export class WorkerRuntime extends OpenCodeRuntime {
   private readonly options: WorkerRuntimeOptions
-  private readonly attempts = new Map<string, string>()
+  private readonly attempts = new Map<string, { epoch: string | undefined; outcome: "not-dispatched" | "dispatched" | "not-accepted"; fence: { closed: boolean } }>()
   readonly directories: DirectoryPort = {
     resolve: async (input) => (await this.directoryRequest<{ directory: string }>("resolve", input)).directory,
     browse: async (input) => await this.directoryRequest<DirectoryListing>("browse", input),
@@ -55,15 +56,24 @@ export class WorkerRuntime extends OpenCodeRuntime {
 
   private async control<T>(pathname: string, body?: unknown): Promise<T> {
     const response = await this.executionRequest(pathname, body)
-    if (!response.ok) throw new ManagerError("EXECUTION_REJECTED", `Execution supervisor 拒絕操作（HTTP ${response.status}）。`, response.status === 409 ? 409 : 502)
+    if (!response.ok) {
+      const result = await response.json().catch(() => null) as { error?: { code?: string } } | null
+      if (response.status === 400 && result?.error?.code === "WORKER_DIRECTORY_OUTSIDE_WORKSPACE") throw outsideWorkspace()
+      throw new ManagerError("EXECUTION_REJECTED", `Execution supervisor 拒絕操作（HTTP ${response.status}）。`, response.status === 409 ? 409 : 502)
+    }
     return await response.json() as T
   }
 
-  private async directoryRequest<T>(operation: "resolve" | "browse", input: string): Promise<T> {
+  async validateStartDirectory(input: string): Promise<string> {
+    return (await this.directoryRequest<{ directory: string }>("resolve-start", input)).directory
+  }
+
+  private async directoryRequest<T>(operation: "resolve" | "browse" | "resolve-start", input: string): Promise<T> {
     if (typeof input !== "string" || !input.trim()) throw new ManagerError("DIRECTORY_REQUIRED", "請提供目錄路徑。", 400)
     const response = await this.executionRequest(`/v1/directories/${operation}?directory=${encodeURIComponent(input)}`)
     if (!response.ok) {
       const body = await response.json().catch(() => null) as { error?: { code?: string; details?: { reason?: string } } } | null
+      if (response.status === 400 && body?.error?.code === "WORKER_DIRECTORY_OUTSIDE_WORKSPACE") throw outsideWorkspace()
       if (response.status === 400 && body?.error?.code === "DIRECTORY_NOT_ACCESSIBLE") {
         const reason = body.error.details?.reason
         throw new ManagerError("DIRECTORY_NOT_ACCESSIBLE", "Execution 目錄不存在、不是目錄或無法存取。", 400,
@@ -83,10 +93,33 @@ export class WorkerRuntime extends OpenCodeRuntime {
   }
 
   override async launch(directory: string, _port: number, instanceId: string, allocationScope?: string): Promise<LaunchResult> {
+    const previous = this.attempts.get(instanceId)
+    const attempt = previous?.fence.closed ? { ...previous, fence: { closed: false } }
+      : previous ?? { epoch: allocationScope, outcome: "not-dispatched" as const, fence: { closed: false } }
+    // 本機 preflight 失敗仍須可回收 reservation，但不能把重送的既有 dispatched attempt 降成未派送。
+    this.attempts.set(instanceId, attempt)
+    directory = await this.validateStartDirectory(directory)
     // 使用配置 slot 時的同一 authority；中途換 epoch 必須讓 supervisor 拒絕，不能重綁本次 allocation。
     const epoch = allocationScope ?? (await this.allocationScope()).scope
-    this.attempts.set(instanceId, epoch)
-    const launch = await this.control<LaunchResult>("/v1/start", { epoch, instanceId, directory })
+    // preflight／scope 都可能讓同 ID 重送先派送；舊快照不能洗掉最新 unknown，也不能跨越已確認的 cleanup。
+    const current = this.attempts.get(instanceId)!
+    if (attempt.fence.closed) throw new ManagerError("EXECUTION_REJECTED", "啟動 preflight 已由 cleanup 結束。", 409)
+    if (current.epoch && current.epoch !== epoch) throw new ManagerError("EXECUTION_IDENTITY_INVALID", "不可重綁既有啟動 attempt 的 epoch。", 502)
+    const previouslyDispatched = current.outcome === "dispatched"
+    const dispatched: { epoch: string; outcome: "dispatched" | "not-accepted"; fence: { closed: boolean } } = { epoch, outcome: "dispatched", fence: current.fence }
+    this.attempts.set(instanceId, dispatched)
+    const response = await this.executionRequest("/v1/start", { epoch, instanceId, directory })
+    if (!response.ok) {
+      const result = await response.json().catch(() => null) as { error?: { code?: string }; startRejected?: Partial<StartRejectionAcknowledgment> } | null
+      const rejection = result?.startRejected
+      // 只信任同 epoch／ID 的 authenticated preaccept ack；遲到 ack 不能洗掉後續重送或 timeout 的 authority。
+      if (!previouslyDispatched && this.attempts.get(instanceId) === dispatched && response.status === 400
+        && ["WORKER_DIRECTORY_OUTSIDE_WORKSPACE", "DIRECTORY_NOT_ACCESSIBLE", "DIRECTORY_REQUIRED"].includes(result?.error?.code ?? "")
+        && rejection?.accepted === false && rejection.epoch === epoch && rejection.instanceId === instanceId) dispatched.outcome = "not-accepted"
+      if (response.status === 400 && result?.error?.code === "WORKER_DIRECTORY_OUTSIDE_WORKSPACE") throw outsideWorkspace()
+      throw new ManagerError("EXECUTION_REJECTED", `Execution supervisor 拒絕操作（HTTP ${response.status}）。`, response.status === 409 ? 409 : 502)
+    }
+    const launch = await response.json() as LaunchResult
     if (launch.instanceId !== instanceId || launch.creationTimeTicks !== epoch || launch.directory !== directory) throw new ManagerError("EXECUTION_IDENTITY_INVALID", "Supervisor 回傳非本次啟動身分。", 502)
     return { ...launch, endpoint: `${this.options.controlOrigin}/runtime/${epoch}/${instanceId}` }
   }
@@ -106,9 +139,15 @@ export class WorkerRuntime extends OpenCodeRuntime {
   }
 
   override async cleanupLaunch(instanceId: string): Promise<StopResult> {
-    const epoch = this.attempts.get(instanceId)
-    if (!epoch) return { stopped: false, reason: "same-run launch authority unavailable" }
-    try { return await this.control<StopResult>("/v1/stop", { epoch, instanceId }) }
+    const attempt = this.attempts.get(instanceId)
+    if (!attempt) return { stopped: false, reason: "same-run launch authority unavailable" }
+    // stopped=true 在此是「這次 launch 無需 cleanup」的確定結果，不授予新 request Stop authority。
+    if (attempt.outcome !== "dispatched") {
+      attempt.fence.closed = true
+      return { stopped: true, reason: null }
+    }
+    if (!attempt.epoch) return { stopped: false, reason: "same-run launch authority unavailable" }
+    try { return await this.control<StopResult>("/v1/stop", { epoch: attempt.epoch, instanceId }) }
     catch { return { stopped: false, reason: "execution cleanup unconfirmed" } }
   }
 
@@ -120,4 +159,8 @@ export class WorkerRuntime extends OpenCodeRuntime {
 
 function identity(instance: InstanceRecord | LaunchResult) {
   return { epoch: instance.creationTimeTicks, instanceId: "id" in instance ? instance.id : instance.instanceId }
+}
+
+function outsideWorkspace(): ManagerError {
+  return new ManagerError("WORKER_DIRECTORY_OUTSIDE_WORKSPACE", "Worker 只能在 /workspace 或其子目錄啟動 Instance。", 400)
 }

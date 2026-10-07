@@ -84,6 +84,8 @@ OFFICECLI_NO_AUTO_RESIDENT=1
 
 ```sh
 node scripts/worker/verify-profile.mjs --context desktop-linux
+# 僅驗原生 native shell／工具 collision（仍走真 RuntimePort、native API）：
+node scripts/worker/verify-profile.mjs --context desktop-linux --shell-only
 # 可重用固定版 toolchain cache：--cache-from <toolchain-tag>
 # 指定現存固定 image 重跑 smoke：--image sha256:<image-id>
 ```
@@ -91,6 +93,12 @@ node scripts/worker/verify-profile.mjs --context desktop-linux
 Native API routes 與 tool IDs 已核對固定版 source／SDK：`/experimental/tool/ids`、`/config`、`/skill`、`/command`。API 配置只看 plugin 字串不足以證明載入；五個 tool IDs、八個 skills、三個 curated commands 與原生 `/acp` 同時存在才是此 smoke 的實際證據。fixture slice 另外檢查 child env allowlist、GH／Git helper process-scoped availability、禁止的 manager／seed 變數、runtime customization／ordinary config 保留與固定失敗訊息。Linux bootstrap 預期 **20 passed、0 skipped**；其中新增四例驗證完全合併、未追蹤碰撞、partial upgrade 重試與移除後重新引入。
 
 同一 image 另執行 bounded toolchain version smoke，包括 OpenCode **1.18.34**、JDK／Maven 與 OfficeCLI **1.0.153** 的 version／help；不生成 Office 文件、render、截圖或 PDF。不呼叫模型、不驗證真實對話壓縮效果，也不要求空 Session 產生 ACP state file。未來真實模型測試預設 **openai/gpt-6-luna-fast**；指定模型不可用即 blocker，不 fallback；這不是日常 model 設定。
+
+### 原生 shell 的工具查找
+
+固定版 [shell handler](https://github.com/anomalyco/opencode/blob/v1.18.34/packages/opencode/src/session/prompt.ts) 使用 [Shell.preferred／Shell.args](https://github.com/anomalyco/opencode/blob/v1.18.34/packages/core/src/shell.ts)：Linux 預設 Bash 以 `-l -c` 執行，繼承 runtime env，再載入 login profile。Bookworm `/etc/profile` 會重設 non-root PATH，移除 Docker ENV 中的 `/opt/omw-worker/toolchain/*/bin`。因此 image build 將 `java`、`javac`、`mvn`、`gh` 及既有 `officecli` 安裝成 `/usr/local/bin` symlinks，指向固定、root-owned、不可由 node 寫入的 toolchain；任何既有 regular file 或 symlink（包括 dangling）碰撞直接停止，不覆寫 `node`／`git` 或加入 HOME／workspace 到 PATH。
+
+native smoke 透 `POST /session/{id}/shell` 執行 script，script 繼承原生 login shell 的 PATH，沒有 `export PATH`。驗證八項工具 `command -v`／version、JDK 25 compile／classpath run、Maven home／Java runtime、唯讀命令邊界，以及 bootstrap URL-scoped Git helper 透 PATH 找到 gh（只回傳 synthetic fixture 的 boolean）。OfficeCLI 只查 version。固定版 shell 的 multiline `eval` quoting 不適用於多行命令，因此 API 只傳單行 script invocation；這不改變產品 shell 或 env。`--shell-only` 可搭配 `--image` 做舊 image RED，或搭配 `--cache-from` fresh build 做 GREEN；沿既有 Docker current-run owner／獨立有限 watchdog／`finally` cleanup，沒有模型呼叫或真 credentials。
 
 ## OfficeCLI 固定版來源
 

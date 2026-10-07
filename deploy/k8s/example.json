@@ -1,0 +1,16 @@
+{
+  "namespace": "ai-tools",
+  "workerImage": "registry.example.test/omw/worker:1.18.34@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "imagePullSecret": "omw-registry",
+  "authenticateHost": "auth.example.test",
+  "issuer": "https://idp.example.test/realms/example",
+  "gatewayConfigSecret": "omw-gateway-config-v1",
+  "ingressClassName": "example-edge",
+  "edgePeer": { "namespaceSelector": { "matchLabels": { "kubernetes.io/metadata.name": "example-edge" } }, "podSelector": { "matchLabels": { "app.kubernetes.io/name": "example-edge" } } },
+  "dnsPeer": { "namespaceSelector": { "matchLabels": { "kubernetes.io/metadata.name": "kube-system" } }, "podSelector": { "matchLabels": { "k8s-app": "kube-dns" } } },
+  "httpsEgress": { "mode": "allow443" },
+  "workers": [
+    { "name": "alpha", "managerHost": "alpha.example.test", "nativeHost": "alpha-native.example.test", "secretName": "omw-alpha-auth", "browserUsername": "omw" },
+    { "name": "beta", "managerHost": "beta.example.test", "nativeHost": "beta-native.example.test", "secretName": "omw-beta-auth", "browserUsername": "omw" }
+  ]
+}
