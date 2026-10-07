@@ -1,0 +1,5 @@
+services:
+  manager:
+    build:
+      additional_contexts:
+        worker-skills: ${OMW_WORKER_SKILLS_CONTEXT:?請明確指定 private worker-skills artifact 路徑}

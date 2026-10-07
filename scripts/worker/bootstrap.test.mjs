@@ -3,7 +3,7 @@ import { spawn } from "node:child_process"
 import { mkdtemp, mkdir, readFile, writeFile, chmod, stat, readdir, rm, symlink } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import test from "node:test"
 
 const cli = fileURLToPath(new URL("./bootstrap.mjs", import.meta.url))
@@ -25,8 +25,11 @@ async function fixture(run) {
   finally { await rm(root, { recursive: true, force: true }) }
 }
 function boot(env, args = []) {
+  return runNode(env, [cli, ...args])
+}
+function runNode(env, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cli, ...args], { env, stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] })
     let stdout = "", stderr = ""
     const deadline = setTimeout(() => child.kill(), 10_000)
     child.stdout.on("data", chunk => { stdout += chunk })
@@ -229,6 +232,258 @@ test("profile partial 升級重試接受已更新檔案，繼續更新仍為 pri
   await success(configured)
   await success(configured)
   for (const [name, content] of Object.entries(incoming)) assert.equal(await readFile(path.join(runtime, name), "utf8"), content)
+}))
+test("profile bundle 後段 dirty collision 須先驗完，不先更新設定或移除舊 commands", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "profile")
+  await mkdir(path.join(source, "commands"), { recursive: true })
+  await mkdir(path.join(source, "skills", "tdd"), { recursive: true })
+  const config = path.join(source, "opencode.json")
+  const skill = path.join(source, "skills/tdd/SKILL.md")
+  await writeFile(config, '{"description":"synthetic-v1"}')
+  await writeFile(skill, "synthetic simplified tdd")
+  for (const name of ["task-plan", "verify", "deliver"]) await writeFile(path.join(source, `commands/${name}.md`), `synthetic ${name}`)
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  await success(configured)
+  const runtime = env.OMW_WORKER_PROFILE_DIR
+  const manifest = path.join(runtime, ".omw-source-manifest.json")
+  const before = await readFile(manifest)
+  await writeFile(path.join(runtime, "skills/tdd/SKILL.md"), "synthetic user tdd")
+  await writeFile(config, '{"description":"synthetic-v2"}')
+  await writeFile(skill, "synthetic full tdd: [reference](tests.md)")
+  await writeFile(path.join(source, "skills/tdd/tests.md"), "synthetic public seam reference")
+  await rm(path.join(source, "commands"), { recursive: true })
+  const conflict = await boot(configured)
+  assert.equal(conflict.code, 1)
+  assert.match(conflict.stderr, /OMW_WORKER_PROFILE_SOURCE/)
+  assert.doesNotMatch(conflict.stdout + conflict.stderr, /synthetic-|[a-f0-9]{64}/)
+  assert.equal(await readFile(path.join(runtime, "opencode.json"), "utf8"), '{"description":"synthetic-v1"}')
+  assert.equal(await readFile(path.join(runtime, "skills/tdd/SKILL.md"), "utf8"), "synthetic user tdd")
+  await assert.rejects(stat(path.join(runtime, "skills/tdd/tests.md")), { code: "ENOENT" })
+  for (const name of ["task-plan", "verify", "deliver"]) assert.equal(await readFile(path.join(runtime, `commands/${name}.md`), "utf8"), `synthetic ${name}`)
+  assert.deepEqual(await readFile(manifest), before)
+  // 操作者明確合併為 incoming 後可重試；正式同名技能與其 reference 一起生效。
+  await writeFile(path.join(runtime, "skills/tdd/SKILL.md"), "synthetic full tdd: [reference](tests.md)")
+  await success(configured)
+  await success(configured)
+  assert.equal(await readFile(path.join(runtime, "opencode.json"), "utf8"), '{"description":"synthetic-v2"}')
+  assert.equal(await readFile(path.join(runtime, "skills/tdd/tests.md"), "utf8"), "synthetic public seam reference")
+  for (const name of ["task-plan", "verify", "deliver"]) await assert.rejects(stat(path.join(runtime, `commands/${name}.md`)), { code: "ENOENT" })
+}))
+test("新 curated profile 不預載自訂 commands", () => fixture(async ({ env }) => {
+  const source = fileURLToPath(new URL("../../deploy/worker/profile/", import.meta.url))
+  const commandSource = path.join(source, "commands")
+  try { assert.deepEqual(await readdir(commandSource), []) }
+  catch (error) { if (error.code !== "ENOENT") throw error }
+  await success({ ...env, OMW_WORKER_PROFILE_SOURCE: source })
+  await assert.rejects(stat(path.join(env.OMW_WORKER_PROFILE_DIR, "commands")), { code: "ENOENT" })
+}))
+test("commands 升級只移除 unchanged managed 檔，保留 user-modified、同名 untracked 與 native/custom", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "profile")
+  await mkdir(path.join(source, "commands"), { recursive: true })
+  await writeFile(path.join(source, "opencode.json"), "{}")
+  for (const name of ["task-plan", "verify"]) await writeFile(path.join(source, `commands/${name}.md`), `synthetic old ${name}`)
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  await success(configured)
+  const runtime = env.OMW_WORKER_PROFILE_DIR
+  const preserved = {
+    "verify.md": "synthetic user-modified verify",
+    "deliver.md": "synthetic untracked deliver",
+    "custom.md": "synthetic custom command",
+    "help.md": "synthetic native-name command",
+  }
+  for (const [name, content] of Object.entries(preserved)) await writeFile(path.join(runtime, "commands", name), content)
+  // 原生／專案 commands 不在 curated runtime 管理範圍，即使同名也不能移除。
+  const project = path.join(root, "project/.opencode/commands")
+  await mkdir(project, { recursive: true })
+  await writeFile(path.join(project, "task-plan.md"), "synthetic project task-plan")
+  await rm(path.join(source, "commands"), { recursive: true })
+  await success(configured)
+  await success(configured)
+  await assert.rejects(stat(path.join(runtime, "commands/task-plan.md")), { code: "ENOENT" })
+  for (const [name, content] of Object.entries(preserved)) assert.equal(await readFile(path.join(runtime, "commands", name), "utf8"), content)
+  assert.equal(await readFile(path.join(project, "task-plan.md"), "utf8"), "synthetic project task-plan")
+  const manifest = JSON.parse(await readFile(path.join(runtime, ".omw-source-manifest.json"), "utf8"))
+  assert.equal(Object.keys(manifest.files).some(name => name.startsWith("commands/")), false)
+}))
+test("retained managed CLI 回報 user-modified 舊 command，custom 不誤報、auth 不變且重啟不重複 warn", () => fixture(async ({ root, env, seed, auth }) => {
+  const source = path.join(root, "profile")
+  await mkdir(path.join(source, "commands"), { recursive: true })
+  await writeFile(path.join(source, "opencode.json"), "{}")
+  for (const name of ["task-plan", "verify", "deliver"]) await writeFile(path.join(source, `commands/${name}.md`), `synthetic old ${name}`)
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source, OMW_AUTH_SEED_FILE: seed }
+  await success(configured)
+  const runtime = env.OMW_WORKER_PROFILE_DIR
+  await writeFile(path.join(runtime, "commands/verify.md"), "synthetic user-edited-command-value")
+  await writeFile(path.join(runtime, "commands/custom.md"), "synthetic custom-command-value")
+  const authBefore = await readFile(auth)
+  await rm(path.join(source, "commands"), { recursive: true })
+  const result = await boot(configured)
+  assert.equal(result.code, 0, result.stderr)
+  const report = JSON.parse(result.stdout)
+  assert.equal(report.profile, "ready")
+  assert.deepEqual(report.profileChanges.retainedManagedFiles, [{ path: "commands/verify.md", reason: "user-modified" }])
+  assert.deepEqual(report.profileChanges.removedManagedFiles.sort(), ["commands/deliver.md", "commands/task-plan.md"])
+  assert.match(result.stderr, /^\[OMW_WORKER_PROFILE_RETAINED\] /)
+  const warning = JSON.parse(result.stderr.trim().slice("[OMW_WORKER_PROFILE_RETAINED] ".length))
+  assert.equal(warning.count, 1)
+  assert.deepEqual(warning.files, [{ path: "commands/verify.md", reason: "user-modified" }])
+  assert.doesNotMatch(result.stdout + result.stderr, /synthetic-|custom\.md|[a-f0-9]{64}/)
+  assert.equal((result.stdout + result.stderr).includes(root), false)
+  assert.equal(await readFile(path.join(runtime, "commands/verify.md"), "utf8"), "synthetic user-edited-command-value")
+  assert.equal(await readFile(path.join(runtime, "commands/custom.md"), "utf8"), "synthetic custom-command-value")
+  for (const name of ["task-plan", "deliver"]) await assert.rejects(stat(path.join(runtime, `commands/${name}.md`)), { code: "ENOENT" })
+  assert.deepEqual(await readFile(auth), authBefore)
+  const restart = await boot(configured)
+  assert.equal(restart.code, 0, restart.stderr)
+  assert.deepEqual(JSON.parse(restart.stdout).profileChanges.retainedManagedFiles, [])
+  assert.equal(restart.stderr, "")
+}))
+test("retained managed initializeWorker 返回值被 startup 忽略時仍向 stderr 回報保留原因", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "profile")
+  await mkdir(path.join(source, "commands"), { recursive: true })
+  await writeFile(path.join(source, "opencode.json"), "{}")
+  await writeFile(path.join(source, "commands/verify.md"), "synthetic old verify")
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  await success(configured)
+  const runtime = env.OMW_WORKER_PROFILE_DIR
+  await writeFile(path.join(runtime, "commands/verify.md"), "synthetic user command")
+  await writeFile(path.join(runtime, "commands/custom.md"), "synthetic untracked command")
+  await rm(path.join(source, "commands"), { recursive: true })
+  // 與 execution-server 相同：同程序 await 公開初始化入口，完全不消費返回值。
+  const script = `import { initializeWorker } from ${JSON.stringify(pathToFileURL(cli).href)}; await initializeWorker(process.env)`
+  const result = await runNode(configured, ["--input-type=module", "--eval", script])
+  assert.equal(result.code, 0, result.stderr)
+  assert.equal(result.stdout, "")
+  assert.match(result.stderr, /^\[OMW_WORKER_PROFILE_RETAINED\] /)
+  const warning = JSON.parse(result.stderr.trim().slice("[OMW_WORKER_PROFILE_RETAINED] ".length))
+  assert.equal(warning.count, 1)
+  assert.deepEqual(warning.files, [{ path: "commands/verify.md", reason: "user-modified" }])
+  assert.doesNotMatch(result.stderr, /synthetic-|custom\.md|[a-f0-9]{64}/)
+  assert.equal(result.stderr.includes(root), false)
+  assert.equal(await readFile(path.join(runtime, "commands/verify.md"), "utf8"), "synthetic user command")
+  const restart = await runNode(configured, ["--input-type=module", "--eval", script])
+  assert.equal(restart.code, 0, restart.stderr)
+  assert.equal(restart.stderr, "")
+}))
+test("retained managed 無衝突升級刪除三個 unchanged commands，回報 removal 且不 warning custom", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "profile")
+  await mkdir(path.join(source, "commands"), { recursive: true })
+  await writeFile(path.join(source, "opencode.json"), "{}")
+  for (const name of ["task-plan", "verify", "deliver"]) await writeFile(path.join(source, `commands/${name}.md`), `synthetic old ${name}`)
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  await success(configured)
+  const runtime = env.OMW_WORKER_PROFILE_DIR
+  await writeFile(path.join(runtime, "commands/custom.md"), "synthetic custom command")
+  await rm(path.join(source, "commands"), { recursive: true })
+  const result = await boot(configured)
+  assert.equal(result.code, 0, result.stderr)
+  const report = JSON.parse(result.stdout)
+  assert.equal(report.profile, "ready")
+  assert.deepEqual(report.profileChanges.removedManagedFiles.sort(), ["commands/deliver.md", "commands/task-plan.md", "commands/verify.md"])
+  assert.deepEqual(report.profileChanges.retainedManagedFiles, [])
+  assert.equal(result.stderr, "")
+  for (const name of ["task-plan", "verify", "deliver"]) await assert.rejects(stat(path.join(runtime, `commands/${name}.md`)), { code: "ENOENT" })
+  assert.equal(await readFile(path.join(runtime, "commands/custom.md"), "utf8"), "synthetic custom command")
+}))
+test("commands removal parent symlink/junction fail closed，先驗不改 profile 或外部 target", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "profile")
+  await mkdir(path.join(source, "commands"), { recursive: true })
+  await writeFile(path.join(source, "opencode.json"), '{"description":"synthetic-v1"}')
+  await writeFile(path.join(source, "commands/verify.md"), "synthetic managed verify")
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  await success(configured)
+  const runtime = env.OMW_WORKER_PROFILE_DIR
+  const manifest = path.join(runtime, ".omw-source-manifest.json")
+  const before = await readFile(manifest)
+  const target = path.join(root, "outside")
+  await mkdir(target)
+  await writeFile(path.join(target, "verify.md"), "synthetic managed verify")
+  await rm(path.join(runtime, "commands"), { recursive: true })
+  await symlink(target, path.join(runtime, "commands"), process.platform === "win32" ? "junction" : "dir")
+  await rm(path.join(source, "commands"), { recursive: true })
+  await writeFile(path.join(source, "opencode.json"), '{"description":"synthetic-v2"}')
+  const conflict = await boot(configured)
+  assert.equal(conflict.code, 1)
+  assert.match(conflict.stderr, /OMW_WORKER_PROFILE_SOURCE/)
+  assert.equal(await readFile(path.join(target, "verify.md"), "utf8"), "synthetic managed verify")
+  assert.equal(await readFile(path.join(runtime, "opencode.json"), "utf8"), '{"description":"synthetic-v1"}')
+  assert.deepEqual(await readFile(manifest), before)
+}))
+test("commands removal file symlink 不跟隨 target", { skip: process.platform === "win32" ? "Windows file symlink 需要系統權限；Linux 執行此安全案例" : false }, () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "profile")
+  await mkdir(path.join(source, "commands"), { recursive: true })
+  await writeFile(path.join(source, "opencode.json"), "{}")
+  await writeFile(path.join(source, "commands/deliver.md"), "synthetic managed deliver")
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  await success(configured)
+  const destination = path.join(env.OMW_WORKER_PROFILE_DIR, "commands/deliver.md")
+  const target = path.join(root, "outside.md")
+  await writeFile(target, "synthetic managed deliver")
+  await rm(destination)
+  await symlink(target, destination)
+  await rm(path.join(source, "commands"), { recursive: true })
+  assert.equal((await boot(configured)).code, 1)
+  assert.equal(await readFile(target, "utf8"), "synthetic managed deliver")
+}))
+test("bundle partial publish 未換 manifest 可續行：已刪 command、已更新 skill、其餘檔案仍為 prior", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "profile")
+  await mkdir(path.join(source, "commands"), { recursive: true })
+  await mkdir(path.join(source, "skills/tdd"), { recursive: true })
+  await writeFile(path.join(source, "opencode.json"), '{"description":"synthetic-v1"}')
+  await writeFile(path.join(source, "skills/tdd/SKILL.md"), "synthetic simplified tdd")
+  for (const name of ["task-plan", "verify", "deliver"]) await writeFile(path.join(source, `commands/${name}.md`), `synthetic ${name}`)
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  await success(configured)
+  const runtime = env.OMW_WORKER_PROFILE_DIR
+  const manifest = path.join(runtime, ".omw-source-manifest.json")
+  const prior = await readFile(manifest)
+  await writeFile(path.join(source, "opencode.json"), '{"description":"synthetic-v2"}')
+  await writeFile(path.join(source, "skills/tdd/SKILL.md"), "synthetic full tdd: [reference](tests.md)")
+  await writeFile(path.join(source, "skills/tdd/tests.md"), "synthetic reference")
+  await rm(path.join(source, "commands"), { recursive: true })
+  // 模擬 interruption；沿舊 manifest 接受 incoming 與已不存在的受管檔。
+  await writeFile(path.join(runtime, "skills/tdd/SKILL.md"), "synthetic full tdd: [reference](tests.md)")
+  await rm(path.join(runtime, "commands/task-plan.md"))
+  assert.deepEqual(await readFile(manifest), prior)
+  await success(configured)
+  await success(configured)
+  assert.equal(await readFile(path.join(runtime, "opencode.json"), "utf8"), '{"description":"synthetic-v2"}')
+  assert.equal(await readFile(path.join(runtime, "skills/tdd/tests.md"), "utf8"), "synthetic reference")
+  for (const name of ["task-plan", "verify", "deliver"]) await assert.rejects(stat(path.join(runtime, `commands/${name}.md`)), { code: "ENOENT" })
+  const updated = JSON.parse(await readFile(manifest, "utf8"))
+  assert.equal(updated.version, 1)
+  assert.equal(Object.keys(updated.files).some(name => name.startsWith("commands/")), false)
+}))
+test("完整 skill bundle 的新增 reference 未追蹤碰撞先驗 fail closed，明確合併後更新原簡化 skill", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "profile")
+  await mkdir(path.join(source, "skills/tdd"), { recursive: true })
+  await mkdir(path.join(source, "commands"))
+  await writeFile(path.join(source, "opencode.json"), "{}")
+  await writeFile(path.join(source, "skills/tdd/SKILL.md"), "synthetic simplified tdd")
+  await writeFile(path.join(source, "commands/verify.md"), "synthetic managed verify")
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  await success(configured)
+  const runtime = env.OMW_WORKER_PROFILE_DIR
+  const reference = path.join(runtime, "skills/tdd/tests.md")
+  const manifest = path.join(runtime, ".omw-source-manifest.json")
+  const before = await readFile(manifest)
+  await writeFile(reference, "synthetic user reference")
+  await writeFile(path.join(source, "skills/tdd/SKILL.md"), "synthetic full tdd: [reference](tests.md)")
+  await writeFile(path.join(source, "skills/tdd/tests.md"), "synthetic upstream reference")
+  await rm(path.join(source, "commands"), { recursive: true })
+  const conflict = await boot(configured)
+  assert.equal(conflict.code, 1)
+  assert.match(conflict.stderr, /未追蹤同名檔案.*備份.*明確合併.*重試/)
+  assert.equal(await readFile(path.join(runtime, "skills/tdd/SKILL.md"), "utf8"), "synthetic simplified tdd")
+  assert.equal(await readFile(reference, "utf8"), "synthetic user reference")
+  assert.equal(await readFile(path.join(runtime, "commands/verify.md"), "utf8"), "synthetic managed verify")
+  assert.deepEqual(await readFile(manifest), before)
+  await writeFile(reference, "synthetic upstream reference")
+  await success(configured)
+  await success(configured)
+  assert.equal(await readFile(path.join(runtime, "skills/tdd/SKILL.md"), "utf8"), "synthetic full tdd: [reference](tests.md)")
+  assert.equal(await readFile(reference, "utf8"), "synthetic upstream reference")
+  await assert.rejects(stat(path.join(runtime, "commands/verify.md")), { code: "ENOENT" })
 }))
 test("profile source 移除後保留 modified runtime，重新引入同名檔案仍保護使用者內容", () => fixture(async ({ root, env }) => {
   const source = path.join(root, "profile")

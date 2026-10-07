@@ -1,8 +1,37 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "shell": "/bin/bash",
   "autoupdate": false,
   "compaction": { "auto": false },
   "plugin": ["file:///opt/omw-worker/acp/acp.mjs"],
   "instructions": ["/home/node/.config/omw-profile/AGENTS.md"],
-  "skills": { "paths": ["/home/node/.config/omw-profile/skills"] }
+  "skills": { "paths": ["/home/node/.config/omw-profile/skills"] },
+  "subagent_depth": 1,
+  "agent": {
+    "plan": {
+      "permission": {
+        "task": {
+          "general": "deny",
+          "general-simple": "deny",
+          "general-complex": "deny"
+        }
+      }
+    }
+  },
+  "permission": {
+    "bash": "ask",
+    "external_directory": "ask",
+    "doom_loop": "ask",
+    "context7_*": "deny",
+    "context7_resolve-library-id": "allow",
+    "context7_query-docs": "allow"
+  },
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "enabled": true,
+      "oauth": false
+    }
+  }
 }

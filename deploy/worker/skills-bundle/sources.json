@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "catalogBasis": "issue-108-selected-installed-catalog; pinned upstream revisions, not verified equal to local installed files",
+  "excluded": ["agent-process-lifecycle", "self-challenge"],
+  "sources": [
+    {"id":"matt","repository":"mattpocock/skills","commit":"6fd947921b935b7e1e69293a200400f0fdd5c15f","license":"MIT","groups":{"skills/engineering":["ask-matt","code-review","codebase-design","diagnosing-bugs","domain-modeling","grill-with-docs","implement","implement-spec","improve-codebase-architecture","pr","prototype","research","retro","setup-matt-pocock-skills","tdd","to-spec","to-tickets","triage","wayfinder","wizard"],"skills/productivity":["grill-me","grilling","handoff","teach","to-questionnaire","wait-what","writing-for-agents"]}},
+    {"id":"softleader","repository":"softleader/agent-skills","commit":"1793486530d94dc65156581aed4b96f09ac22299","license":"private-internal-build-only-user-authorized; no public redistribution","groups":{"plugins/engineering/skills":["git-commit-co-author","pr-review","release-workflow","vue-nuxt-test-architecture","get-pr-ready","go-for-it"],"plugins/operations/skills":["jenkins","kibana","kubernetes","mantis","erp","github-issue-conventions"],"plugins/productivity/skills":["explain","catchup"],"plugins/misc/skills":["llms-docs"],"plugins/wip/skills":["re-construct-prompt","what-next","get-pr-ready-remake","go-for-it-remake","pr-review-remake"],"plugins/deprecated/skills":["simplify","log-analysis"]}},
+    {"id":"seven","repository":"Sevenflanks/skills","commit":"edf3f78afdf204bd23b048cf9c537f24c2f10d1e","license":"MIT","groups":{"skills":["gh-body-file","daily-work-log","code-intent-comments","finish-and-admin-merge","generate-ut-report","make-function-manual-sop","push-post-pr","start-from-matt","to-spec-or-ticket","write-design-spec-for-user-confirm"]}},
+    {"id":"adhd","repository":"ayghri/i-have-adhd","commit":"723af7d9afaf43eb871dbcce6129e2bf80de90d5","license":"MIT","groups":{"skills":["i-have-adhd"]}},
+    {"id":"playwright","repository":"microsoft/playwright-cli","commit":"b85c7a736bb473bf55b584e54a09ffa698d6d871","license":"Apache-2.0","groups":{"skills":["playwright-cli"]}},
+    {"id":"vercel","repository":"vercel-labs/agent-skills","commit":"063bee94c3f4df8453406c830b0a7df0f2860278","license":"unknown; user-authorized private internal build; no public source redistribution","groups":{"skills":["web-design-guidelines"]}}
+  ]
+}

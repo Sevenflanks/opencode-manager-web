@@ -1,12 +1,14 @@
 import { spawn } from "node:child_process"
 import path from "node:path"
 
-export function dockerOwner({ context, project, repo, envFile, composeFile, image }) {
+export function dockerOwner({ context, project, repo, envFile, composeFile, image, selectedComposeFiles = [composeFile], contextpathOnly }) {
   if (!/^[a-zA-Z0-9_.-]+$/.test(context) || !/^omw-verify-[a-f0-9]{16}$/.test(project) || image !== `${project}:verification`) throw new Error("驗證 ownership binding 無效。")
   const environment = { ...process.env }
   let uncertainCommands = false
   // --context 的意義不能被 host DOCKER_* 或 COMPOSE_* 環境偷偷改成遠端 target。
   for (const key of Object.keys(environment)) if (/^(DOCKER_|COMPOSE_|OMW_)/.test(key)) delete environment[key]
+  // 只回填本 run 明確選取的 build input 路徑；watchdog 從同一 binding 重建，不繼承 host OMW_*。
+  if (contextpathOnly) environment.OMW_WORKER_SKILLS_CONTEXT = contextpathOnly
   async function docker(args, timeout = 90_000) {
     return await new Promise((resolve, reject) => {
       const child = spawn("docker", ["--context", context, ...args], { cwd: repo, env: environment, stdio: ["ignore", "pipe", "pipe"], windowsHide: true })
@@ -28,7 +30,7 @@ export function dockerOwner({ context, project, repo, envFile, composeFile, imag
       })
     })
   }
-  const composeArgs = ["compose", "--project-name", project, "--project-directory", path.dirname(composeFile), "--env-file", envFile, "-f", composeFile]
+  const composeArgs = ["compose", "--project-name", project, "--project-directory", path.dirname(composeFile), "--env-file", envFile, ...selectedComposeFiles.flatMap((filename) => ["-f", filename])]
   const compose = (args, timeout) => docker([...composeArgs, ...args], timeout)
   const owned = (kind) => docker([kind, "ls", ...(kind === "container" ? ["-a"] : []), "-q", "--filter", `label=com.docker.compose.project=${project}`])
   async function cleanup() {

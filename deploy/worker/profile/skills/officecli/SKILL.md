@@ -11,6 +11,6 @@ description: Word／Excel／PowerPoint 或 .docx、.xlsx、.pptx 工作時，使
 - .xlsx → 載入 `officecli-xlsx`。
 - .pptx → 載入 `officecli-pptx`。
 
-以本機 CLI help 決定精確參數與支援能力，必要時參考 [官方文件](https://github.com/iOfficeAI/OfficeCLI/tree/v1.0.153)；不要猜 property／selector。只操作本輪授權的文件，保留原件。長命 resident／watch 依 `linux-process-lifecycle` ownership 管理，handoff 前 save／close。
+以本機 CLI help 決定精確參數與支援能力，必要時參考 [官方文件](https://github.com/iOfficeAI/OfficeCLI/tree/v1.0.153)；不要猜 property／selector。只操作本輪授權的文件，保留原件。resident／watch 只管理自己啟動的 process，設定有限 timeout；完成或逾時時 save／close 並停止自己的 process，需持續執行則在 handoff 記錄 owner 與停止方式。
 
 Worker image 的驗收只包括 CLI 可執行與 skills 可載入；文件生成、render、截圖或 PDF 品質另依實際任務需求，不自動成為 image gate。

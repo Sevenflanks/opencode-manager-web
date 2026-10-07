@@ -1,0 +1,1717 @@
+{
+  "schemaVersion": 1,
+  "catalogSha256": "6d8bc9724c5a3df003bd313060339b45c4576691d052eb27471ab5f5ab27a241",
+  "catalogBasis": "issue-108-selected-installed-catalog; pinned upstream revisions, not verified equal to local installed files",
+  "sources": [
+    {
+      "id": "matt",
+      "repository": "mattpocock/skills",
+      "commit": "6fd947921b935b7e1e69293a200400f0fdd5c15f",
+      "license": "MIT",
+      "licenseFiles": {
+        "LICENSE": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
+      }
+    },
+    {
+      "id": "softleader",
+      "repository": "softleader/agent-skills",
+      "commit": "1793486530d94dc65156581aed4b96f09ac22299",
+      "license": "private-internal-build-only-user-authorized; no public redistribution",
+      "licenseFiles": {}
+    },
+    {
+      "id": "seven",
+      "repository": "Sevenflanks/skills",
+      "commit": "edf3f78afdf204bd23b048cf9c537f24c2f10d1e",
+      "license": "MIT",
+      "licenseFiles": {
+        "LICENSE": "3be32c658e08b4543da4f7eeadae2f92544752eb96afecc78753fa61128ac11b"
+      }
+    },
+    {
+      "id": "adhd",
+      "repository": "ayghri/i-have-adhd",
+      "commit": "723af7d9afaf43eb871dbcce6129e2bf80de90d5",
+      "license": "MIT",
+      "licenseFiles": {
+        "LICENSE": "8acbb618089b738404f76ac60fca1aaa995d9a87995eddf95f0b777acd7f7d2c"
+      }
+    },
+    {
+      "id": "playwright",
+      "repository": "microsoft/playwright-cli",
+      "commit": "b85c7a736bb473bf55b584e54a09ffa698d6d871",
+      "license": "Apache-2.0",
+      "licenseFiles": {
+        "LICENSE": "9a7110fc2d2f964038e5dc49128f908f29f47a574c961cba16085914e879cbda"
+      }
+    },
+    {
+      "id": "vercel",
+      "repository": "vercel-labs/agent-skills",
+      "commit": "063bee94c3f4df8453406c830b0a7df0f2860278",
+      "license": "unknown; user-authorized private internal build; no public source redistribution",
+      "licenseFiles": {}
+    }
+  ],
+  "skills": [
+    {
+      "name": "ask-matt",
+      "source": "matt",
+      "folder": "skills/engineering/ask-matt",
+      "folderSha256": "ae4f261c7569ebc59d27706ab5a55b66f2da8c6689ccf4f593392f8d216e639c",
+      "files": {
+        "PHASE-BOUNDARIES.md": "a8aa20158609ef39e2b308b6ba0660c91066838d07a867202e63a7744a88a3ed",
+        "SKILL.md": "32b3c71d6dbb5a7c15147e8a503a9df28e9a567f45eba6a6bb42aa903225c6ff",
+        "agents/openai.yaml": "bdffbc5a0a99ed1b6ef3253d251d755fd18162b9845972e380007f844b09b05c"
+      },
+      "compiledFolderSha256": "ae4f261c7569ebc59d27706ab5a55b66f2da8c6689ccf4f593392f8d216e639c",
+      "compiledFiles": {
+        "PHASE-BOUNDARIES.md": "a8aa20158609ef39e2b308b6ba0660c91066838d07a867202e63a7744a88a3ed",
+        "SKILL.md": "32b3c71d6dbb5a7c15147e8a503a9df28e9a567f45eba6a6bb42aa903225c6ff",
+        "agents/openai.yaml": "bdffbc5a0a99ed1b6ef3253d251d755fd18162b9845972e380007f844b09b05c"
+      }
+    },
+    {
+      "name": "code-review",
+      "source": "matt",
+      "folder": "skills/engineering/code-review",
+      "folderSha256": "c52c28f43ca4820ca7330d0baaba39cbe57865dd4b0c2220d0c4e0ac1bbf4b08",
+      "files": {
+        "SKILL.md": "47f4e52c21694def9c7c11cbfbf891ca35eac7a93e395797515be3c8a409ae50",
+        "agents/openai.yaml": "8229ca854e11dc8e6aef2131ee03f31fb1561cf905fab9ccc325180cf3331352"
+      },
+      "compiledFolderSha256": "c52c28f43ca4820ca7330d0baaba39cbe57865dd4b0c2220d0c4e0ac1bbf4b08",
+      "compiledFiles": {
+        "SKILL.md": "47f4e52c21694def9c7c11cbfbf891ca35eac7a93e395797515be3c8a409ae50",
+        "agents/openai.yaml": "8229ca854e11dc8e6aef2131ee03f31fb1561cf905fab9ccc325180cf3331352"
+      }
+    },
+    {
+      "name": "codebase-design",
+      "source": "matt",
+      "folder": "skills/engineering/codebase-design",
+      "folderSha256": "855f80059b2c4fbb47e97e96c2ebd5166e835efbbcae7a9b51cfacb34532c1a8",
+      "files": {
+        "DEEPENING.md": "f3dd099ce99289bd213914d8ee3e2429b78309c3957ca4583f7659551b1d53c1",
+        "DESIGN-IT-TWICE.md": "52b52e75655a27aea59c6966b410bac82448968ad46ef1ebb9f07c274e3ae010",
+        "SKILL.md": "2c20617f87ec8af6a434859f381b2f061a69b530444e74eb39e78bb016a6d1e2",
+        "agents/openai.yaml": "edebc9e4fcfe102114012575eaa9600b9b5fd08c311664f389c36e7bc717740f"
+      },
+      "compiledFolderSha256": "855f80059b2c4fbb47e97e96c2ebd5166e835efbbcae7a9b51cfacb34532c1a8",
+      "compiledFiles": {
+        "DEEPENING.md": "f3dd099ce99289bd213914d8ee3e2429b78309c3957ca4583f7659551b1d53c1",
+        "DESIGN-IT-TWICE.md": "52b52e75655a27aea59c6966b410bac82448968ad46ef1ebb9f07c274e3ae010",
+        "SKILL.md": "2c20617f87ec8af6a434859f381b2f061a69b530444e74eb39e78bb016a6d1e2",
+        "agents/openai.yaml": "edebc9e4fcfe102114012575eaa9600b9b5fd08c311664f389c36e7bc717740f"
+      }
+    },
+    {
+      "name": "diagnosing-bugs",
+      "source": "matt",
+      "folder": "skills/engineering/diagnosing-bugs",
+      "folderSha256": "0eb9874ea5c1cc7c5f8569dbff931fee4ad53805294fa120c881819e7960b8b3",
+      "files": {
+        "SKILL.md": "9168404abda0967a5d32977e3498cd95fda6807018852f3de736a78357c82b40",
+        "agents/openai.yaml": "3e430dbe4334a87597488c060cb3dc3786bb00c9182877d6f5ec41f62490e90b",
+        "scripts/hitl-loop.template.sh": "35103539fc36873eea36074769ad454f9379d6fc8b2dc0e26ce987fd3bfe5503"
+      },
+      "compiledFolderSha256": "0eb9874ea5c1cc7c5f8569dbff931fee4ad53805294fa120c881819e7960b8b3",
+      "compiledFiles": {
+        "SKILL.md": "9168404abda0967a5d32977e3498cd95fda6807018852f3de736a78357c82b40",
+        "agents/openai.yaml": "3e430dbe4334a87597488c060cb3dc3786bb00c9182877d6f5ec41f62490e90b",
+        "scripts/hitl-loop.template.sh": "35103539fc36873eea36074769ad454f9379d6fc8b2dc0e26ce987fd3bfe5503"
+      }
+    },
+    {
+      "name": "domain-modeling",
+      "source": "matt",
+      "folder": "skills/engineering/domain-modeling",
+      "folderSha256": "c25c0fbd89c5df79a01e7c820e2a7b2ae894f6c44206a50b0cb90e0db5613eb9",
+      "files": {
+        "ADR-FORMAT.md": "944c92aa790e8fbdc9199640b170979abb8a34ba8d0fe18c2a01a63bce140ca0",
+        "GLOSSARY-FORMAT.md": "21dcc40cdec8e151a829b98ab1517c1867bc444e3665134a98c6983411996801",
+        "SKILL.md": "7b925d7b1e341a2eeae33ad68a8a8c0ab889a38ddd22a7598e4c240e5a7556a3",
+        "agents/openai.yaml": "f6bf2aa996c6e6f53fdd0708e18a0d16a56aed8322cca59fedbe3c0d2c75f06b"
+      },
+      "compiledFolderSha256": "c25c0fbd89c5df79a01e7c820e2a7b2ae894f6c44206a50b0cb90e0db5613eb9",
+      "compiledFiles": {
+        "ADR-FORMAT.md": "944c92aa790e8fbdc9199640b170979abb8a34ba8d0fe18c2a01a63bce140ca0",
+        "GLOSSARY-FORMAT.md": "21dcc40cdec8e151a829b98ab1517c1867bc444e3665134a98c6983411996801",
+        "SKILL.md": "7b925d7b1e341a2eeae33ad68a8a8c0ab889a38ddd22a7598e4c240e5a7556a3",
+        "agents/openai.yaml": "f6bf2aa996c6e6f53fdd0708e18a0d16a56aed8322cca59fedbe3c0d2c75f06b"
+      }
+    },
+    {
+      "name": "grill-with-docs",
+      "source": "matt",
+      "folder": "skills/engineering/grill-with-docs",
+      "folderSha256": "d6882d18cf3c2ebcd5f7175ac732b3a0685122ea934b463272949d25657332bc",
+      "files": {
+        "SKILL.md": "7de372c13488f1ee96cc11cd8907b56b6809cc93eef776eeddd37de6b6cbe3fe",
+        "agents/openai.yaml": "94cd0ab161fb468a836349f5ed482ba58ce8e709a05c57ce533d739dbd35cca9"
+      },
+      "compiledFolderSha256": "d6882d18cf3c2ebcd5f7175ac732b3a0685122ea934b463272949d25657332bc",
+      "compiledFiles": {
+        "SKILL.md": "7de372c13488f1ee96cc11cd8907b56b6809cc93eef776eeddd37de6b6cbe3fe",
+        "agents/openai.yaml": "94cd0ab161fb468a836349f5ed482ba58ce8e709a05c57ce533d739dbd35cca9"
+      }
+    },
+    {
+      "name": "implement",
+      "source": "matt",
+      "folder": "skills/engineering/implement",
+      "folderSha256": "cda2db0eee08622be7c0dff5926f28a01ad00c12063f06c8666bbdc3760e539b",
+      "files": {
+        "SKILL.md": "f28bed1a2a7dcf604c802a99869bae9d577b6bfc2061fe655c8b0dbb1ee16cfd",
+        "agents/openai.yaml": "8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc"
+      },
+      "compiledFolderSha256": "cda2db0eee08622be7c0dff5926f28a01ad00c12063f06c8666bbdc3760e539b",
+      "compiledFiles": {
+        "SKILL.md": "f28bed1a2a7dcf604c802a99869bae9d577b6bfc2061fe655c8b0dbb1ee16cfd",
+        "agents/openai.yaml": "8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc"
+      }
+    },
+    {
+      "name": "implement-spec",
+      "source": "matt",
+      "folder": "skills/engineering/implement-spec",
+      "folderSha256": "a104be9b1919f13fffd1b68792076d2f33fd8ed1370cc2c9338cb228e17babcc",
+      "files": {
+        "SKILL.md": "7a22dd2e60b8fcece478ced9d2533582adf3520d695acd3ab715341535c9e56d",
+        "agents/openai.yaml": "fd41efb42c60c96320d6531be7e4bf15cbf5518cd652d57dff27ccffa46988e9"
+      },
+      "compiledFolderSha256": "a104be9b1919f13fffd1b68792076d2f33fd8ed1370cc2c9338cb228e17babcc",
+      "compiledFiles": {
+        "SKILL.md": "7a22dd2e60b8fcece478ced9d2533582adf3520d695acd3ab715341535c9e56d",
+        "agents/openai.yaml": "fd41efb42c60c96320d6531be7e4bf15cbf5518cd652d57dff27ccffa46988e9"
+      }
+    },
+    {
+      "name": "improve-codebase-architecture",
+      "source": "matt",
+      "folder": "skills/engineering/improve-codebase-architecture",
+      "folderSha256": "d15e658a232ad79fa58891ef3e418071b28e942e5e95fa17969053e9db1601ce",
+      "files": {
+        "HTML-REPORT.md": "581e8bb5a521e46bbda8ca7e19b15948bed882187108092ebb90c62513b77528",
+        "SKILL.md": "552240a5ab5cec6b67c15dd1ad6e9f6962b1bca6ce870059a8c2713760c20392",
+        "agents/openai.yaml": "c8cb20f68ebf0edb4e497bc11ae5fcaa196004e661cd189015b04f4109ced7f1"
+      },
+      "compiledFolderSha256": "d15e658a232ad79fa58891ef3e418071b28e942e5e95fa17969053e9db1601ce",
+      "compiledFiles": {
+        "HTML-REPORT.md": "581e8bb5a521e46bbda8ca7e19b15948bed882187108092ebb90c62513b77528",
+        "SKILL.md": "552240a5ab5cec6b67c15dd1ad6e9f6962b1bca6ce870059a8c2713760c20392",
+        "agents/openai.yaml": "c8cb20f68ebf0edb4e497bc11ae5fcaa196004e661cd189015b04f4109ced7f1"
+      }
+    },
+    {
+      "name": "pr",
+      "source": "matt",
+      "folder": "skills/engineering/pr",
+      "folderSha256": "f5d91d590a0f2c50a99d767e1050c58f8aa7d897efb77dcc010b4404a86fe15b",
+      "files": {
+        "CREDITS.md": "a7a087127665d7298a72280ef6e19c41ad8404523712a788c8dc3ab414bc2497",
+        "SKILL.md": "ab63f1cf78647389edcd386c9427c5dfca27ed2836930c24773ffee834c19bcd",
+        "agents/openai.yaml": "2295b586624db4ef546f3fd4695492f039d941a46d8a1593a702ce3ca511b8ad"
+      },
+      "compiledFolderSha256": "f5d91d590a0f2c50a99d767e1050c58f8aa7d897efb77dcc010b4404a86fe15b",
+      "compiledFiles": {
+        "CREDITS.md": "a7a087127665d7298a72280ef6e19c41ad8404523712a788c8dc3ab414bc2497",
+        "SKILL.md": "ab63f1cf78647389edcd386c9427c5dfca27ed2836930c24773ffee834c19bcd",
+        "agents/openai.yaml": "2295b586624db4ef546f3fd4695492f039d941a46d8a1593a702ce3ca511b8ad"
+      }
+    },
+    {
+      "name": "prototype",
+      "source": "matt",
+      "folder": "skills/engineering/prototype",
+      "folderSha256": "e86eb0efd570ab11acc4bfe064888e3a1ab56d956404edc27f19645b69b29a7e",
+      "files": {
+        "LOGIC.md": "f61c7d249e786a79ef289018901c348271e1798dd0b0bc5607b5c6f4d4a01ab9",
+        "SKILL.md": "714de632d116bb73f65cdb5a882db15b9369a6713b9a47c0fad827848f0bfbe3",
+        "UI.md": "723211e878acbc7b6ff09755263f3295cde724ba902ff0064da41eed51d45ad3",
+        "agents/openai.yaml": "5af65e43ab41a350436697b81e27b7f848d36782043b73c322bb2c9fa9cc55dc"
+      },
+      "compiledFolderSha256": "e86eb0efd570ab11acc4bfe064888e3a1ab56d956404edc27f19645b69b29a7e",
+      "compiledFiles": {
+        "LOGIC.md": "f61c7d249e786a79ef289018901c348271e1798dd0b0bc5607b5c6f4d4a01ab9",
+        "SKILL.md": "714de632d116bb73f65cdb5a882db15b9369a6713b9a47c0fad827848f0bfbe3",
+        "UI.md": "723211e878acbc7b6ff09755263f3295cde724ba902ff0064da41eed51d45ad3",
+        "agents/openai.yaml": "5af65e43ab41a350436697b81e27b7f848d36782043b73c322bb2c9fa9cc55dc"
+      }
+    },
+    {
+      "name": "research",
+      "source": "matt",
+      "folder": "skills/engineering/research",
+      "folderSha256": "1a5c408b1843aba2ef8e67faa23bb02d83ddc6ac3e414101c555c938f5fc9033",
+      "files": {
+        "SKILL.md": "985569f15739c713d6784887c3d186d4ef9ac85bec5ad9c068d25bf0739928e4",
+        "agents/openai.yaml": "9b4c470d63221c1f68f22df70b83e2f12401b317babe0d1b7b5f24a974474d0d"
+      },
+      "compiledFolderSha256": "1a5c408b1843aba2ef8e67faa23bb02d83ddc6ac3e414101c555c938f5fc9033",
+      "compiledFiles": {
+        "SKILL.md": "985569f15739c713d6784887c3d186d4ef9ac85bec5ad9c068d25bf0739928e4",
+        "agents/openai.yaml": "9b4c470d63221c1f68f22df70b83e2f12401b317babe0d1b7b5f24a974474d0d"
+      }
+    },
+    {
+      "name": "retro",
+      "source": "matt",
+      "folder": "skills/engineering/retro",
+      "folderSha256": "38a906d27ea2af642d0e15ba3a3a68228da1509e1c8dbd9011088fa75b96627d",
+      "files": {
+        "SKILL.md": "33fbc28568e3146f20fd908b12998bc0ab30aa4f4c87288199a40793efa94696",
+        "agents/openai.yaml": "cb6fb9d7e6b4be5975f41f6def1dd00a1255bad5d9b02696b124c924a8b8745c"
+      },
+      "compiledFolderSha256": "38a906d27ea2af642d0e15ba3a3a68228da1509e1c8dbd9011088fa75b96627d",
+      "compiledFiles": {
+        "SKILL.md": "33fbc28568e3146f20fd908b12998bc0ab30aa4f4c87288199a40793efa94696",
+        "agents/openai.yaml": "cb6fb9d7e6b4be5975f41f6def1dd00a1255bad5d9b02696b124c924a8b8745c"
+      }
+    },
+    {
+      "name": "setup-matt-pocock-skills",
+      "source": "matt",
+      "folder": "skills/engineering/setup-matt-pocock-skills",
+      "folderSha256": "824b99e39dc0e7ad7ee9d5950dfc954535d138e29bef27b2f9765e937176160d",
+      "files": {
+        "SKILL.md": "9a0c21694be19fa3eefc39343355d3af7414716ba364882c7432c2f821eac3e9",
+        "agents/openai.yaml": "9527de0110541c45712319025155aeab8dc7d77c6ed6e5e83271bab1851ab939",
+        "domain.md": "593a7042218689f1d24df89df14eaf0a20e19e0d0a7d479a01947ac78f0784b9",
+        "issue-tracker-github.md": "da619c7423506c905ceea62d4d71c955371c2f2c743aada92a01e3deffa93474",
+        "issue-tracker-gitlab.md": "ea175f73d193b3f55819c0ed9bbccf6ee0e70ad8f928e3d7607596c53380acd6",
+        "issue-tracker-local.md": "7dcda20a2eb4bdc89b95d1143423c0691309921cadae3132e6424f371030506e",
+        "triage-labels.md": "4f53c9b40ce2651e3611aa090eaedbd6dbc9b71ef8c5f7e65eac0d8263190d0d"
+      },
+      "compiledFolderSha256": "824b99e39dc0e7ad7ee9d5950dfc954535d138e29bef27b2f9765e937176160d",
+      "compiledFiles": {
+        "SKILL.md": "9a0c21694be19fa3eefc39343355d3af7414716ba364882c7432c2f821eac3e9",
+        "agents/openai.yaml": "9527de0110541c45712319025155aeab8dc7d77c6ed6e5e83271bab1851ab939",
+        "domain.md": "593a7042218689f1d24df89df14eaf0a20e19e0d0a7d479a01947ac78f0784b9",
+        "issue-tracker-github.md": "da619c7423506c905ceea62d4d71c955371c2f2c743aada92a01e3deffa93474",
+        "issue-tracker-gitlab.md": "ea175f73d193b3f55819c0ed9bbccf6ee0e70ad8f928e3d7607596c53380acd6",
+        "issue-tracker-local.md": "7dcda20a2eb4bdc89b95d1143423c0691309921cadae3132e6424f371030506e",
+        "triage-labels.md": "4f53c9b40ce2651e3611aa090eaedbd6dbc9b71ef8c5f7e65eac0d8263190d0d"
+      }
+    },
+    {
+      "name": "tdd",
+      "source": "matt",
+      "folder": "skills/engineering/tdd",
+      "folderSha256": "1289fe8710521503a953e2940792bf3fc3a6231a7a2c1347e58bf80267263748",
+      "files": {
+        "SKILL.md": "93ea419b76e9caaf26153b828e984f7c3fb136f4caa67b14af95f32ea965a1cc",
+        "agents/openai.yaml": "ea6f01cf1b8c06a4b0f5b649d74b1b8ce8685e72af1b38d70d877693e092af0b",
+        "mocking.md": "3ceb807fdf4a47d6a93d4d9a891e5ba6d362a6247bd08adc451feebfc17361ef",
+        "tests.md": "859f9e592c188fda4fc7277dd180e4ce9c7a2e13f6efe1f6f29eccc9d28c106a"
+      },
+      "compiledFolderSha256": "1289fe8710521503a953e2940792bf3fc3a6231a7a2c1347e58bf80267263748",
+      "compiledFiles": {
+        "SKILL.md": "93ea419b76e9caaf26153b828e984f7c3fb136f4caa67b14af95f32ea965a1cc",
+        "agents/openai.yaml": "ea6f01cf1b8c06a4b0f5b649d74b1b8ce8685e72af1b38d70d877693e092af0b",
+        "mocking.md": "3ceb807fdf4a47d6a93d4d9a891e5ba6d362a6247bd08adc451feebfc17361ef",
+        "tests.md": "859f9e592c188fda4fc7277dd180e4ce9c7a2e13f6efe1f6f29eccc9d28c106a"
+      }
+    },
+    {
+      "name": "to-spec",
+      "source": "matt",
+      "folder": "skills/engineering/to-spec",
+      "folderSha256": "96cbcd0ab4c97bcb858703fc85cf15147f5cdb618b3924d26366f32fbc079ee2",
+      "files": {
+        "SKILL.md": "43ad9cf318e5e7d3d1fa360253a37021796dc87a0c2e595ad262661a10f85088",
+        "agents/openai.yaml": "1c5b4d1e3d8e52287ef19cc2742fdbbfae1914ac75d33af3e4c8174f08cc55bb"
+      },
+      "compiledFolderSha256": "96cbcd0ab4c97bcb858703fc85cf15147f5cdb618b3924d26366f32fbc079ee2",
+      "compiledFiles": {
+        "SKILL.md": "43ad9cf318e5e7d3d1fa360253a37021796dc87a0c2e595ad262661a10f85088",
+        "agents/openai.yaml": "1c5b4d1e3d8e52287ef19cc2742fdbbfae1914ac75d33af3e4c8174f08cc55bb"
+      }
+    },
+    {
+      "name": "to-tickets",
+      "source": "matt",
+      "folder": "skills/engineering/to-tickets",
+      "folderSha256": "8801e56a6f241103596123bce32c341f16fe4c06bad22c85177cc36677f072b2",
+      "files": {
+        "SKILL.md": "56ec23c5b2782785d4e65bff9e315b6d3aeb4ef977c174a219e99489fada1995",
+        "agents/openai.yaml": "21bc6215fffcd7614e9f772bb1760e87cc5fc7dcc707e7d282bc9414267a6090"
+      },
+      "compiledFolderSha256": "8801e56a6f241103596123bce32c341f16fe4c06bad22c85177cc36677f072b2",
+      "compiledFiles": {
+        "SKILL.md": "56ec23c5b2782785d4e65bff9e315b6d3aeb4ef977c174a219e99489fada1995",
+        "agents/openai.yaml": "21bc6215fffcd7614e9f772bb1760e87cc5fc7dcc707e7d282bc9414267a6090"
+      }
+    },
+    {
+      "name": "triage",
+      "source": "matt",
+      "folder": "skills/engineering/triage",
+      "folderSha256": "b26fcea03379789ace2e8292b66f366487973879c1f60775eb628c51d90fefb7",
+      "files": {
+        "AGENT-BRIEF.md": "7f5f87fed3033df1b06e083c480f3e847b1fbb0647746b8a4c6a50f9f26ef44f",
+        "OUT-OF-SCOPE.md": "1fbf9b432130c6380aa65813b55553cfda150309b27c595e183f8e335b8a190d",
+        "SKILL.md": "917b0baf74be583e74f110857ed45df2766617f75c00baf61fd136d7af515edf",
+        "agents/openai.yaml": "2e683717720cf456d165d0bb1a68bb600d0b6a8ccb61841c172e50d26f95351c"
+      },
+      "compiledFolderSha256": "b26fcea03379789ace2e8292b66f366487973879c1f60775eb628c51d90fefb7",
+      "compiledFiles": {
+        "AGENT-BRIEF.md": "7f5f87fed3033df1b06e083c480f3e847b1fbb0647746b8a4c6a50f9f26ef44f",
+        "OUT-OF-SCOPE.md": "1fbf9b432130c6380aa65813b55553cfda150309b27c595e183f8e335b8a190d",
+        "SKILL.md": "917b0baf74be583e74f110857ed45df2766617f75c00baf61fd136d7af515edf",
+        "agents/openai.yaml": "2e683717720cf456d165d0bb1a68bb600d0b6a8ccb61841c172e50d26f95351c"
+      }
+    },
+    {
+      "name": "wayfinder",
+      "source": "matt",
+      "folder": "skills/engineering/wayfinder",
+      "folderSha256": "3e557aeb71c0b15d281a2464a7f64fb1ccd26b85dcede264915fa998a09bab57",
+      "files": {
+        "SKILL.md": "fee6e1d0c50f0e736b4ef8a599060c959afae904c9a97d82c97f049fcc3aa0f1",
+        "agents/openai.yaml": "88bc81a11a6d52ac67aeaa76b8b619e387020d47c5133a4dd4927fd15c4ad073"
+      },
+      "compiledFolderSha256": "3e557aeb71c0b15d281a2464a7f64fb1ccd26b85dcede264915fa998a09bab57",
+      "compiledFiles": {
+        "SKILL.md": "fee6e1d0c50f0e736b4ef8a599060c959afae904c9a97d82c97f049fcc3aa0f1",
+        "agents/openai.yaml": "88bc81a11a6d52ac67aeaa76b8b619e387020d47c5133a4dd4927fd15c4ad073"
+      }
+    },
+    {
+      "name": "wizard",
+      "source": "matt",
+      "folder": "skills/engineering/wizard",
+      "folderSha256": "08690310882108e335557994359cb915e65dc5df6d05c5aff0273aafa9749848",
+      "files": {
+        "SKILL.md": "bdf31d48211ea559878f95a4f344aeabf8d85897488ba564382bab0b000daac1",
+        "agents/openai.yaml": "98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83",
+        "template.sh": "33cbe9dfb1d0e9185b60248a52aabed14bc64785a00cac695e302e739dd6c153"
+      },
+      "compiledFolderSha256": "08690310882108e335557994359cb915e65dc5df6d05c5aff0273aafa9749848",
+      "compiledFiles": {
+        "SKILL.md": "bdf31d48211ea559878f95a4f344aeabf8d85897488ba564382bab0b000daac1",
+        "agents/openai.yaml": "98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83",
+        "template.sh": "33cbe9dfb1d0e9185b60248a52aabed14bc64785a00cac695e302e739dd6c153"
+      }
+    },
+    {
+      "name": "grill-me",
+      "source": "matt",
+      "folder": "skills/productivity/grill-me",
+      "folderSha256": "8d501635f6935280c1e493a7551658038fef32a346fb3a4acd21a727ceee3b64",
+      "files": {
+        "SKILL.md": "caaf8b8de1684f96e26b28f3c29189db5c89cce4b73e1c93d86164f66ef88637",
+        "agents/openai.yaml": "c061e39c3e0f9d865fb1b97556d485704af2a8a58f4b8221a8917a5c2074a32b"
+      },
+      "compiledFolderSha256": "8d501635f6935280c1e493a7551658038fef32a346fb3a4acd21a727ceee3b64",
+      "compiledFiles": {
+        "SKILL.md": "caaf8b8de1684f96e26b28f3c29189db5c89cce4b73e1c93d86164f66ef88637",
+        "agents/openai.yaml": "c061e39c3e0f9d865fb1b97556d485704af2a8a58f4b8221a8917a5c2074a32b"
+      }
+    },
+    {
+      "name": "grilling",
+      "source": "matt",
+      "folder": "skills/productivity/grilling",
+      "folderSha256": "d6ae2cc9cd9778557069d88eff3bbb733ef7f4d6645bb6786c101236d7d422ce",
+      "files": {
+        "SKILL.md": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2",
+        "agents/openai.yaml": "1411d7df7d99b7e621a1ff8283c8133cc2464be63d064e52d8ce169c6800ee9b"
+      },
+      "compiledFolderSha256": "d6ae2cc9cd9778557069d88eff3bbb733ef7f4d6645bb6786c101236d7d422ce",
+      "compiledFiles": {
+        "SKILL.md": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2",
+        "agents/openai.yaml": "1411d7df7d99b7e621a1ff8283c8133cc2464be63d064e52d8ce169c6800ee9b"
+      }
+    },
+    {
+      "name": "handoff",
+      "source": "matt",
+      "folder": "skills/productivity/handoff",
+      "folderSha256": "ec3e8c462e35745d5349384c25b2ee761d6b681004121499f90d9df2e50da5ce",
+      "files": {
+        "SKILL.md": "4cbb043950dad2ffd3662ff1a5a0b51ae676004b5cae10e3787e8ee7a4ee69d3",
+        "agents/openai.yaml": "5c479fd562c691851690e8b18c8501045bef0943c10743d636b2fae26add1d28"
+      },
+      "compiledFolderSha256": "ec3e8c462e35745d5349384c25b2ee761d6b681004121499f90d9df2e50da5ce",
+      "compiledFiles": {
+        "SKILL.md": "4cbb043950dad2ffd3662ff1a5a0b51ae676004b5cae10e3787e8ee7a4ee69d3",
+        "agents/openai.yaml": "5c479fd562c691851690e8b18c8501045bef0943c10743d636b2fae26add1d28"
+      }
+    },
+    {
+      "name": "teach",
+      "source": "matt",
+      "folder": "skills/productivity/teach",
+      "folderSha256": "709c091dc273eddc504fa631bbb8172f32b2a03620ddf5fccfce3fb758ba205b",
+      "files": {
+        "GLOSSARY-FORMAT.md": "9b99859ec28437668130d8f2ce5a342938970f8a1ed4fd38c3eab4f4b5fff210",
+        "LEARNING-RECORD-FORMAT.md": "701fa34b6748aa89e6c960ffb815257f481a7d77fb2900f9028f7edf3fdd6052",
+        "MISSION-FORMAT.md": "8cacbb3c0644d3ae0ea4965564797099401a6930a23f7cf462918576587f2418",
+        "RESOURCES-FORMAT.md": "e9cacf34026e11a8d1c8f9de88abe5bcbf654f4ebdb25cae8c0de0d5f48f44ec",
+        "SKILL.md": "a32df9dcdfc0c4fdc1c98e1ed3940c5f56b84c1aa90ff60346f32b8b53915b43",
+        "agents/openai.yaml": "5856f3ae8aec742f1499c640aecdd5f1d6af5fa210a7c6ec794de8263a6f733f"
+      },
+      "compiledFolderSha256": "709c091dc273eddc504fa631bbb8172f32b2a03620ddf5fccfce3fb758ba205b",
+      "compiledFiles": {
+        "GLOSSARY-FORMAT.md": "9b99859ec28437668130d8f2ce5a342938970f8a1ed4fd38c3eab4f4b5fff210",
+        "LEARNING-RECORD-FORMAT.md": "701fa34b6748aa89e6c960ffb815257f481a7d77fb2900f9028f7edf3fdd6052",
+        "MISSION-FORMAT.md": "8cacbb3c0644d3ae0ea4965564797099401a6930a23f7cf462918576587f2418",
+        "RESOURCES-FORMAT.md": "e9cacf34026e11a8d1c8f9de88abe5bcbf654f4ebdb25cae8c0de0d5f48f44ec",
+        "SKILL.md": "a32df9dcdfc0c4fdc1c98e1ed3940c5f56b84c1aa90ff60346f32b8b53915b43",
+        "agents/openai.yaml": "5856f3ae8aec742f1499c640aecdd5f1d6af5fa210a7c6ec794de8263a6f733f"
+      }
+    },
+    {
+      "name": "to-questionnaire",
+      "source": "matt",
+      "folder": "skills/productivity/to-questionnaire",
+      "folderSha256": "bea06bbc77c5a926ad61ae63eb6bca55d485ee9546cf41e8d0b7911843bd09b6",
+      "files": {
+        "SKILL.md": "b5eb929842ee0e93d867c5e906d183d350f2f2d149eaeaa86967d94d8eda1d3b",
+        "agents/openai.yaml": "9e8a06c38c8842eea8d4922cb9d1ead8e3ace647bab259b943c994a1b4742bc2"
+      },
+      "compiledFolderSha256": "bea06bbc77c5a926ad61ae63eb6bca55d485ee9546cf41e8d0b7911843bd09b6",
+      "compiledFiles": {
+        "SKILL.md": "b5eb929842ee0e93d867c5e906d183d350f2f2d149eaeaa86967d94d8eda1d3b",
+        "agents/openai.yaml": "9e8a06c38c8842eea8d4922cb9d1ead8e3ace647bab259b943c994a1b4742bc2"
+      }
+    },
+    {
+      "name": "wait-what",
+      "source": "matt",
+      "folder": "skills/productivity/wait-what",
+      "folderSha256": "b36c091368ac4a212fc22f1684f38278a44d0aa9eedc94e23f316170682ea5d6",
+      "files": {
+        "SKILL.md": "d961bb37defd975c539427edb8f450cdbccdcdd552e213c1ece46676a7970905",
+        "agents/openai.yaml": "b41faadf741d51e4ea184148b2d1854d93f947aaf754c7844f70a00f04194999"
+      },
+      "compiledFolderSha256": "b36c091368ac4a212fc22f1684f38278a44d0aa9eedc94e23f316170682ea5d6",
+      "compiledFiles": {
+        "SKILL.md": "d961bb37defd975c539427edb8f450cdbccdcdd552e213c1ece46676a7970905",
+        "agents/openai.yaml": "b41faadf741d51e4ea184148b2d1854d93f947aaf754c7844f70a00f04194999"
+      }
+    },
+    {
+      "name": "writing-for-agents",
+      "source": "matt",
+      "folder": "skills/productivity/writing-for-agents",
+      "folderSha256": "78c41feba8e14079c320faa34e76395bcd0a74739580999e7cbad8988fefe533",
+      "files": {
+        "SKILL-MECHANICS.md": "c768e6307c7c10728c401c213f2c4ba71c542127eeb7ad2956aabd15a0fa0059",
+        "SKILL.md": "551adca942227b44192edba88acd4e8db911f0121ce58ad16944ccf6a896a74a",
+        "agents/openai.yaml": "eacb24b2a618cfb81dacb0416f4fdd75ddf3a8060f8ddb99aae1b1e301907e4b"
+      },
+      "compiledFolderSha256": "78c41feba8e14079c320faa34e76395bcd0a74739580999e7cbad8988fefe533",
+      "compiledFiles": {
+        "SKILL-MECHANICS.md": "c768e6307c7c10728c401c213f2c4ba71c542127eeb7ad2956aabd15a0fa0059",
+        "SKILL.md": "551adca942227b44192edba88acd4e8db911f0121ce58ad16944ccf6a896a74a",
+        "agents/openai.yaml": "eacb24b2a618cfb81dacb0416f4fdd75ddf3a8060f8ddb99aae1b1e301907e4b"
+      }
+    },
+    {
+      "name": "git-commit-co-author",
+      "source": "softleader",
+      "folder": "plugins/engineering/skills/git-commit-co-author",
+      "folderSha256": "55917261f5fa8308aeb96fdc76bc1a2ced7f99264aec05bd7ff2cacc75a625a5",
+      "files": {
+        "README.md": "029cb0d3cb8d76f9778065505ec7eb0b8fa2ce739e8dd01ea5b90f18136f9888",
+        "SKILL.md": "9befe38f2da6b19533a4bd61f757e23451ad74494f02f5ee219565d181d32f30",
+        "agents/openai.yaml": "ecd101dd21c1b0ebf7f2a19008bf4d411910ec951fb78b45d82189c86c4c00b1",
+        "references/setup.md": "3a8533aa1c948f844b0ceb1ff1dae8cb1920b06ad68777abe7a9881393b8804f",
+        "scripts/git_commit_co_author.py": "f9a745ca0f3e0f0ca02d2a87c3b07da3001bf0da15284c0a477ba4a93cf597d1",
+        "scripts/hook-session.py": "b669b235937d25dd8a4b956dd2dc6d2ce23e6c066aef14b8b33f261c513ed44c",
+        "scripts/hook-tool.py": "2df77fee7e2909d0a9a58ad4177593736b091729aa8a8a1c5c05be41be9e3280",
+        "scripts/opencode-plugin.ts": "7a0fc5c3beff89c52e21efddde1a9471f8036b53c8a0db61b4e3fe7577e6306d",
+        "tests/README.md": "8a71c53912a03f6a0ea7fcbc50e9f5c1e1f442b9281c2b52cb49f3bb303ccb10",
+        "tests/fixtures/remotes.json": "4f395d083fe31debd66e3a2ad23f2370dff3d4692bd1d454dd170a9049b3ef3f",
+        "tests/opencode_plugin.test.js": "9b2241d97dbcf950ab239eed6d6188e23b099eb2dce4dae80c65d6e9a584efad",
+        "tests/test_hooks.py": "6bc7172058dc9fea739a88d6f32ec430c0f811699411ba3f882f8b0034dfe82e"
+      },
+      "compiledFolderSha256": "55917261f5fa8308aeb96fdc76bc1a2ced7f99264aec05bd7ff2cacc75a625a5",
+      "compiledFiles": {
+        "README.md": "029cb0d3cb8d76f9778065505ec7eb0b8fa2ce739e8dd01ea5b90f18136f9888",
+        "SKILL.md": "9befe38f2da6b19533a4bd61f757e23451ad74494f02f5ee219565d181d32f30",
+        "agents/openai.yaml": "ecd101dd21c1b0ebf7f2a19008bf4d411910ec951fb78b45d82189c86c4c00b1",
+        "references/setup.md": "3a8533aa1c948f844b0ceb1ff1dae8cb1920b06ad68777abe7a9881393b8804f",
+        "scripts/git_commit_co_author.py": "f9a745ca0f3e0f0ca02d2a87c3b07da3001bf0da15284c0a477ba4a93cf597d1",
+        "scripts/hook-session.py": "b669b235937d25dd8a4b956dd2dc6d2ce23e6c066aef14b8b33f261c513ed44c",
+        "scripts/hook-tool.py": "2df77fee7e2909d0a9a58ad4177593736b091729aa8a8a1c5c05be41be9e3280",
+        "scripts/opencode-plugin.ts": "7a0fc5c3beff89c52e21efddde1a9471f8036b53c8a0db61b4e3fe7577e6306d",
+        "tests/README.md": "8a71c53912a03f6a0ea7fcbc50e9f5c1e1f442b9281c2b52cb49f3bb303ccb10",
+        "tests/fixtures/remotes.json": "4f395d083fe31debd66e3a2ad23f2370dff3d4692bd1d454dd170a9049b3ef3f",
+        "tests/opencode_plugin.test.js": "9b2241d97dbcf950ab239eed6d6188e23b099eb2dce4dae80c65d6e9a584efad",
+        "tests/test_hooks.py": "6bc7172058dc9fea739a88d6f32ec430c0f811699411ba3f882f8b0034dfe82e"
+      }
+    },
+    {
+      "name": "pr-review",
+      "source": "softleader",
+      "folder": "plugins/engineering/skills/pr-review",
+      "folderSha256": "76b4369a7f2878aa345ef7e33f37faa16950b2861ad48bc7667158710d6ab133",
+      "files": {
+        "README.md": "076c9ea4bd19e37ee1f051812e2a6f6952d2fb59cf6d3e9d99630b330da20869",
+        "SKILL.md": "e23d009421bff3d99772ba1b59bd33eeaac653f0600d61c106c952ee534a5f99",
+        "agents/openai.yaml": "3504ea44d31b10ef546b1f51db3e0a382da3efda53931b47ef1f61201339d87a",
+        "evals/README.md": "707c93f42af112973aead0cdfcbc1360b49b753ddd319174fd24b39d43cccee2",
+        "evals/evals.json": "5eac5302ec8e1399e2aad82c932cc79c2c0af5edc91e799d1b710f5319100238",
+        "evals/fixtures/cross-axis-noop.md": "18093f17c840b7251cd7998ca6472759c7986653c25ed5200d3bdb9ac5c82dad",
+        "evals/trigger-evals.json": "3eeef32a4b107602819210118e14dc4a6478edb2967b56438d0c16d8beda28c0",
+        "references/delegated-prompts.md": "936858248e1dd3a7430a9c6ad5610519d6e67bd3cb8d99c57028799e1a04b7d2",
+        "references/failure-routing.md": "547bf3f39b0d596ff085981453e72d3e3ab8f5dc25177c4fed926b4ee91ff5b6",
+        "references/fan-in.md": "cb7dd7a60a6de03a5e41365ed7f04e9b701b8eddd569d98f86658c7bafb66ffa",
+        "references/override.md": "bb27e53550360838c3b1e84e060c49b37652ad4c9ec250dee606f3fed5f7f6b9",
+        "references/queue.md": "af7e97736084dcf95def8fa2a3950063d31f8f292285846bbdb891a1cdb5a1af",
+        "references/review-body.md": "12e1656492dcf96087a11109d972069d88e9c46de0dd245ce03ad0cb7201d0f9",
+        "references/review-flow.md": "fbab6592913dbbd90ab4a5a18c13b750570723cb8f79f14ddb9227018cd35463",
+        "references/specified.md": "73a5fc8ff6aebb38108e12fcf35bc9f377c6a3e13a32bdc3afe231147f2b3c86",
+        "references/submission.md": "ecb481d29e7cb9a4496e4ae2c0457d44b53daa93f0f53474c6f885cdfb64f656",
+        "references/templates/axis-reviewer.md": "60a8057b81997b3be6b9bfa53611abca9484331b604dfecb931f24d06250a70c",
+        "references/templates/finding-verifier.md": "f76f148cd75d9932a0f5698fbf7593081998ca7467c0948829cd2dff91f3e40d",
+        "references/timing-and-delivery.md": "70a5a5f01e153b4b10412231239ab6623e5b0490712d13a049c5497a020ccd3a",
+        "scripts/fan_in.py": "d273b730120df47229fa888b453317755691d9257d145d7217608b8a6f2c4526",
+        "scripts/finalize_review.py": "cd0590a5209d8340c5f193c676a19c6829cb0319444d0c85f5f607cb6a9a665c",
+        "scripts/stage.py": "1bf5e4fc9aca00e9554fc71ae4ec97aadfcf27fbd6a2fc6354ddfcdf5069bb1f",
+        "scripts/timing.py": "eeb561e2775687f5b7fb1d7fec1db1e461501ddb4c513b6a77bafa28eda01ebe",
+        "tests/README.md": "a54a00b6288ad7663067a1305bc9566f92f2419b52367c76aaf652e280bdae32",
+        "tests/benchmark_fan_in.py": "a69342698db92eee772b9e52709927fbd91c6b205c498edef0f766fb5b82079d",
+        "tests/fixtures/fan_in/clean/diff.patch": "6c96678904fe2b77144f6a24f3b171f7177f607009e878de054399fd2f4679f9",
+        "tests/fixtures/fan_in/clean/report-context.json": "3b3185ad1bebd55f29c8104d4ca6c9f667fd9a5a4c16c5a76c5e89308c91450a",
+        "tests/fixtures/fan_in/clean/reviewer-audit.tsv": "f40b48232e126ed8668e41d5747c145a88f08db44d31c8c6d26a21f0403c1af7",
+        "tests/fixtures/fan_in/clean/reviewer.json": "55702fe0157003fe9c461dff34129a192e411742ec01f761dffd9cf47f6df860",
+        "tests/fixtures/fan_in/cross-axis/reviewer.json": "629c686582861560170006b646928e080194aa510659a9c9a323e1eb97bd32d9",
+        "tests/fixtures/fan_in/gating/diff.patch": "5ed5adafc89faf0ade563ed4aa761c71030b3235df2bb4c17d9d727810e85dd8",
+        "tests/fixtures/fan_in/gating/report-context.json": "3b3185ad1bebd55f29c8104d4ca6c9f667fd9a5a4c16c5a76c5e89308c91450a",
+        "tests/fixtures/fan_in/gating/reviewer-audit.tsv": "27fab2196d389630213b10d77d3af606cc597d1dde58865dc183d77048a8e4a9",
+        "tests/fixtures/fan_in/gating/reviewer.json": "81aeac16d2d4ac3093bdbe62d71da98ece0fdeb7aaea5b7e81c0725b5740653d",
+        "tests/fixtures/fan_in/gating/verifier-audit.tsv": "42f06916d75f2fff3a942d283c7c65213c550c548650a91f1eee0a23cd8b5854",
+        "tests/fixtures/fan_in/gating/verifier.json": "f780279fa387fe1b7bd564738396025a1f9a11e50483f7ca88bbaeb88c6a9f0d",
+        "tests/test_fan_in.py": "46af4f2e0a3361cae0088ac4922e2e1972780cb54a58e71a1c688b5cc9aefb7d",
+        "tests/test_finalize_review.py": "a729b0b038cef413bf81e4c3d465ff493d8718e7502f7d48070c020fabc2d6a8",
+        "tests/test_stage.py": "16dd67965f751879a605e77af41c2f1b4e5a16931ade6f52dd602d27d64744ea"
+      },
+      "compiledFolderSha256": "76b4369a7f2878aa345ef7e33f37faa16950b2861ad48bc7667158710d6ab133",
+      "compiledFiles": {
+        "README.md": "076c9ea4bd19e37ee1f051812e2a6f6952d2fb59cf6d3e9d99630b330da20869",
+        "SKILL.md": "e23d009421bff3d99772ba1b59bd33eeaac653f0600d61c106c952ee534a5f99",
+        "agents/openai.yaml": "3504ea44d31b10ef546b1f51db3e0a382da3efda53931b47ef1f61201339d87a",
+        "evals/README.md": "707c93f42af112973aead0cdfcbc1360b49b753ddd319174fd24b39d43cccee2",
+        "evals/evals.json": "5eac5302ec8e1399e2aad82c932cc79c2c0af5edc91e799d1b710f5319100238",
+        "evals/fixtures/cross-axis-noop.md": "18093f17c840b7251cd7998ca6472759c7986653c25ed5200d3bdb9ac5c82dad",
+        "evals/trigger-evals.json": "3eeef32a4b107602819210118e14dc4a6478edb2967b56438d0c16d8beda28c0",
+        "references/delegated-prompts.md": "936858248e1dd3a7430a9c6ad5610519d6e67bd3cb8d99c57028799e1a04b7d2",
+        "references/failure-routing.md": "547bf3f39b0d596ff085981453e72d3e3ab8f5dc25177c4fed926b4ee91ff5b6",
+        "references/fan-in.md": "cb7dd7a60a6de03a5e41365ed7f04e9b701b8eddd569d98f86658c7bafb66ffa",
+        "references/override.md": "bb27e53550360838c3b1e84e060c49b37652ad4c9ec250dee606f3fed5f7f6b9",
+        "references/queue.md": "af7e97736084dcf95def8fa2a3950063d31f8f292285846bbdb891a1cdb5a1af",
+        "references/review-body.md": "12e1656492dcf96087a11109d972069d88e9c46de0dd245ce03ad0cb7201d0f9",
+        "references/review-flow.md": "fbab6592913dbbd90ab4a5a18c13b750570723cb8f79f14ddb9227018cd35463",
+        "references/specified.md": "73a5fc8ff6aebb38108e12fcf35bc9f377c6a3e13a32bdc3afe231147f2b3c86",
+        "references/submission.md": "ecb481d29e7cb9a4496e4ae2c0457d44b53daa93f0f53474c6f885cdfb64f656",
+        "references/templates/axis-reviewer.md": "60a8057b81997b3be6b9bfa53611abca9484331b604dfecb931f24d06250a70c",
+        "references/templates/finding-verifier.md": "f76f148cd75d9932a0f5698fbf7593081998ca7467c0948829cd2dff91f3e40d",
+        "references/timing-and-delivery.md": "70a5a5f01e153b4b10412231239ab6623e5b0490712d13a049c5497a020ccd3a",
+        "scripts/fan_in.py": "d273b730120df47229fa888b453317755691d9257d145d7217608b8a6f2c4526",
+        "scripts/finalize_review.py": "cd0590a5209d8340c5f193c676a19c6829cb0319444d0c85f5f607cb6a9a665c",
+        "scripts/stage.py": "1bf5e4fc9aca00e9554fc71ae4ec97aadfcf27fbd6a2fc6354ddfcdf5069bb1f",
+        "scripts/timing.py": "eeb561e2775687f5b7fb1d7fec1db1e461501ddb4c513b6a77bafa28eda01ebe",
+        "tests/README.md": "a54a00b6288ad7663067a1305bc9566f92f2419b52367c76aaf652e280bdae32",
+        "tests/benchmark_fan_in.py": "a69342698db92eee772b9e52709927fbd91c6b205c498edef0f766fb5b82079d",
+        "tests/fixtures/fan_in/clean/diff.patch": "6c96678904fe2b77144f6a24f3b171f7177f607009e878de054399fd2f4679f9",
+        "tests/fixtures/fan_in/clean/report-context.json": "3b3185ad1bebd55f29c8104d4ca6c9f667fd9a5a4c16c5a76c5e89308c91450a",
+        "tests/fixtures/fan_in/clean/reviewer-audit.tsv": "f40b48232e126ed8668e41d5747c145a88f08db44d31c8c6d26a21f0403c1af7",
+        "tests/fixtures/fan_in/clean/reviewer.json": "55702fe0157003fe9c461dff34129a192e411742ec01f761dffd9cf47f6df860",
+        "tests/fixtures/fan_in/cross-axis/reviewer.json": "629c686582861560170006b646928e080194aa510659a9c9a323e1eb97bd32d9",
+        "tests/fixtures/fan_in/gating/diff.patch": "5ed5adafc89faf0ade563ed4aa761c71030b3235df2bb4c17d9d727810e85dd8",
+        "tests/fixtures/fan_in/gating/report-context.json": "3b3185ad1bebd55f29c8104d4ca6c9f667fd9a5a4c16c5a76c5e89308c91450a",
+        "tests/fixtures/fan_in/gating/reviewer-audit.tsv": "27fab2196d389630213b10d77d3af606cc597d1dde58865dc183d77048a8e4a9",
+        "tests/fixtures/fan_in/gating/reviewer.json": "81aeac16d2d4ac3093bdbe62d71da98ece0fdeb7aaea5b7e81c0725b5740653d",
+        "tests/fixtures/fan_in/gating/verifier-audit.tsv": "42f06916d75f2fff3a942d283c7c65213c550c548650a91f1eee0a23cd8b5854",
+        "tests/fixtures/fan_in/gating/verifier.json": "f780279fa387fe1b7bd564738396025a1f9a11e50483f7ca88bbaeb88c6a9f0d",
+        "tests/test_fan_in.py": "46af4f2e0a3361cae0088ac4922e2e1972780cb54a58e71a1c688b5cc9aefb7d",
+        "tests/test_finalize_review.py": "a729b0b038cef413bf81e4c3d465ff493d8718e7502f7d48070c020fabc2d6a8",
+        "tests/test_stage.py": "16dd67965f751879a605e77af41c2f1b4e5a16931ade6f52dd602d27d64744ea"
+      }
+    },
+    {
+      "name": "release-workflow",
+      "source": "softleader",
+      "folder": "plugins/engineering/skills/release-workflow",
+      "folderSha256": "4bf30d30108c7c0a4ce3f8cd45e6ad04eea9cb8ade2c5382e00c765abde6c723",
+      "files": {
+        "README.md": "d8193bb0ac61dfecdd62f1f036707ce052f18d6f102e1addcf03733f2a024c97",
+        "SKILL.md": "458f4d327538e6018014356b01f6f136b095b438533dff7178b12a48e4ead4cd",
+        "agents/openai.yaml": "9915c2cf2722caf5a611346f711dbb1b88c4a83148a2509bf2bfde7e8841e3ce",
+        "evals/README.md": "c795bc2823b0568c2a7be8be9a52c6da89caaa3740f672f0090326ecdea0f96e",
+        "evals/evals.json": "4a11c6555313b05fe3f04d98cefaf7d83d62837f603c46e4c3f227473fe1de21",
+        "evals/results/2026-09-07-routing.json": "35cce4271ae46c5c34d1e1395bbea68eb4ca7df5d34d072bdbeca1f593f4f509",
+        "references/adopt-v2.md": "e04ae1a36c6e16ac0ff6d0815364e6303aae66d6ad8adcc7cd0de8cc0da32e30",
+        "references/commit-check.md": "b0476d0a7904ab82474d14159c381ce556992702d0a4a34ea4a2dff7c0f606ce",
+        "references/hook-session.py": "ab3e52057fca7eb4bf5831fb86f56ae060eaeb149a547e28464938ff2e18662c",
+        "references/migrate-v1-to-v2.md": "23452be79bd7bd6a137639a299348fe047a58855355b1ade05da91afe9c9c57c",
+        "references/opencode-plugin.ts": "ab4eef647d0054e9ce89850628e240be7cc78b6004f146f33dadd6bbeddcc8a5",
+        "references/parse-integrity.cjs": "7636cc01f2b0db9f55640ecf0afeeec880ab6d758325d0cfd74cc1f7a3fa2fa1",
+        "references/pitfalls.md": "f02c854b15623cdec6193f5f8acf2919b791882afef78ad6e167efe38703340b",
+        "references/reference.md": "61f053bdcb48d45db342636d057808355d7ed30bf51330751b7e865208fd0d88",
+        "references/release-types.md": "2836879fad0782e2526b26986ae62f91167a19091ae342d35618a5ad6a9deb47",
+        "references/setup.md": "d1d7fa87519750cabc084f3988d166c3bc466e97fcadc1677d9f261022ac3a39",
+        "scripts/hook-tool.py": "9df1a6681c84eaf945ada81de382c0738d6f45e71f0deda0be83a36f22d0f0da",
+        "tests/README.md": "c9922348cbc0d11392fbf3ae5c445ab8fdacfe56d3a8d56586bc8598588cfb6a",
+        "tests/test_hook_integration.py": "30a818249f2a199525f698e1d3b294bfb13eb8cdf537a41fb59af67202a1a0e1",
+        "tests/test_hook_tool.py": "ea5ca92432d7af831b5b27d19f44a74dca99d783e615da867b2b910f1a464d5a"
+      },
+      "compiledFolderSha256": "4bf30d30108c7c0a4ce3f8cd45e6ad04eea9cb8ade2c5382e00c765abde6c723",
+      "compiledFiles": {
+        "README.md": "d8193bb0ac61dfecdd62f1f036707ce052f18d6f102e1addcf03733f2a024c97",
+        "SKILL.md": "458f4d327538e6018014356b01f6f136b095b438533dff7178b12a48e4ead4cd",
+        "agents/openai.yaml": "9915c2cf2722caf5a611346f711dbb1b88c4a83148a2509bf2bfde7e8841e3ce",
+        "evals/README.md": "c795bc2823b0568c2a7be8be9a52c6da89caaa3740f672f0090326ecdea0f96e",
+        "evals/evals.json": "4a11c6555313b05fe3f04d98cefaf7d83d62837f603c46e4c3f227473fe1de21",
+        "evals/results/2026-09-07-routing.json": "35cce4271ae46c5c34d1e1395bbea68eb4ca7df5d34d072bdbeca1f593f4f509",
+        "references/adopt-v2.md": "e04ae1a36c6e16ac0ff6d0815364e6303aae66d6ad8adcc7cd0de8cc0da32e30",
+        "references/commit-check.md": "b0476d0a7904ab82474d14159c381ce556992702d0a4a34ea4a2dff7c0f606ce",
+        "references/hook-session.py": "ab3e52057fca7eb4bf5831fb86f56ae060eaeb149a547e28464938ff2e18662c",
+        "references/migrate-v1-to-v2.md": "23452be79bd7bd6a137639a299348fe047a58855355b1ade05da91afe9c9c57c",
+        "references/opencode-plugin.ts": "ab4eef647d0054e9ce89850628e240be7cc78b6004f146f33dadd6bbeddcc8a5",
+        "references/parse-integrity.cjs": "7636cc01f2b0db9f55640ecf0afeeec880ab6d758325d0cfd74cc1f7a3fa2fa1",
+        "references/pitfalls.md": "f02c854b15623cdec6193f5f8acf2919b791882afef78ad6e167efe38703340b",
+        "references/reference.md": "61f053bdcb48d45db342636d057808355d7ed30bf51330751b7e865208fd0d88",
+        "references/release-types.md": "2836879fad0782e2526b26986ae62f91167a19091ae342d35618a5ad6a9deb47",
+        "references/setup.md": "d1d7fa87519750cabc084f3988d166c3bc466e97fcadc1677d9f261022ac3a39",
+        "scripts/hook-tool.py": "9df1a6681c84eaf945ada81de382c0738d6f45e71f0deda0be83a36f22d0f0da",
+        "tests/README.md": "c9922348cbc0d11392fbf3ae5c445ab8fdacfe56d3a8d56586bc8598588cfb6a",
+        "tests/test_hook_integration.py": "30a818249f2a199525f698e1d3b294bfb13eb8cdf537a41fb59af67202a1a0e1",
+        "tests/test_hook_tool.py": "ea5ca92432d7af831b5b27d19f44a74dca99d783e615da867b2b910f1a464d5a"
+      }
+    },
+    {
+      "name": "vue-nuxt-test-architecture",
+      "source": "softleader",
+      "folder": "plugins/engineering/skills/vue-nuxt-test-architecture",
+      "folderSha256": "b38d548a0e1d84b251ff52cb8f918463c26950e05aba1f98711679ffc17c78c6",
+      "files": {
+        "README.md": "362f90f732cd37c8212d034fbafb581642206c0f3e5b3369191d769a035bc92d",
+        "SKILL.md": "59b197e91a94c82a60eb3b9a0c34145b3af925f55045fcb137494b8aea128855",
+        "agents/openai.yaml": "ee31418f14632518ae289b4ec469388d817006e1ae00a8e632ba33be8b3e6e42",
+        "evals/README.md": "3f0a883e72644b89d1deaee7d138e642b173292046d9202ff217f668bb7f944c",
+        "evals/build_review.py": "89327b64114172ef69254092641d8dfd3606d5e8da32db52dafc2e3d8bdab008",
+        "evals/cases/01-local-vue-no-browser.json": "c5bac64f606d3fb7cf6ebf228814d4e3477de9eea8728f3ffe003283f9db5157",
+        "evals/cases/02-built-browser-explicit-api.json": "bb7867250f50a17ecc0f61a44aee3670a6aae88616134cc22e2b435a0be81353",
+        "evals/cases/03-legacy-selected-plan-only.json": "3324eeae85f11b56e2811a13072a01cbe0a7a58bfb66cff617e6153b45cee329",
+        "evals/cases/04-nuxt-runtime.json": "28f77aa46a23a9378046983bcdba5229ec73bb322add3619f7d33751b178c973",
+        "evals/evals.json": "b55704759f88da233d3ea3eb641e56e2170ebc6451fece02e991c2e1b8dbc3d8",
+        "evals/results/2026-09-16/manifest.json": "3c39cdf23fb57deaa427bc8c940c1b16417baf46b2bed7674ec6d22b2751040a",
+        "evals/results/2026-09-16/report.md": "885b32a4a9ba16ef6268dee4f762b0051d1c9f1c5dce58d2e27b49014e617cbc",
+        "evals/results/2026-09-16/summary.json": "b77b70371a9ca2d637cf4d7ecb22b6c4c52c3b47fd6cb0b89957855a93c10d82",
+        "evals/run_codex.py": "6f93b08fa410ca6a6f2c7b28939d6f836489e54109ca7db9e4c311438fedb8fd",
+        "evals/run_matrix.py": "ac4d5fcbc354d1f40b0fdb5988807cd59e6ac8df760d2c42c052417a5290b3f3",
+        "evals/verify_matrix.py": "311c8ebc59cd7cef8be50dd03794bfd66179ef987a19d8fcf75f53a73cfdf1b5",
+        "evals/verify_nuxt.py": "aa4a73c082ed0486aa4201740eb5c5c52485e7b3ce37b60d5a8c1358efc29596",
+        "references/ci-and-evidence.md": "48f6e3c343bc4f7acb978ca2aa8829d81074d2a69a9f35c01708dbb37ba3d7ae",
+        "references/test-lanes.md": "42449cc6d65750657e8c78e62b11684c10013ef47b0c30afb8e5776852187cc5"
+      },
+      "compiledFolderSha256": "b38d548a0e1d84b251ff52cb8f918463c26950e05aba1f98711679ffc17c78c6",
+      "compiledFiles": {
+        "README.md": "362f90f732cd37c8212d034fbafb581642206c0f3e5b3369191d769a035bc92d",
+        "SKILL.md": "59b197e91a94c82a60eb3b9a0c34145b3af925f55045fcb137494b8aea128855",
+        "agents/openai.yaml": "ee31418f14632518ae289b4ec469388d817006e1ae00a8e632ba33be8b3e6e42",
+        "evals/README.md": "3f0a883e72644b89d1deaee7d138e642b173292046d9202ff217f668bb7f944c",
+        "evals/build_review.py": "89327b64114172ef69254092641d8dfd3606d5e8da32db52dafc2e3d8bdab008",
+        "evals/cases/01-local-vue-no-browser.json": "c5bac64f606d3fb7cf6ebf228814d4e3477de9eea8728f3ffe003283f9db5157",
+        "evals/cases/02-built-browser-explicit-api.json": "bb7867250f50a17ecc0f61a44aee3670a6aae88616134cc22e2b435a0be81353",
+        "evals/cases/03-legacy-selected-plan-only.json": "3324eeae85f11b56e2811a13072a01cbe0a7a58bfb66cff617e6153b45cee329",
+        "evals/cases/04-nuxt-runtime.json": "28f77aa46a23a9378046983bcdba5229ec73bb322add3619f7d33751b178c973",
+        "evals/evals.json": "b55704759f88da233d3ea3eb641e56e2170ebc6451fece02e991c2e1b8dbc3d8",
+        "evals/results/2026-09-16/manifest.json": "3c39cdf23fb57deaa427bc8c940c1b16417baf46b2bed7674ec6d22b2751040a",
+        "evals/results/2026-09-16/report.md": "885b32a4a9ba16ef6268dee4f762b0051d1c9f1c5dce58d2e27b49014e617cbc",
+        "evals/results/2026-09-16/summary.json": "b77b70371a9ca2d637cf4d7ecb22b6c4c52c3b47fd6cb0b89957855a93c10d82",
+        "evals/run_codex.py": "6f93b08fa410ca6a6f2c7b28939d6f836489e54109ca7db9e4c311438fedb8fd",
+        "evals/run_matrix.py": "ac4d5fcbc354d1f40b0fdb5988807cd59e6ac8df760d2c42c052417a5290b3f3",
+        "evals/verify_matrix.py": "311c8ebc59cd7cef8be50dd03794bfd66179ef987a19d8fcf75f53a73cfdf1b5",
+        "evals/verify_nuxt.py": "aa4a73c082ed0486aa4201740eb5c5c52485e7b3ce37b60d5a8c1358efc29596",
+        "references/ci-and-evidence.md": "48f6e3c343bc4f7acb978ca2aa8829d81074d2a69a9f35c01708dbb37ba3d7ae",
+        "references/test-lanes.md": "42449cc6d65750657e8c78e62b11684c10013ef47b0c30afb8e5776852187cc5"
+      }
+    },
+    {
+      "name": "get-pr-ready",
+      "source": "softleader",
+      "folder": "plugins/engineering/skills/get-pr-ready",
+      "folderSha256": "38a1f41b9468996b8905c9fdcbc6f051a100e1b0b1925ff7c0632c794577bb36",
+      "files": {
+        "README.md": "60f6bc7574cc64abe9c895fd35f09a54aec46ecf1b7bd24383dedb02831d2226",
+        "SKILL.md": "f29024a2e24f140309e651cc586ba7ba916e483fd83019a3c6380b2da1548599",
+        "agents/openai.yaml": "1073c30114a2359a80fa075406e28ead5443bc2ae3776111434b347a1c06eb01",
+        "evals/README.md": "913a6145c58b4b7b9ad3b6296da246698dad01f7a0353fa0596ebb9eb426719a",
+        "evals/best-effort-authorization.md": "c9e68ce5e9490975a7fccb866c03dcb2dfbbb249c493d154c116fe22206908ce",
+        "evals/context-selection/README.md": "3ae85f03890d45fe159e973fd2d0bd80de04a5a703e67b174ff137e47b99b1c3",
+        "evals/context-selection/best-effort.md": "1e1dbef5bdcabd5e0271b7b27c756d5f7eb65ad73f15137c3523f88e5aacc816",
+        "evals/context-selection/cases.json": "db137fdc08b354336adb3cb25e55619cdb8a3f8ce52d197f5e2d8e8b48d79e8a",
+        "evals/context-selection/fixture_lib.py": "6a6e57c40afe4da9b4e5b92a8261b2a46b35a8a98c294e7c4644355d5e33a5da",
+        "evals/context-selection/host-profiles.json": "c0e1653a095986fd22a058fdb239f841b170680c9bc9497c96709b54fbb0c450",
+        "evals/context-selection/mock_broker.py": "2a4c1bc2025b89d6e4376b34443a120af46b902e21843dc33c59bed86e1e5a94",
+        "evals/context-selection/oracle.json": "90cafa496788d4cf00ed86312a9324c35d9e6849fe390ba11c2dc08eca22abbd",
+        "evals/context-selection/prepare_fixtures.py": "75a7dcb9e34b6a144d51a69cd8e4f790cf65574d8afa30c7e230c49c1dc146e0",
+        "evals/context-selection/results/2026-09-06.json": "f0b7c09ad82a4ca8a25f7ff2d9af778d4b877b420db680e749fb24e52bbee172",
+        "evals/context-selection/results/2026-09-07-best-effort.json": "55a27c65f43cbbc9152018c10809f9a71c6d593c87cda50526b4299695f3ebf8",
+        "evals/context-selection/results/2026-09-07-setup.json": "1aabca5b1a48a1173859e2fbb8daaca12acafcde346df081bdb121359dabe80a",
+        "evals/context-selection/run_codex.py": "c5a3af1a6e81148005d16f2b6aaeb693de90ef602822b4e58c69c4921ee5d7d0",
+        "evals/coordination-rewrite-comparison.md": "a1c3d19954300a2edd07601144ac57b2ce495b01a90c449ff00effa99b65b013",
+        "evals/evals.json": "aa234f549691565c48ab64b99e3923ae52cd476514f8b95d9d4693077afcf4c3",
+        "evals/normal-session-setup-comparison.md": "5cd52c5d2094a35f9869a1378f7505131a5e5b6760b3b88dd0e41964baf39d39",
+        "evals/result-recovery/README.md": "d55e1a5fd1de6135f8f59639bdee6ea67216e7e2208ccc898a2f65a3a351cd08",
+        "evals/result-recovery/assessment.md": "bf9d001e63b478866083a02219622e2e8be45b8e5e97eef8f92cfc13f6934d40",
+        "evals/result-recovery/cases.json": "996d51744e6381dc2046d3b4699e65fac49a73420e4486a4cbe3434a5a02dcb8",
+        "evals/result-recovery/host-profiles.json": "841be36a67a3f2e5c94aa0db74e269ec0c8cba4f78a6220038c4fb429f18dcb5",
+        "evals/result-recovery/oracle.json": "58876a469d87460f1da564b61f901fef4d5fff32e30c18a7b8fd192867d9e950",
+        "evals/result-recovery/result_broker.py": "a520f7e2443a25b2161b1eb1d8f94abe6e2526df784e39aed91e10f952ad4683",
+        "evals/result-recovery/results/2026-09-07.json": "37feab2fe55e770bd34deb67abc54d9e64b3fa030fc84086b15880a5c5b5bfc4",
+        "evals/results/2026-09-07-normal-setup.json": "18d3a14be77d082d1508d2edd72621731f18d320591fcf31140e62c0197d51a5",
+        "evals/results/2026-09-08-coordination.json": "f7fb2fa724e57c1c6fdfe4bc9b81c5c35e2e5b56f97a015d8c85e87ce7231b70",
+        "evals/results/2026-09-17-readiness.md": "7039bd583b24ff95d04e4af7dede6686c9a6abf0c2165de6abae3e8c90b8bdbc",
+        "evals/reviewer-setup-comparison.md": "9d546b33db10d06098cae2283200b10c2b42b2cfc84123b1fe78238872b9ca28",
+        "evals/session-authorization-comparison.md": "7c47a29af9f519148433a0ed2b87d7cdec9a52aebbdc70987f6af9557e43f54b",
+        "references/completion.md": "78e40a64689c8e36ab7764db6a09fa26c60f5b58710377a1f7baf9ca068488c1",
+        "references/fix-flow.md": "db224b18ac73b670909c30d392dfee8ce803e23e0a45b9609d42b80d74323fb4",
+        "references/peer-protocol.md": "038bab13a656668d4c1d705dcf6d9077ebb89fb1f04e95506bc135f81e4dd5ac",
+        "references/required-ci.md": "ded5d62c6ec1a4f4df8f5a42d94de3077ecbd61f8018ada45ce95f68b37beaa0",
+        "references/reviewer-context.md": "3d7bb7e235befe381c8592c9dc7e638fbe2689c00c3daa508952508a8800eb5c",
+        "tests/README.md": "0f7e756582cf4eee1120763505985882937b5071ceec5d16949e5970a79f1777",
+        "tests/test_context_selection.py": "c53d63ad0313b7c4c62a2d970170a9f93a86548654a2942c3ddf49cbcaa06b5a",
+        "tests/test_result_recovery.py": "bb4c02ead9c633f3a1fddbd8cfc6f545de4a48ee6ce940cf9c6863f661d2db74"
+      },
+      "compiledFolderSha256": "38a1f41b9468996b8905c9fdcbc6f051a100e1b0b1925ff7c0632c794577bb36",
+      "compiledFiles": {
+        "README.md": "60f6bc7574cc64abe9c895fd35f09a54aec46ecf1b7bd24383dedb02831d2226",
+        "SKILL.md": "f29024a2e24f140309e651cc586ba7ba916e483fd83019a3c6380b2da1548599",
+        "agents/openai.yaml": "1073c30114a2359a80fa075406e28ead5443bc2ae3776111434b347a1c06eb01",
+        "evals/README.md": "913a6145c58b4b7b9ad3b6296da246698dad01f7a0353fa0596ebb9eb426719a",
+        "evals/best-effort-authorization.md": "c9e68ce5e9490975a7fccb866c03dcb2dfbbb249c493d154c116fe22206908ce",
+        "evals/context-selection/README.md": "3ae85f03890d45fe159e973fd2d0bd80de04a5a703e67b174ff137e47b99b1c3",
+        "evals/context-selection/best-effort.md": "1e1dbef5bdcabd5e0271b7b27c756d5f7eb65ad73f15137c3523f88e5aacc816",
+        "evals/context-selection/cases.json": "db137fdc08b354336adb3cb25e55619cdb8a3f8ce52d197f5e2d8e8b48d79e8a",
+        "evals/context-selection/fixture_lib.py": "6a6e57c40afe4da9b4e5b92a8261b2a46b35a8a98c294e7c4644355d5e33a5da",
+        "evals/context-selection/host-profiles.json": "c0e1653a095986fd22a058fdb239f841b170680c9bc9497c96709b54fbb0c450",
+        "evals/context-selection/mock_broker.py": "2a4c1bc2025b89d6e4376b34443a120af46b902e21843dc33c59bed86e1e5a94",
+        "evals/context-selection/oracle.json": "90cafa496788d4cf00ed86312a9324c35d9e6849fe390ba11c2dc08eca22abbd",
+        "evals/context-selection/prepare_fixtures.py": "75a7dcb9e34b6a144d51a69cd8e4f790cf65574d8afa30c7e230c49c1dc146e0",
+        "evals/context-selection/results/2026-09-06.json": "f0b7c09ad82a4ca8a25f7ff2d9af778d4b877b420db680e749fb24e52bbee172",
+        "evals/context-selection/results/2026-09-07-best-effort.json": "55a27c65f43cbbc9152018c10809f9a71c6d593c87cda50526b4299695f3ebf8",
+        "evals/context-selection/results/2026-09-07-setup.json": "1aabca5b1a48a1173859e2fbb8daaca12acafcde346df081bdb121359dabe80a",
+        "evals/context-selection/run_codex.py": "c5a3af1a6e81148005d16f2b6aaeb693de90ef602822b4e58c69c4921ee5d7d0",
+        "evals/coordination-rewrite-comparison.md": "a1c3d19954300a2edd07601144ac57b2ce495b01a90c449ff00effa99b65b013",
+        "evals/evals.json": "aa234f549691565c48ab64b99e3923ae52cd476514f8b95d9d4693077afcf4c3",
+        "evals/normal-session-setup-comparison.md": "5cd52c5d2094a35f9869a1378f7505131a5e5b6760b3b88dd0e41964baf39d39",
+        "evals/result-recovery/README.md": "d55e1a5fd1de6135f8f59639bdee6ea67216e7e2208ccc898a2f65a3a351cd08",
+        "evals/result-recovery/assessment.md": "bf9d001e63b478866083a02219622e2e8be45b8e5e97eef8f92cfc13f6934d40",
+        "evals/result-recovery/cases.json": "996d51744e6381dc2046d3b4699e65fac49a73420e4486a4cbe3434a5a02dcb8",
+        "evals/result-recovery/host-profiles.json": "841be36a67a3f2e5c94aa0db74e269ec0c8cba4f78a6220038c4fb429f18dcb5",
+        "evals/result-recovery/oracle.json": "58876a469d87460f1da564b61f901fef4d5fff32e30c18a7b8fd192867d9e950",
+        "evals/result-recovery/result_broker.py": "a520f7e2443a25b2161b1eb1d8f94abe6e2526df784e39aed91e10f952ad4683",
+        "evals/result-recovery/results/2026-09-07.json": "37feab2fe55e770bd34deb67abc54d9e64b3fa030fc84086b15880a5c5b5bfc4",
+        "evals/results/2026-09-07-normal-setup.json": "18d3a14be77d082d1508d2edd72621731f18d320591fcf31140e62c0197d51a5",
+        "evals/results/2026-09-08-coordination.json": "f7fb2fa724e57c1c6fdfe4bc9b81c5c35e2e5b56f97a015d8c85e87ce7231b70",
+        "evals/results/2026-09-17-readiness.md": "7039bd583b24ff95d04e4af7dede6686c9a6abf0c2165de6abae3e8c90b8bdbc",
+        "evals/reviewer-setup-comparison.md": "9d546b33db10d06098cae2283200b10c2b42b2cfc84123b1fe78238872b9ca28",
+        "evals/session-authorization-comparison.md": "7c47a29af9f519148433a0ed2b87d7cdec9a52aebbdc70987f6af9557e43f54b",
+        "references/completion.md": "78e40a64689c8e36ab7764db6a09fa26c60f5b58710377a1f7baf9ca068488c1",
+        "references/fix-flow.md": "db224b18ac73b670909c30d392dfee8ce803e23e0a45b9609d42b80d74323fb4",
+        "references/peer-protocol.md": "038bab13a656668d4c1d705dcf6d9077ebb89fb1f04e95506bc135f81e4dd5ac",
+        "references/required-ci.md": "ded5d62c6ec1a4f4df8f5a42d94de3077ecbd61f8018ada45ce95f68b37beaa0",
+        "references/reviewer-context.md": "3d7bb7e235befe381c8592c9dc7e638fbe2689c00c3daa508952508a8800eb5c",
+        "tests/README.md": "0f7e756582cf4eee1120763505985882937b5071ceec5d16949e5970a79f1777",
+        "tests/test_context_selection.py": "c53d63ad0313b7c4c62a2d970170a9f93a86548654a2942c3ddf49cbcaa06b5a",
+        "tests/test_result_recovery.py": "bb4c02ead9c633f3a1fddbd8cfc6f545de4a48ee6ce940cf9c6863f661d2db74"
+      }
+    },
+    {
+      "name": "go-for-it",
+      "source": "softleader",
+      "folder": "plugins/engineering/skills/go-for-it",
+      "folderSha256": "f953b689474b1512c59429d2b0757e33381d97db25bc84389f28306a6abceb3f",
+      "files": {
+        "README.md": "566913bb7a4fda698a20665ce6666d770e086f685f86c951fd6c8b7c81de407b",
+        "SKILL.md": "9e6e20891ad529ad3665a238c8b692a775bca0f983ca7bd597811c29f58bd9fb",
+        "agents/openai.yaml": "6c08379d527d456c2172f1ffea7b7222a9f1f8ff45f96156df3c56ed5ad487d8",
+        "evals/README.md": "5a32d3016d439e755aa1f850ddee5e357c483cd581eb2766738c53137eaecfdc",
+        "evals/evals.json": "e4c07e513ec7a2bb7388db9d7b14ee827fd860b4ac38a876c8607af59d27b1d9",
+        "evals/results/2026-09-17-draft-flag.md": "e4183b032fdbf64936f9fc692e442e7035029de9b98f5c5fc66084c4b5c5a6b0",
+        "references/config.md": "7ea61a4a82b29675f16b4bed0c3a6ea3879bb3d2970075ecc33f12738ff062ca",
+        "references/delivery-target.md": "3b18fce2b97ee291f51c77cd58c9fd96170f87bf2d59c82e72f1d40035ca4958",
+        "references/dirty-sibling-relationships.md": "cc132992a8dbb04c40571231c8262742e275ceae4b23e4e3c7e1b4e517986537",
+        "scripts/config.py": "5b45e7bf1c7e1a1db7204ab47aa70e8bbbefe70d5173b180ab97f5ab21326de5",
+        "tests/README.md": "4bf1505b5103acb8692176a47fee85f96629dbd3489b7a2e032a88d1a40f4d8a",
+        "tests/test_config.py": "0afcfb39ac9a401ddce7069e10113b99ddf43a80da4f68adc15678fb5f55e1b7"
+      },
+      "compiledFolderSha256": "f953b689474b1512c59429d2b0757e33381d97db25bc84389f28306a6abceb3f",
+      "compiledFiles": {
+        "README.md": "566913bb7a4fda698a20665ce6666d770e086f685f86c951fd6c8b7c81de407b",
+        "SKILL.md": "9e6e20891ad529ad3665a238c8b692a775bca0f983ca7bd597811c29f58bd9fb",
+        "agents/openai.yaml": "6c08379d527d456c2172f1ffea7b7222a9f1f8ff45f96156df3c56ed5ad487d8",
+        "evals/README.md": "5a32d3016d439e755aa1f850ddee5e357c483cd581eb2766738c53137eaecfdc",
+        "evals/evals.json": "e4c07e513ec7a2bb7388db9d7b14ee827fd860b4ac38a876c8607af59d27b1d9",
+        "evals/results/2026-09-17-draft-flag.md": "e4183b032fdbf64936f9fc692e442e7035029de9b98f5c5fc66084c4b5c5a6b0",
+        "references/config.md": "7ea61a4a82b29675f16b4bed0c3a6ea3879bb3d2970075ecc33f12738ff062ca",
+        "references/delivery-target.md": "3b18fce2b97ee291f51c77cd58c9fd96170f87bf2d59c82e72f1d40035ca4958",
+        "references/dirty-sibling-relationships.md": "cc132992a8dbb04c40571231c8262742e275ceae4b23e4e3c7e1b4e517986537",
+        "scripts/config.py": "5b45e7bf1c7e1a1db7204ab47aa70e8bbbefe70d5173b180ab97f5ab21326de5",
+        "tests/README.md": "4bf1505b5103acb8692176a47fee85f96629dbd3489b7a2e032a88d1a40f4d8a",
+        "tests/test_config.py": "0afcfb39ac9a401ddce7069e10113b99ddf43a80da4f68adc15678fb5f55e1b7"
+      }
+    },
+    {
+      "name": "jenkins",
+      "source": "softleader",
+      "folder": "plugins/operations/skills/jenkins",
+      "folderSha256": "dc19ebb5ba844c3f13f7d5e731438d3e190ffa33f5998a68ae75ef62cc07f4f0",
+      "files": {
+        "README.md": "9c8c1d572fe7727d987523210bc5310c75a40a52a4dfe4cf9da80d9b239a4ed0",
+        "SKILL.md": "10ce835016a12b3217e4cbfb765343cc583a155e6d7e554e475fbfd122088990",
+        "agents/openai.yaml": "793669880a04c322e88cfb8d40bcec9370843134b5f7c9012a7675c7e4e9ad70",
+        "evals/README.md": "aabba805af1f8521f356e20412ea1a33028e02bd7453e8a8bbf31b55c37d1f64",
+        "evals/evals.json": "1005e7a72ab5dd6f28f2ad8e8100f133e774a7daaa023cb357de468743a5c011",
+        "scripts/jenkins.py": "11f09f1645711b3ce708260d26b9dddb2205013c906976a10e9b25aa70926d68",
+        "tests/test_jenkins.py": "fbc70982ced176c24aac247bbfb21f2a65feafa42b07b5e3f75511c47641e25a",
+        "tests/test_jenkins_tls.py": "a45cd2041a121f069fa1885e69e484c93796db82dbfadc23408aad1018d33e46"
+      },
+      "compiledFolderSha256": "dc19ebb5ba844c3f13f7d5e731438d3e190ffa33f5998a68ae75ef62cc07f4f0",
+      "compiledFiles": {
+        "README.md": "9c8c1d572fe7727d987523210bc5310c75a40a52a4dfe4cf9da80d9b239a4ed0",
+        "SKILL.md": "10ce835016a12b3217e4cbfb765343cc583a155e6d7e554e475fbfd122088990",
+        "agents/openai.yaml": "793669880a04c322e88cfb8d40bcec9370843134b5f7c9012a7675c7e4e9ad70",
+        "evals/README.md": "aabba805af1f8521f356e20412ea1a33028e02bd7453e8a8bbf31b55c37d1f64",
+        "evals/evals.json": "1005e7a72ab5dd6f28f2ad8e8100f133e774a7daaa023cb357de468743a5c011",
+        "scripts/jenkins.py": "11f09f1645711b3ce708260d26b9dddb2205013c906976a10e9b25aa70926d68",
+        "tests/test_jenkins.py": "fbc70982ced176c24aac247bbfb21f2a65feafa42b07b5e3f75511c47641e25a",
+        "tests/test_jenkins_tls.py": "a45cd2041a121f069fa1885e69e484c93796db82dbfadc23408aad1018d33e46"
+      }
+    },
+    {
+      "name": "kibana",
+      "source": "softleader",
+      "folder": "plugins/operations/skills/kibana",
+      "folderSha256": "4cd89f592a3112c2a27b24c057f3a4b07542af392e64931400ae588560a0fdc0",
+      "files": {
+        "README.md": "216c84af9283ebc3236e76de37e91a97560cd9ed44bdf5d9ba9341c370d4e066",
+        "SKILL.md": "aea3599663f1e3defd16cebc64604663a19467cbe53d42bab6a2b10b6730cc36",
+        "agents/openai.yaml": "ae69e4129db8daee0de37a00e3e579d931d1c018e7987953ccf6a50215218fa5",
+        "evals/README.md": "c2f02f837724a1ed5a1e3bc84c2da32b5d20f634eafeb19367a71470c96fa15b",
+        "evals/evals.json": "392f69556b0d2cac31aec34ba979105b352573b4b62cc5442d71da060107414b",
+        "evals/fixtures/01-ready-profile-trace.json": "cad9982d79499093cbad8d35e213f82717fbf8eb59592c55bd406ecd9523f40f",
+        "evals/fixtures/02-discover-only-403.json": "cbee33143dcdbb31f06c471c9a04bc6a43c7f77b2e864e3adacf202170059cf4",
+        "evals/fixtures/03-filtered-full-event.json": "ef4c5c5c3bd20b31449b99d3fb750726df8123ee0a80c6221afef4519b5e8462",
+        "evals/fixtures/04-empty-result-classes.json": "26ea4b66d387654587229297ee7ec0cd88bde9bd2d5327d4ef4a1feb97f00c5a",
+        "evals/fixtures/05-bounds-and-repeatability.json": "0f404ff228d43af926d5138c25176919a7a3563d1992da388a8273034cd7f66b",
+        "evals/regression-cases.json": "661291dc5fbb525d9efb3aff985b21687149eb0e937d7218885f0c9bad8aa4a8",
+        "evals/results/2026-09-16/benchmark-high.json": "4cd401210391bbbf7ad99df0a3b08b3a3e0565292fc18342413c9f2d2bcd3318",
+        "evals/results/2026-09-16/benchmark-medium.json": "3462b94809abb76bbdbb87b8234f296d3c3e9cefeaaf7597b07be250056a64c8",
+        "evals/results/2026-09-16/excluded-runs.json": "b8a952b832f08a3b6bd74e67f7c36cc34cf0fdb5aae5887500dc3dc6c0a7ec6d",
+        "evals/results/2026-09-16/formal-audit.json": "cb976ce8f28d5239cb8c555391759f48935f140aa290e415c54017bc87c6193f",
+        "evals/results/2026-09-16/iteration1-grades.json": "e7b806905585bcad06f47eecf8cb599b65fa4154420a06a6145a45f231ff281a",
+        "evals/results/2026-09-16/manifest.json": "e59bd30ec5f5ae0a4e35ec7a1b6d02b8e534dc36ca5b6f189a0d8605c0f19230",
+        "evals/results/2026-09-16/report.md": "4f3bbd2184212385479553df5f379f59e3398aca7a1a04f20f4823c8c7a3d434",
+        "evals/run_codex.py": "c80736862d6375250ca8b0cb66f45db2982ec13c8a2a103bf707c82af45c2395",
+        "examples/config.example.json": "66f4421ef2d39e4c0be7de7ca1421a9ba38fcc3ec569333c45015f06c93f08a8",
+        "examples/env.example": "deaa4429676819ed26ed158f5445a68db0095ff0348fbe137a1422dc3f843591",
+        "references/ecs-default-fields.md": "f9dca27107a2497bbd4f96bd734a9bf35517040337631ef5e59a2d242d0e9626",
+        "references/responses.md": "2104200fe18c23699caac804433cc029da26865465b7420d5f5a3140582f2362",
+        "references/setup.md": "71f18a6292e60e43ce58e653a342ccf3f3903a18c3efc1070ce53564f24c559e",
+        "scripts/kibana.py": "b2d83f7157fc3d2d8c127d977e696327a5d9558d580324c2dde98debcb729cf8",
+        "tests/fixtures/cat_indices.json": "5adbd9f1ffc08fec847445fce27c37bf498cf996268b58985ffe89068d82e99d",
+        "tests/fixtures/data_views.json": "94b6d97764134f89dcca1f2cd40361fc379769958ab740154ed50240c2593d58",
+        "tests/fixtures/es_mapping_response.json": "b6ea54acc87b99cb0cb66944afe83ce79af6caa14af3b3a3c1080d7894f3901b",
+        "tests/fixtures/es_search_response.json": "e7deee54d59c582e8d1a23a30477b5f0af60bd6544e595ddfe906d350988767c",
+        "tests/fixtures/internal_search_response.json": "617bb3a67179bab9a47190697dc6fe6538bb8fa14216b4c731ed0aeddd40b79b",
+        "tests/fixtures/sample_slke.json": "188dfb3d04c8e6b83613ed71c916997791948667ca57121e32da40fb29fe7e4e",
+        "tests/fixtures/sample_unknown_shipper.json": "db9ed929fc6089a1fd7e1f256b7d72d40c839de44ed6b43ba61748b42ccd0690",
+        "tests/fixtures/sort_keyword_exists.json": "6630b0421d3680fbb7d5eac03b2949ea9c7d6542fdb4317460497e407acd3490",
+        "tests/fixtures/sort_keyword_indeterminate.json": "476643911e7ed167a398567a27280c2ff22632e58beb7721fc6768a06b739af3",
+        "tests/fixtures/zero_shards.json": "57a4f9d42d310d7b9e8cbc6eaa8c26db1a438011d172cc2125d1a3e64dfb9893",
+        "tests/test_kibana.py": "4c02c0dbd1a1d6196beae89647fb22532591b590afab920763d1ad0856887276"
+      },
+      "compiledFolderSha256": "4cd89f592a3112c2a27b24c057f3a4b07542af392e64931400ae588560a0fdc0",
+      "compiledFiles": {
+        "README.md": "216c84af9283ebc3236e76de37e91a97560cd9ed44bdf5d9ba9341c370d4e066",
+        "SKILL.md": "aea3599663f1e3defd16cebc64604663a19467cbe53d42bab6a2b10b6730cc36",
+        "agents/openai.yaml": "ae69e4129db8daee0de37a00e3e579d931d1c018e7987953ccf6a50215218fa5",
+        "evals/README.md": "c2f02f837724a1ed5a1e3bc84c2da32b5d20f634eafeb19367a71470c96fa15b",
+        "evals/evals.json": "392f69556b0d2cac31aec34ba979105b352573b4b62cc5442d71da060107414b",
+        "evals/fixtures/01-ready-profile-trace.json": "cad9982d79499093cbad8d35e213f82717fbf8eb59592c55bd406ecd9523f40f",
+        "evals/fixtures/02-discover-only-403.json": "cbee33143dcdbb31f06c471c9a04bc6a43c7f77b2e864e3adacf202170059cf4",
+        "evals/fixtures/03-filtered-full-event.json": "ef4c5c5c3bd20b31449b99d3fb750726df8123ee0a80c6221afef4519b5e8462",
+        "evals/fixtures/04-empty-result-classes.json": "26ea4b66d387654587229297ee7ec0cd88bde9bd2d5327d4ef4a1feb97f00c5a",
+        "evals/fixtures/05-bounds-and-repeatability.json": "0f404ff228d43af926d5138c25176919a7a3563d1992da388a8273034cd7f66b",
+        "evals/regression-cases.json": "661291dc5fbb525d9efb3aff985b21687149eb0e937d7218885f0c9bad8aa4a8",
+        "evals/results/2026-09-16/benchmark-high.json": "4cd401210391bbbf7ad99df0a3b08b3a3e0565292fc18342413c9f2d2bcd3318",
+        "evals/results/2026-09-16/benchmark-medium.json": "3462b94809abb76bbdbb87b8234f296d3c3e9cefeaaf7597b07be250056a64c8",
+        "evals/results/2026-09-16/excluded-runs.json": "b8a952b832f08a3b6bd74e67f7c36cc34cf0fdb5aae5887500dc3dc6c0a7ec6d",
+        "evals/results/2026-09-16/formal-audit.json": "cb976ce8f28d5239cb8c555391759f48935f140aa290e415c54017bc87c6193f",
+        "evals/results/2026-09-16/iteration1-grades.json": "e7b806905585bcad06f47eecf8cb599b65fa4154420a06a6145a45f231ff281a",
+        "evals/results/2026-09-16/manifest.json": "e59bd30ec5f5ae0a4e35ec7a1b6d02b8e534dc36ca5b6f189a0d8605c0f19230",
+        "evals/results/2026-09-16/report.md": "4f3bbd2184212385479553df5f379f59e3398aca7a1a04f20f4823c8c7a3d434",
+        "evals/run_codex.py": "c80736862d6375250ca8b0cb66f45db2982ec13c8a2a103bf707c82af45c2395",
+        "examples/config.example.json": "66f4421ef2d39e4c0be7de7ca1421a9ba38fcc3ec569333c45015f06c93f08a8",
+        "examples/env.example": "deaa4429676819ed26ed158f5445a68db0095ff0348fbe137a1422dc3f843591",
+        "references/ecs-default-fields.md": "f9dca27107a2497bbd4f96bd734a9bf35517040337631ef5e59a2d242d0e9626",
+        "references/responses.md": "2104200fe18c23699caac804433cc029da26865465b7420d5f5a3140582f2362",
+        "references/setup.md": "71f18a6292e60e43ce58e653a342ccf3f3903a18c3efc1070ce53564f24c559e",
+        "scripts/kibana.py": "b2d83f7157fc3d2d8c127d977e696327a5d9558d580324c2dde98debcb729cf8",
+        "tests/fixtures/cat_indices.json": "5adbd9f1ffc08fec847445fce27c37bf498cf996268b58985ffe89068d82e99d",
+        "tests/fixtures/data_views.json": "94b6d97764134f89dcca1f2cd40361fc379769958ab740154ed50240c2593d58",
+        "tests/fixtures/es_mapping_response.json": "b6ea54acc87b99cb0cb66944afe83ce79af6caa14af3b3a3c1080d7894f3901b",
+        "tests/fixtures/es_search_response.json": "e7deee54d59c582e8d1a23a30477b5f0af60bd6544e595ddfe906d350988767c",
+        "tests/fixtures/internal_search_response.json": "617bb3a67179bab9a47190697dc6fe6538bb8fa14216b4c731ed0aeddd40b79b",
+        "tests/fixtures/sample_slke.json": "188dfb3d04c8e6b83613ed71c916997791948667ca57121e32da40fb29fe7e4e",
+        "tests/fixtures/sample_unknown_shipper.json": "db9ed929fc6089a1fd7e1f256b7d72d40c839de44ed6b43ba61748b42ccd0690",
+        "tests/fixtures/sort_keyword_exists.json": "6630b0421d3680fbb7d5eac03b2949ea9c7d6542fdb4317460497e407acd3490",
+        "tests/fixtures/sort_keyword_indeterminate.json": "476643911e7ed167a398567a27280c2ff22632e58beb7721fc6768a06b739af3",
+        "tests/fixtures/zero_shards.json": "57a4f9d42d310d7b9e8cbc6eaa8c26db1a438011d172cc2125d1a3e64dfb9893",
+        "tests/test_kibana.py": "4c02c0dbd1a1d6196beae89647fb22532591b590afab920763d1ad0856887276"
+      }
+    },
+    {
+      "name": "kubernetes",
+      "source": "softleader",
+      "folder": "plugins/operations/skills/kubernetes",
+      "folderSha256": "35f82a3af2d4e14a5dd823f570a6c7691d0c74c93de066e1c02cdb535eba2a12",
+      "files": {
+        "README.md": "a68b7a6b171d64cda1bf1bcd000b43f744e39ee53662f019cf5232c1b59613f1",
+        "SKILL.md": "e297d8848ce899fe970645328963daba6a624f1d473868558e567cb37f078246",
+        "agents/openai.yaml": "ac729c9dd0d2c2e5c18ba9d3fa605f5b0f86b33ed9baae84d490efbda9502232",
+        "references/core-objects.md": "3ad2232d3cc16d3974f85bcb68b224a02604da11859ae90553688fb241204572",
+        "references/debugging-runbook.md": "ff131f1f313cce9f2d54709581da364d47eaf6ae189dcc7b8c5f5a8d2f577271",
+        "references/oom-investigation.md": "bdd78444899a143fad153d50deb17fde5c4fc1c9f753d3a3cac8dcf0d5569d9b",
+        "references/rollouts-and-probes.md": "fbf51a65ec771a52525f87cded058a68a119b526ad3e0347d88fc4862196ffb4",
+        "references/security-hardening.md": "95ae07e45c89a51a6cb4b7bf8b4ca651717a0bbc8a576e4f8e3431dc52b6250d",
+        "references/slke-auth.md": "2e4bf3e46a3fd5922040e03bf73bcb1c49e8be96e17505577f6a322143d06114",
+        "references/slke-troubleshooting.md": "c0809718a16e17ce68ea9f5cd2a140435ae8f76152d0ab1beb320b51c0875acf"
+      },
+      "compiledFolderSha256": "35f82a3af2d4e14a5dd823f570a6c7691d0c74c93de066e1c02cdb535eba2a12",
+      "compiledFiles": {
+        "README.md": "a68b7a6b171d64cda1bf1bcd000b43f744e39ee53662f019cf5232c1b59613f1",
+        "SKILL.md": "e297d8848ce899fe970645328963daba6a624f1d473868558e567cb37f078246",
+        "agents/openai.yaml": "ac729c9dd0d2c2e5c18ba9d3fa605f5b0f86b33ed9baae84d490efbda9502232",
+        "references/core-objects.md": "3ad2232d3cc16d3974f85bcb68b224a02604da11859ae90553688fb241204572",
+        "references/debugging-runbook.md": "ff131f1f313cce9f2d54709581da364d47eaf6ae189dcc7b8c5f5a8d2f577271",
+        "references/oom-investigation.md": "bdd78444899a143fad153d50deb17fde5c4fc1c9f753d3a3cac8dcf0d5569d9b",
+        "references/rollouts-and-probes.md": "fbf51a65ec771a52525f87cded058a68a119b526ad3e0347d88fc4862196ffb4",
+        "references/security-hardening.md": "95ae07e45c89a51a6cb4b7bf8b4ca651717a0bbc8a576e4f8e3431dc52b6250d",
+        "references/slke-auth.md": "2e4bf3e46a3fd5922040e03bf73bcb1c49e8be96e17505577f6a322143d06114",
+        "references/slke-troubleshooting.md": "c0809718a16e17ce68ea9f5cd2a140435ae8f76152d0ab1beb320b51c0875acf"
+      }
+    },
+    {
+      "name": "mantis",
+      "source": "softleader",
+      "folder": "plugins/operations/skills/mantis",
+      "folderSha256": "f50bde20d178cc5d32a50badb768cb094a2c6810c3648541f24f45d2ed70bd1f",
+      "files": {
+        "README.md": "d4cfae1d28760f9285b1755e59d12f4c157f580b1387a5f8e975a4cfa22335d2",
+        "SKILL.md": "0b5e6ba793a96eca1cfac68dc886e50f1a35434ee89c9070599d5d175a8bef35",
+        "agents/openai.yaml": "3cd9e59d40c179e5c1879283a9f7963023602432836f7ee4a457ef9ac6b0d39e",
+        "assets/API-TOKEN設定截圖.png": "73bd8ede17c51eabdd10e13319c77107e9c061c6bc59fcb928b69762372af361",
+        "env.example": "c72c946974cd81d00c7ced102d993fe47155055f70ec364397d393aa5e4067c9",
+        "metadata/README.md": "c0f88b50d55120332012b228da48eb1327d32a94fe9f5c63bb86f0cdacb8af8b",
+        "metadata/observed/.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "metadata/projects/.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "package.json": "68c776669be5d8c5975161b7ec7696598cf6d98931bcc0add3e93c8689fed0a1",
+        "references/issue-workflow.md": "1ac70780246527eb2c150c143337192dbaf4e51fbbae06c73be3834c51fc9957",
+        "references/metadata-maintenance.md": "b73355d9a1e544a91b4d108dae562ece21893204ebc7f98eeca87e0ced47976b",
+        "scripts/lib/api.js": "a26d41f606dd05d33902b3653e82c86b60ce7709199f6ceeda69b59013c4fa1a",
+        "scripts/lib/attachment-upload.js": "932e7407ec64530483628cef58a9aa772bc31c2eee647cd54aa9e2733ebe7320",
+        "scripts/lib/issue-artifacts.js": "9e20f438800dc3328194ba2f6caa897a0c7cb33ee087930fc9885444bd715f44",
+        "scripts/lib/metadata-store.js": "b9fd20e35a192a91aa37c3e99bb07001fd6407184ffe65833946afd2174ea707",
+        "scripts/lib/normalizers.js": "1215d34a9ed35f2c67249d11513c7dccf948835b9f49822641191875cfeb3896",
+        "scripts/lib/runtime.js": "2c40ec269d6f7be0d01330eb289fc6445363c5e4e333d4d12d34c15a33b0f3a8",
+        "scripts/lib/skill-home.js": "43cd566691546fb0ce40b7a72e5bf6ebe13df973c223633f07af4dea965ff180",
+        "scripts/maintenance/bootstrap-project-metadata.mjs": "3d30eeae93cfd0aedf483e3cc4b23978004decd62ecb1ddaf9e1334c7db4e92c",
+        "scripts/maintenance/refresh-project-metadata.mjs": "c9ccb2dce706566a95f7960476952237d496d1df402f0f15b6481e35c4f80cfa",
+        "scripts/mantis.js": "6845a43a46aafe12dc1066de72e90b82ed2699efe4106fc0330624415d2c67f4",
+        "tests/attachments-contract.test.js": "78130617fe5c9513033709237d68c248012eb588756058bc03fb3228009ce8ec",
+        "tests/bootstrap-project-metadata.test.js": "9a4c5c0bb64752c8750d9f83839106304ad0e152f1929191e4b18873bf78dcc3",
+        "tests/cli-contract.test.js": "4ad6591bcc808d4da7fc3ce539774cd5bc1daed538df4e3d5687d9066465d70c",
+        "tests/docs-contract.test.js": "32ebda6247a388670b5b1ccf7049b8ec8c2bb3cdc2ad8c546d55907f6b321310",
+        "tests/download-attachment.test.js": "dba5b42609e4a63cbff91da03497b9512d8ce2ead571d2d447ab2ec31b5698cf",
+        "tests/fixtures/issue_with_note_attachments.json": "d6f73b36d579c3b6003e1669da29559d373c02eb34af492d5577183b229e2813",
+        "tests/get-notes.test.js": "78602f2555ba3315d9332e52aac455058a24d37ca57af67592af993a9aed1f8f",
+        "tests/helpers/cli-test-helpers.js": "07c2076c58485df4bb22650bd2cc79c8d7539c0024c44ab2f94ce048a7fcd162",
+        "tests/helpers/run-node-tests.js": "75d65a5e6b32430493b80056c8ad0ea5a19d2513fd01d062b2ee832971382709",
+        "tests/mutation-users-projects-stats-contract.test.js": "f70988c61e05d88781bedd84e6cbb072f8513cb315ed8e8b1e5d819f5387e582",
+        "tests/skill-home-contract.test.js": "16f445175d2d8f064e289b95ababd5b48858ed747f232123f2ab444c832a094f",
+        "tests/skill-workflow-contract.test.js": "8334c37ce0128e5880094b275d8e80f6048685904439f0f739cb1edded2bd791",
+        "tests/status-contract.test.js": "e2b3f7bb20dc1618fb6e4ce277312e737f7f2a762f8f62cb41bc32d5459ed237",
+        "tests/upload-attachment.test.js": "70783ba00d0658d3e520f4e2b2e95df3763a5dde347b73467e285b81ed36534f",
+        "tests/workspace-metadata-store.test.js": "01cd6ed86b49c1c9fd7709a9044ff8caf5831757e21578dbf560fb239f31accd"
+      },
+      "compiledFolderSha256": "f50bde20d178cc5d32a50badb768cb094a2c6810c3648541f24f45d2ed70bd1f",
+      "compiledFiles": {
+        "README.md": "d4cfae1d28760f9285b1755e59d12f4c157f580b1387a5f8e975a4cfa22335d2",
+        "SKILL.md": "0b5e6ba793a96eca1cfac68dc886e50f1a35434ee89c9070599d5d175a8bef35",
+        "agents/openai.yaml": "3cd9e59d40c179e5c1879283a9f7963023602432836f7ee4a457ef9ac6b0d39e",
+        "assets/API-TOKEN設定截圖.png": "73bd8ede17c51eabdd10e13319c77107e9c061c6bc59fcb928b69762372af361",
+        "env.example": "c72c946974cd81d00c7ced102d993fe47155055f70ec364397d393aa5e4067c9",
+        "metadata/README.md": "c0f88b50d55120332012b228da48eb1327d32a94fe9f5c63bb86f0cdacb8af8b",
+        "metadata/observed/.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "metadata/projects/.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "package.json": "68c776669be5d8c5975161b7ec7696598cf6d98931bcc0add3e93c8689fed0a1",
+        "references/issue-workflow.md": "1ac70780246527eb2c150c143337192dbaf4e51fbbae06c73be3834c51fc9957",
+        "references/metadata-maintenance.md": "b73355d9a1e544a91b4d108dae562ece21893204ebc7f98eeca87e0ced47976b",
+        "scripts/lib/api.js": "a26d41f606dd05d33902b3653e82c86b60ce7709199f6ceeda69b59013c4fa1a",
+        "scripts/lib/attachment-upload.js": "932e7407ec64530483628cef58a9aa772bc31c2eee647cd54aa9e2733ebe7320",
+        "scripts/lib/issue-artifacts.js": "9e20f438800dc3328194ba2f6caa897a0c7cb33ee087930fc9885444bd715f44",
+        "scripts/lib/metadata-store.js": "b9fd20e35a192a91aa37c3e99bb07001fd6407184ffe65833946afd2174ea707",
+        "scripts/lib/normalizers.js": "1215d34a9ed35f2c67249d11513c7dccf948835b9f49822641191875cfeb3896",
+        "scripts/lib/runtime.js": "2c40ec269d6f7be0d01330eb289fc6445363c5e4e333d4d12d34c15a33b0f3a8",
+        "scripts/lib/skill-home.js": "43cd566691546fb0ce40b7a72e5bf6ebe13df973c223633f07af4dea965ff180",
+        "scripts/maintenance/bootstrap-project-metadata.mjs": "3d30eeae93cfd0aedf483e3cc4b23978004decd62ecb1ddaf9e1334c7db4e92c",
+        "scripts/maintenance/refresh-project-metadata.mjs": "c9ccb2dce706566a95f7960476952237d496d1df402f0f15b6481e35c4f80cfa",
+        "scripts/mantis.js": "6845a43a46aafe12dc1066de72e90b82ed2699efe4106fc0330624415d2c67f4",
+        "tests/attachments-contract.test.js": "78130617fe5c9513033709237d68c248012eb588756058bc03fb3228009ce8ec",
+        "tests/bootstrap-project-metadata.test.js": "9a4c5c0bb64752c8750d9f83839106304ad0e152f1929191e4b18873bf78dcc3",
+        "tests/cli-contract.test.js": "4ad6591bcc808d4da7fc3ce539774cd5bc1daed538df4e3d5687d9066465d70c",
+        "tests/docs-contract.test.js": "32ebda6247a388670b5b1ccf7049b8ec8c2bb3cdc2ad8c546d55907f6b321310",
+        "tests/download-attachment.test.js": "dba5b42609e4a63cbff91da03497b9512d8ce2ead571d2d447ab2ec31b5698cf",
+        "tests/fixtures/issue_with_note_attachments.json": "d6f73b36d579c3b6003e1669da29559d373c02eb34af492d5577183b229e2813",
+        "tests/get-notes.test.js": "78602f2555ba3315d9332e52aac455058a24d37ca57af67592af993a9aed1f8f",
+        "tests/helpers/cli-test-helpers.js": "07c2076c58485df4bb22650bd2cc79c8d7539c0024c44ab2f94ce048a7fcd162",
+        "tests/helpers/run-node-tests.js": "75d65a5e6b32430493b80056c8ad0ea5a19d2513fd01d062b2ee832971382709",
+        "tests/mutation-users-projects-stats-contract.test.js": "f70988c61e05d88781bedd84e6cbb072f8513cb315ed8e8b1e5d819f5387e582",
+        "tests/skill-home-contract.test.js": "16f445175d2d8f064e289b95ababd5b48858ed747f232123f2ab444c832a094f",
+        "tests/skill-workflow-contract.test.js": "8334c37ce0128e5880094b275d8e80f6048685904439f0f739cb1edded2bd791",
+        "tests/status-contract.test.js": "e2b3f7bb20dc1618fb6e4ce277312e737f7f2a762f8f62cb41bc32d5459ed237",
+        "tests/upload-attachment.test.js": "70783ba00d0658d3e520f4e2b2e95df3763a5dde347b73467e285b81ed36534f",
+        "tests/workspace-metadata-store.test.js": "01cd6ed86b49c1c9fd7709a9044ff8caf5831757e21578dbf560fb239f31accd"
+      }
+    },
+    {
+      "name": "erp",
+      "source": "softleader",
+      "folder": "plugins/operations/skills/erp",
+      "folderSha256": "7855457dc3393695aa149f460146c1c565235cf2f32126e022100d200c16ef2d",
+      "files": {
+        "README.md": "4b697b77b033c3c73c28906cd9902d397d6b8ca68243234a1bf67826c2df241e",
+        "SKILL.md": "f4155fe890edac38521dd0af203c299133c2c7d6bb81361afca61cafbd963869",
+        "agents/openai.yaml": "286d05c42c59199d8fe03bf7bd590e39e27b1a46be5438b534a4505ca103b212",
+        "evals/README.md": "efd7d53def45744f6f83ddb72b98f96267a508f70e2f5e793dd476cc3efec00e",
+        "evals/evals.json": "608842ed919521393d95ad165fa920d516bc75cbcfa455d4b77f6dc4a04143d2",
+        "evals/fixture.py": "1da2e5b9c261ed6b2d038a50d6eee7c3026260b52f29fb753caf47fb03da41d4",
+        "evals/results/2026-09-11-live-api-key.md": "9ed5a228abd7e4c1b0c2ed64ac977980dde6cb56a7f37fb8dfc2afda208e612b",
+        "evals/results/README.md": "5b6e9cac701237876f08eec9f9e857c51013a28b36396cee17535ecadadf4be7",
+        "evals/results/astra-high.json": "aa983553503827cb5e529fcea03d07348063f65a46352e13e46205852a95967f",
+        "evals/results/astra-medium.json": "8215b166a603a7b777f53ba44be740ca851b5bfab57b7ea230d868da6af25422",
+        "evals/results/feedback-evidence-review.md": "e6d65b2a2cef4713cd37010aa13f464b484a8036492f59b729c4626b387c02cf",
+        "evals/results/feedback-scope-review.md": "6c4fcd4d33bc48bc560de2a483614f1f35462b5b3fbf4dc337479695902bec2e",
+        "references/access.md": "7a750b4f597efbe5a0ca95bacf121c07fa367665ff64f9072d8ba7f7f450e120",
+        "references/feedback.md": "f447cf197823cb4df8b1037537e383e78ed18a81e7da93ca51a70b61f7b9f827",
+        "references/project.md": "b24a7a851a53a1b3c5bc62cc9a131b2c9955bd50332b3b0aeb4dd31357063316",
+        "scripts/erp.py": "a6202ebc4cc94a24ee72644af64d01eff0e6720c2fb51cf9b91ce86a8c701462",
+        "tests/README.md": "7897ccad54674a26d9f8c74c0d47fd5fce295ac42a2d007107d25cbd904ccc65",
+        "tests/test_erp.py": "0b1f2757e970c100c959389030f3ed4469d08bf7c8767270d97757f821299396"
+      },
+      "compiledFolderSha256": "7855457dc3393695aa149f460146c1c565235cf2f32126e022100d200c16ef2d",
+      "compiledFiles": {
+        "README.md": "4b697b77b033c3c73c28906cd9902d397d6b8ca68243234a1bf67826c2df241e",
+        "SKILL.md": "f4155fe890edac38521dd0af203c299133c2c7d6bb81361afca61cafbd963869",
+        "agents/openai.yaml": "286d05c42c59199d8fe03bf7bd590e39e27b1a46be5438b534a4505ca103b212",
+        "evals/README.md": "efd7d53def45744f6f83ddb72b98f96267a508f70e2f5e793dd476cc3efec00e",
+        "evals/evals.json": "608842ed919521393d95ad165fa920d516bc75cbcfa455d4b77f6dc4a04143d2",
+        "evals/fixture.py": "1da2e5b9c261ed6b2d038a50d6eee7c3026260b52f29fb753caf47fb03da41d4",
+        "evals/results/2026-09-11-live-api-key.md": "9ed5a228abd7e4c1b0c2ed64ac977980dde6cb56a7f37fb8dfc2afda208e612b",
+        "evals/results/README.md": "5b6e9cac701237876f08eec9f9e857c51013a28b36396cee17535ecadadf4be7",
+        "evals/results/astra-high.json": "aa983553503827cb5e529fcea03d07348063f65a46352e13e46205852a95967f",
+        "evals/results/astra-medium.json": "8215b166a603a7b777f53ba44be740ca851b5bfab57b7ea230d868da6af25422",
+        "evals/results/feedback-evidence-review.md": "e6d65b2a2cef4713cd37010aa13f464b484a8036492f59b729c4626b387c02cf",
+        "evals/results/feedback-scope-review.md": "6c4fcd4d33bc48bc560de2a483614f1f35462b5b3fbf4dc337479695902bec2e",
+        "references/access.md": "7a750b4f597efbe5a0ca95bacf121c07fa367665ff64f9072d8ba7f7f450e120",
+        "references/feedback.md": "f447cf197823cb4df8b1037537e383e78ed18a81e7da93ca51a70b61f7b9f827",
+        "references/project.md": "b24a7a851a53a1b3c5bc62cc9a131b2c9955bd50332b3b0aeb4dd31357063316",
+        "scripts/erp.py": "a6202ebc4cc94a24ee72644af64d01eff0e6720c2fb51cf9b91ce86a8c701462",
+        "tests/README.md": "7897ccad54674a26d9f8c74c0d47fd5fce295ac42a2d007107d25cbd904ccc65",
+        "tests/test_erp.py": "0b1f2757e970c100c959389030f3ed4469d08bf7c8767270d97757f821299396"
+      }
+    },
+    {
+      "name": "github-issue-conventions",
+      "source": "softleader",
+      "folder": "plugins/operations/skills/github-issue-conventions",
+      "folderSha256": "a0cad5434f0bc690a02561feec29161aba2c1d19a21547680f478841da3555cb",
+      "files": {
+        "README.md": "002cefabc070c49aa8d667492005bc23b8c842070917c4b036257caec0accb69",
+        "SKILL.md": "4f44f1cdb5c016e750a02f8992a8ea5956cf20ae92ef6f6a013fef60f43e5e73",
+        "agents/openai.yaml": "cac3a22c4c2cc72818d1516a2213c150ccd96acefac76381a92a15ae52a29e4d"
+      },
+      "compiledFolderSha256": "a0cad5434f0bc690a02561feec29161aba2c1d19a21547680f478841da3555cb",
+      "compiledFiles": {
+        "README.md": "002cefabc070c49aa8d667492005bc23b8c842070917c4b036257caec0accb69",
+        "SKILL.md": "4f44f1cdb5c016e750a02f8992a8ea5956cf20ae92ef6f6a013fef60f43e5e73",
+        "agents/openai.yaml": "cac3a22c4c2cc72818d1516a2213c150ccd96acefac76381a92a15ae52a29e4d"
+      }
+    },
+    {
+      "name": "explain",
+      "source": "softleader",
+      "folder": "plugins/productivity/skills/explain",
+      "folderSha256": "09b8296e48d9b76e08a85fa1f48d01c624cee804b054f426def876d3da5e3d2f",
+      "files": {
+        "README.md": "5506383de957c5df807167394ebd4343f4a390247075ce29f8fcd136486b245c",
+        "SKILL.md": "329be8eaf457e13e21ea17428baa736b0337c30abf9a5638132e6e9d014db12c",
+        "agents/openai.yaml": "3a13a65dd711cf0d95d825be13a3470b5a3a765ed93f914703638d5dc1776f95",
+        "evals/README.md": "4ca3e085f7ab8500c5f2a191f91cd682699931ced0a94f64f422075de1ed84d2",
+        "evals/evals.json": "637e0d14c01b19fe47ffde9cc58e382968c47ca244c10258a12d32a56402adf8",
+        "evals/fixtures/borrowing/borrowing-guide.md": "96139a4c5c141cda4c74dd40f0e17deef7a6caa22358248bdeaa245bb77a0410",
+        "evals/fixtures/cache-design/cache.py": "b0e58f979a4fb8fbe3d7dcf8fab1f298153f487c28e8d649cd6a4425c3a2a40d",
+        "evals/fixtures/cache-docs/README.md": "cf1346dc97b758d01084cf18beb5cbe41930e5b9966f0b3ef5e1c61e80436813",
+        "evals/fixtures/incident/incident-note.md": "cde2b20fb06835a9e17958df03bbaa28382c8e7798b2e8f29c2fab12bf7d9dbc",
+        "evals/fixtures/readme/CONTRACT.md": "f33baeff224c8cf8f61bcf84330d8cbdf40ae3343928f10f399d187336ea8bd0",
+        "evals/fixtures/readme/README.md": "b229e92c7e1f8dbdaacba46d7459fd275706e343ea47d59f915be7c5aa09dab7",
+        "evals/fixtures/retry/config.json": "83d40629197c391d04465e9faaf2094a8edb804e2dbd688b7c65667246595a3f",
+        "evals/fixtures/retry/error.log": "9f9242b53f45e4d21489fef3a3658c275c1fc98690481982ca0c9e3083d9d0f1",
+        "evals/fixtures/retry/parser.py": "cf416d6c9424926b5f102f9d3af51a19bca0f10507c5b7f647e71f07d5cc7a3a",
+        "evals/fixtures/snapsync/README.md": "95ab60fc15928b536bcfced0f3ae559609d8789dab23b9aa7d8905d6a0f43abe",
+        "evals/fixtures/token-cache/session_cache.py": "b2b44e1099acefca9a4055b34939bf8a5e094a47cc1f7cf41b693d838f1e11a4",
+        "evals/results/2026-09-08-confusion-repair/README.md": "ffaa46578309232ee4da43243ee979797076728ac4a5357f2fdebf458bd543d9",
+        "evals/results/2026-09-08-confusion-repair/results.json": "25d292edbd376ce599aca2542f1f97bebcaca3dd8c80fb4dd5a6924eb138e048",
+        "evals/results/2026-10-03-sentence-discipline/README.md": "282d72095604dad97135266d059ef001f4e3753644fc45a10eff727c5980ab66",
+        "evals/results/2026-10-03-sentence-discipline/summary.json": "50a89009dd6ce101a2e8c9f3ce7f19fc9f94e97b7485212df885ef3f928e00e9",
+        "references/explanatory-writing.md": "c2d7d0fc294b2c6c8f0004bc27b578dc7b24b92dc8647607561574a4508061c0"
+      },
+      "compiledFolderSha256": "09b8296e48d9b76e08a85fa1f48d01c624cee804b054f426def876d3da5e3d2f",
+      "compiledFiles": {
+        "README.md": "5506383de957c5df807167394ebd4343f4a390247075ce29f8fcd136486b245c",
+        "SKILL.md": "329be8eaf457e13e21ea17428baa736b0337c30abf9a5638132e6e9d014db12c",
+        "agents/openai.yaml": "3a13a65dd711cf0d95d825be13a3470b5a3a765ed93f914703638d5dc1776f95",
+        "evals/README.md": "4ca3e085f7ab8500c5f2a191f91cd682699931ced0a94f64f422075de1ed84d2",
+        "evals/evals.json": "637e0d14c01b19fe47ffde9cc58e382968c47ca244c10258a12d32a56402adf8",
+        "evals/fixtures/borrowing/borrowing-guide.md": "96139a4c5c141cda4c74dd40f0e17deef7a6caa22358248bdeaa245bb77a0410",
+        "evals/fixtures/cache-design/cache.py": "b0e58f979a4fb8fbe3d7dcf8fab1f298153f487c28e8d649cd6a4425c3a2a40d",
+        "evals/fixtures/cache-docs/README.md": "cf1346dc97b758d01084cf18beb5cbe41930e5b9966f0b3ef5e1c61e80436813",
+        "evals/fixtures/incident/incident-note.md": "cde2b20fb06835a9e17958df03bbaa28382c8e7798b2e8f29c2fab12bf7d9dbc",
+        "evals/fixtures/readme/CONTRACT.md": "f33baeff224c8cf8f61bcf84330d8cbdf40ae3343928f10f399d187336ea8bd0",
+        "evals/fixtures/readme/README.md": "b229e92c7e1f8dbdaacba46d7459fd275706e343ea47d59f915be7c5aa09dab7",
+        "evals/fixtures/retry/config.json": "83d40629197c391d04465e9faaf2094a8edb804e2dbd688b7c65667246595a3f",
+        "evals/fixtures/retry/error.log": "9f9242b53f45e4d21489fef3a3658c275c1fc98690481982ca0c9e3083d9d0f1",
+        "evals/fixtures/retry/parser.py": "cf416d6c9424926b5f102f9d3af51a19bca0f10507c5b7f647e71f07d5cc7a3a",
+        "evals/fixtures/snapsync/README.md": "95ab60fc15928b536bcfced0f3ae559609d8789dab23b9aa7d8905d6a0f43abe",
+        "evals/fixtures/token-cache/session_cache.py": "b2b44e1099acefca9a4055b34939bf8a5e094a47cc1f7cf41b693d838f1e11a4",
+        "evals/results/2026-09-08-confusion-repair/README.md": "ffaa46578309232ee4da43243ee979797076728ac4a5357f2fdebf458bd543d9",
+        "evals/results/2026-09-08-confusion-repair/results.json": "25d292edbd376ce599aca2542f1f97bebcaca3dd8c80fb4dd5a6924eb138e048",
+        "evals/results/2026-10-03-sentence-discipline/README.md": "282d72095604dad97135266d059ef001f4e3753644fc45a10eff727c5980ab66",
+        "evals/results/2026-10-03-sentence-discipline/summary.json": "50a89009dd6ce101a2e8c9f3ce7f19fc9f94e97b7485212df885ef3f928e00e9",
+        "references/explanatory-writing.md": "c2d7d0fc294b2c6c8f0004bc27b578dc7b24b92dc8647607561574a4508061c0"
+      }
+    },
+    {
+      "name": "catchup",
+      "source": "softleader",
+      "folder": "plugins/productivity/skills/catchup",
+      "folderSha256": "5e037eae2494c158ff4e0b5c8a0641fb3e358ac3d2d710cf96aab452ef0d4c38",
+      "files": {
+        "README.md": "32a32be876919c731a848105ac68e4cdcfa62827e75193d332088037c930c578",
+        "SKILL.md": "33b6843046c3ad5c3c9681f4ebe65359146ac357af7c57978d8d9df2d05c42a0",
+        "agents/openai.yaml": "21999307729698f0d0d10fcdf9e3c94c9ed648520a17b8546d36fcc44d8ffd75"
+      },
+      "compiledFolderSha256": "5e037eae2494c158ff4e0b5c8a0641fb3e358ac3d2d710cf96aab452ef0d4c38",
+      "compiledFiles": {
+        "README.md": "32a32be876919c731a848105ac68e4cdcfa62827e75193d332088037c930c578",
+        "SKILL.md": "33b6843046c3ad5c3c9681f4ebe65359146ac357af7c57978d8d9df2d05c42a0",
+        "agents/openai.yaml": "21999307729698f0d0d10fcdf9e3c94c9ed648520a17b8546d36fcc44d8ffd75"
+      }
+    },
+    {
+      "name": "llms-docs",
+      "source": "softleader",
+      "folder": "plugins/misc/skills/llms-docs",
+      "folderSha256": "0cc300bff367cb50e7885877cfe09d6c2e53fa29cc2d9cbdb87211f3106c14fd",
+      "files": {
+        "README.md": "59e7ef89e81216cc8d9d079a509d6ba563ff6538379b599b571fb08679af4846",
+        "SKILL.md": "55b1d51ecdac83ee6be7a5c7e76127384f882346837b0215e94c1b2e2facedbd",
+        "agents/openai.yaml": "7caeb930034b3403f19e065c9553ec976dfc1e08c6f585e8a50d3dd4c9605dd3",
+        "scripts/fetch-llms.py": "b70cb0c4ada97eb1dd0ef9b663608e80be2e52ed75934384646ef098f3fffc3a",
+        "tests/results/2026-09-15/helper-verification.json": "c3dac4afaa0760c9a54ffc32da12d611cdec5c8bb22666dec1794c4d8578d664",
+        "tests/results/2026-09-15/manual-coverage.json": "5c62812592e4020a37d92b578dfc3a62cc21d0294c7f7bde6cba002d4d1d5e86",
+        "tests/test_fetch_llms.py": "3b3f14cb23632f720d1841357d58e0889649d0ca44f204fec0821d463a96590d"
+      },
+      "compiledFolderSha256": "0cc300bff367cb50e7885877cfe09d6c2e53fa29cc2d9cbdb87211f3106c14fd",
+      "compiledFiles": {
+        "README.md": "59e7ef89e81216cc8d9d079a509d6ba563ff6538379b599b571fb08679af4846",
+        "SKILL.md": "55b1d51ecdac83ee6be7a5c7e76127384f882346837b0215e94c1b2e2facedbd",
+        "agents/openai.yaml": "7caeb930034b3403f19e065c9553ec976dfc1e08c6f585e8a50d3dd4c9605dd3",
+        "scripts/fetch-llms.py": "b70cb0c4ada97eb1dd0ef9b663608e80be2e52ed75934384646ef098f3fffc3a",
+        "tests/results/2026-09-15/helper-verification.json": "c3dac4afaa0760c9a54ffc32da12d611cdec5c8bb22666dec1794c4d8578d664",
+        "tests/results/2026-09-15/manual-coverage.json": "5c62812592e4020a37d92b578dfc3a62cc21d0294c7f7bde6cba002d4d1d5e86",
+        "tests/test_fetch_llms.py": "3b3f14cb23632f720d1841357d58e0889649d0ca44f204fec0821d463a96590d"
+      }
+    },
+    {
+      "name": "re-construct-prompt",
+      "source": "softleader",
+      "folder": "plugins/wip/skills/re-construct-prompt",
+      "folderSha256": "dd5211eddbb1a77e40cbff475e4461a012da46e2e0d2104819499167a5dc8f88",
+      "files": {
+        "README.md": "a480f80688457887ff360b0317c28ab30fe658949bd0dc492b00c452530740eb",
+        "SKILL.md": "a37c872e2419069da85fd6927b7514ef24d2584f2cf58a83bebd8ee71f9827d1",
+        "agents/openai.yaml": "1c5f2eb716391a5e0018e65ac3452c9972e901c94e1e088d4c674bab12217523",
+        "evals/evals.json": "baa494cfe13376ab71ab7a6ad3f7f348b9152fcde8e4918647a42ef278b214c3"
+      },
+      "compiledFolderSha256": "dd5211eddbb1a77e40cbff475e4461a012da46e2e0d2104819499167a5dc8f88",
+      "compiledFiles": {
+        "README.md": "a480f80688457887ff360b0317c28ab30fe658949bd0dc492b00c452530740eb",
+        "SKILL.md": "a37c872e2419069da85fd6927b7514ef24d2584f2cf58a83bebd8ee71f9827d1",
+        "agents/openai.yaml": "1c5f2eb716391a5e0018e65ac3452c9972e901c94e1e088d4c674bab12217523",
+        "evals/evals.json": "baa494cfe13376ab71ab7a6ad3f7f348b9152fcde8e4918647a42ef278b214c3"
+      }
+    },
+    {
+      "name": "what-next",
+      "source": "softleader",
+      "folder": "plugins/wip/skills/what-next",
+      "folderSha256": "c39ab4722d8ebc02d4452dd0d2e39501151e6366a6f6f73c239cbc2e8eca3cc1",
+      "files": {
+        "README.md": "72aeb89e006694ccc15af94f2a14fd82d46619ea27c6a8e67d936aeb29d4cf8f",
+        "SKILL.md": "4e2a50d6dd6c4421e292e2293ad5e22e49a4d5942f75257bd81e7e6e96b14bd1",
+        "agents/openai.yaml": "b4ee1ea6f96889d7419f9f6d57ffa66ad0119a203f9e17baa2be2ec6df7cfc04"
+      },
+      "compiledFolderSha256": "c39ab4722d8ebc02d4452dd0d2e39501151e6366a6f6f73c239cbc2e8eca3cc1",
+      "compiledFiles": {
+        "README.md": "72aeb89e006694ccc15af94f2a14fd82d46619ea27c6a8e67d936aeb29d4cf8f",
+        "SKILL.md": "4e2a50d6dd6c4421e292e2293ad5e22e49a4d5942f75257bd81e7e6e96b14bd1",
+        "agents/openai.yaml": "b4ee1ea6f96889d7419f9f6d57ffa66ad0119a203f9e17baa2be2ec6df7cfc04"
+      }
+    },
+    {
+      "name": "get-pr-ready-remake",
+      "source": "softleader",
+      "folder": "plugins/wip/skills/get-pr-ready-remake",
+      "folderSha256": "fb9e54a9239d9a6fbaedce818fc3a8ef126d2dab227195390d5eb186d7dd13da",
+      "files": {
+        "README.md": "c7d9686d3885a794f8ab8124b83b1ef73a4f4ee2fac893c7983ebe6feaf15e08",
+        "SKILL.md": "f580bccd8121a79fb66ea56820febf4bc2e54c58bba65c08b610ac7e6cf4247c",
+        "agents/openai.yaml": "c110c191bffd68ca316d3cd53d15fc75e0e7dc7bf0956ae702152734703edc89",
+        "evals/README.md": "8c2acd0d5dbbc0a412ccef406b7eb9ebeadf9dd146d8fb739efa20ddc657da24",
+        "evals/delivery-authority.json": "1cf8accc0ac88d91b1a705090c255c3de6249dfb37b290002e33cce99d0ccd8d",
+        "evals/evals.json": "2590b03065e7abb14f7eb07228578b1759e02a6d3b4832b13b508d1412e6fd5c",
+        "evals/reviewer-handoff/README.md": "32beb8de35414db4980c9a6a45522aca1ab4ad7516df481dea66899b05b3b834",
+        "evals/reviewer-handoff/broker.py": "f1c22fde4ea22befb60fa875c0e3b1b90ad57b801f3450f626181963d7aef43f",
+        "evals/reviewer-handoff/run_case.py": "c8884bf8c8a6609f24eb1efdb09a249e132e8879ec5577cc5f2413e00f3c802b",
+        "evals/session-authorization/README.md": "2e2b0a1d38269184fd010e721b275ed67e1e0b105e5960fc00b9c974f1c73166",
+        "evals/session-authorization/run_case.py": "b34991c3c2d3ab8afb592c98b2141f4420716ea1543e7698126e3d23dbe811f5",
+        "references/reviewer.md": "731d1aa83682a32eb6996848cf39cd0463c026ad23f8924309297245f8f0cd40",
+        "references/selection.md": "c39ff7c75b6c53bb507c7f53720e8267a3b4f1f3ac54f89c2fc7a36e288fb861",
+        "scripts/config.py": "ccca409c7008e7b68fe08be9d372d7e49329f40ea37d3f2874f4a693de26a5e6",
+        "tests/README.md": "f9bd65f04304d75725c192519c11af3637699c46c0f5f275c38c3acf03a36622",
+        "tests/test_config.py": "f7c50013f4500f30a5a092386203abae9bafa3cfb4cc751e712979564c46af62",
+        "tests/test_handoff_eval.py": "12ace71c22e08ad5e4d02202399f48f9e0c0d6286d9803353dc7f37cd4d2e33c",
+        "tests/test_session_authorization.py": "dcaa795f63f061f34db177f14e7f51811fd436e9edbc14d3565efc3b4c27dfc2"
+      },
+      "compiledFolderSha256": "fb9e54a9239d9a6fbaedce818fc3a8ef126d2dab227195390d5eb186d7dd13da",
+      "compiledFiles": {
+        "README.md": "c7d9686d3885a794f8ab8124b83b1ef73a4f4ee2fac893c7983ebe6feaf15e08",
+        "SKILL.md": "f580bccd8121a79fb66ea56820febf4bc2e54c58bba65c08b610ac7e6cf4247c",
+        "agents/openai.yaml": "c110c191bffd68ca316d3cd53d15fc75e0e7dc7bf0956ae702152734703edc89",
+        "evals/README.md": "8c2acd0d5dbbc0a412ccef406b7eb9ebeadf9dd146d8fb739efa20ddc657da24",
+        "evals/delivery-authority.json": "1cf8accc0ac88d91b1a705090c255c3de6249dfb37b290002e33cce99d0ccd8d",
+        "evals/evals.json": "2590b03065e7abb14f7eb07228578b1759e02a6d3b4832b13b508d1412e6fd5c",
+        "evals/reviewer-handoff/README.md": "32beb8de35414db4980c9a6a45522aca1ab4ad7516df481dea66899b05b3b834",
+        "evals/reviewer-handoff/broker.py": "f1c22fde4ea22befb60fa875c0e3b1b90ad57b801f3450f626181963d7aef43f",
+        "evals/reviewer-handoff/run_case.py": "c8884bf8c8a6609f24eb1efdb09a249e132e8879ec5577cc5f2413e00f3c802b",
+        "evals/session-authorization/README.md": "2e2b0a1d38269184fd010e721b275ed67e1e0b105e5960fc00b9c974f1c73166",
+        "evals/session-authorization/run_case.py": "b34991c3c2d3ab8afb592c98b2141f4420716ea1543e7698126e3d23dbe811f5",
+        "references/reviewer.md": "731d1aa83682a32eb6996848cf39cd0463c026ad23f8924309297245f8f0cd40",
+        "references/selection.md": "c39ff7c75b6c53bb507c7f53720e8267a3b4f1f3ac54f89c2fc7a36e288fb861",
+        "scripts/config.py": "ccca409c7008e7b68fe08be9d372d7e49329f40ea37d3f2874f4a693de26a5e6",
+        "tests/README.md": "f9bd65f04304d75725c192519c11af3637699c46c0f5f275c38c3acf03a36622",
+        "tests/test_config.py": "f7c50013f4500f30a5a092386203abae9bafa3cfb4cc751e712979564c46af62",
+        "tests/test_handoff_eval.py": "12ace71c22e08ad5e4d02202399f48f9e0c0d6286d9803353dc7f37cd4d2e33c",
+        "tests/test_session_authorization.py": "dcaa795f63f061f34db177f14e7f51811fd436e9edbc14d3565efc3b4c27dfc2"
+      }
+    },
+    {
+      "name": "go-for-it-remake",
+      "source": "softleader",
+      "folder": "plugins/wip/skills/go-for-it-remake",
+      "folderSha256": "e5cc947adfaf55be0d7593773fac22577af59f00cda0a38d241caac9e7babc94",
+      "files": {
+        "README.md": "5ac97bcd8346b568a90ef7e216451ffe4d71c1e04a76e903ba09809a4e87afcc",
+        "SKILL.md": "187336fdb16a07b53d6c7b46622257d9a4a6be32aedfbfaef258bb5a33f947e3",
+        "agents/openai.yaml": "7f8c4734e797396b07815979be466baa004146dfc58ef4ed73ed358e990a771c",
+        "evals/README.md": "2b7198e4d86f455eb5fc9cf914199581708522b1be674491a0ea253ee13a0991",
+        "evals/evals.json": "ccc82d2e06e2a345cc763cf9d55a0c05e6fdb77338825c81217e7b5fe62408e7",
+        "evals/evidence-artifacts.json": "54d0c81880d27d4683d380518e8831814f11b5b944d95cb9cb8b32c21c8841f7",
+        "evals/pr-content.json": "9f5e7ddb03f7f7d4b523b1e511e0b60fc4db547347833942b05abccc728529ad",
+        "evals/proof-capture.json": "922b3ac95a2d19d4a7d00c53f72055e266e1eb5067f94f598268f10b11d87539",
+        "evals/proof-capture/README.md": "b9d095e7c4eaade72ded34f7161ee20f2ed9f17fed85fd8fb589a85d0559f6eb",
+        "evals/proof-capture/fixture/README.md": "265bb1e80735a5c3606d81aa9761f9d7fb089baa1d60c8d711cde9a019290a08",
+        "evals/proof-capture/fixture/import_rows.py": "5f6df87963fcc2921a276333d58c5f117a93909a9d676258a044a917c228bc9f",
+        "evals/proof-capture/fixture/orders.csv": "5f0a82025974ea5e075bd173913527d15416f21a1c0ff043e22523ba2d639825",
+        "evals/proof-capture/fixture/verify.py": "cd4851cf7cfecd78fc43c961923016b39b77ae4019eb8b7e87c47931e47abe61",
+        "evals/ui-proof.json": "c99d6fc577582f539c963ef25b229d1e9a0380fc4842b2263ee4e3fb6a0df7e6",
+        "evals/ui-proof/README.md": "15085a1617b9bf66d07ab61928869a95a2f9ac40c979a026caccfebfe88fa2a5",
+        "evals/ui-proof/fixture/README.md": "fd9a9beede3f680c902d77a3848042676e261559060c91226095be0391892d70",
+        "evals/ui-proof/fixture/check.py": "a8c94527758f6d12bb41390953b78d6d85a84d8bb4af99bb952388c9e0cad910",
+        "evals/ui-proof/fixture/index.html": "ea6a45010e3c2fa3eb5007d654a04d7532447836b00f7058d796b4e54256ed71",
+        "evals/ui-proof/fixture/server.py": "1f0c43fbd5bc253de82f4991532f18dd7c51dae5ade6f882a97de87d9d1d16f6",
+        "references/pr-NOTICE.md": "30eb60925b67d446fd8f155906709d641966bf494af6e13b7ab0f56f88120bda",
+        "references/pr.md": "ab63f1cf78647389edcd386c9427c5dfca27ed2836930c24773ffee834c19bcd",
+        "references/selection.md": "be5b65ad667c470bb677ea0c5c665adc0f2b49271ebe01ce61aaad88029768b1",
+        "scripts/config.py": "d6c44eb798683e3c150db8450cd89d8cefc0aa301f82a285a565085d8b0c9e1c",
+        "tests/README.md": "fceec18cfe88208fd7a355a8d57be8a9c0102e7427f3b59335e10dcffd56038e",
+        "tests/test_config.py": "266622a344b9989a0b05c3f7c40b587069e828331ebfb43f203b8e9a115af78c"
+      },
+      "compiledFolderSha256": "e5cc947adfaf55be0d7593773fac22577af59f00cda0a38d241caac9e7babc94",
+      "compiledFiles": {
+        "README.md": "5ac97bcd8346b568a90ef7e216451ffe4d71c1e04a76e903ba09809a4e87afcc",
+        "SKILL.md": "187336fdb16a07b53d6c7b46622257d9a4a6be32aedfbfaef258bb5a33f947e3",
+        "agents/openai.yaml": "7f8c4734e797396b07815979be466baa004146dfc58ef4ed73ed358e990a771c",
+        "evals/README.md": "2b7198e4d86f455eb5fc9cf914199581708522b1be674491a0ea253ee13a0991",
+        "evals/evals.json": "ccc82d2e06e2a345cc763cf9d55a0c05e6fdb77338825c81217e7b5fe62408e7",
+        "evals/evidence-artifacts.json": "54d0c81880d27d4683d380518e8831814f11b5b944d95cb9cb8b32c21c8841f7",
+        "evals/pr-content.json": "9f5e7ddb03f7f7d4b523b1e511e0b60fc4db547347833942b05abccc728529ad",
+        "evals/proof-capture.json": "922b3ac95a2d19d4a7d00c53f72055e266e1eb5067f94f598268f10b11d87539",
+        "evals/proof-capture/README.md": "b9d095e7c4eaade72ded34f7161ee20f2ed9f17fed85fd8fb589a85d0559f6eb",
+        "evals/proof-capture/fixture/README.md": "265bb1e80735a5c3606d81aa9761f9d7fb089baa1d60c8d711cde9a019290a08",
+        "evals/proof-capture/fixture/import_rows.py": "5f6df87963fcc2921a276333d58c5f117a93909a9d676258a044a917c228bc9f",
+        "evals/proof-capture/fixture/orders.csv": "5f0a82025974ea5e075bd173913527d15416f21a1c0ff043e22523ba2d639825",
+        "evals/proof-capture/fixture/verify.py": "cd4851cf7cfecd78fc43c961923016b39b77ae4019eb8b7e87c47931e47abe61",
+        "evals/ui-proof.json": "c99d6fc577582f539c963ef25b229d1e9a0380fc4842b2263ee4e3fb6a0df7e6",
+        "evals/ui-proof/README.md": "15085a1617b9bf66d07ab61928869a95a2f9ac40c979a026caccfebfe88fa2a5",
+        "evals/ui-proof/fixture/README.md": "fd9a9beede3f680c902d77a3848042676e261559060c91226095be0391892d70",
+        "evals/ui-proof/fixture/check.py": "a8c94527758f6d12bb41390953b78d6d85a84d8bb4af99bb952388c9e0cad910",
+        "evals/ui-proof/fixture/index.html": "ea6a45010e3c2fa3eb5007d654a04d7532447836b00f7058d796b4e54256ed71",
+        "evals/ui-proof/fixture/server.py": "1f0c43fbd5bc253de82f4991532f18dd7c51dae5ade6f882a97de87d9d1d16f6",
+        "references/pr-NOTICE.md": "30eb60925b67d446fd8f155906709d641966bf494af6e13b7ab0f56f88120bda",
+        "references/pr.md": "ab63f1cf78647389edcd386c9427c5dfca27ed2836930c24773ffee834c19bcd",
+        "references/selection.md": "be5b65ad667c470bb677ea0c5c665adc0f2b49271ebe01ce61aaad88029768b1",
+        "scripts/config.py": "d6c44eb798683e3c150db8450cd89d8cefc0aa301f82a285a565085d8b0c9e1c",
+        "tests/README.md": "fceec18cfe88208fd7a355a8d57be8a9c0102e7427f3b59335e10dcffd56038e",
+        "tests/test_config.py": "266622a344b9989a0b05c3f7c40b587069e828331ebfb43f203b8e9a115af78c"
+      }
+    },
+    {
+      "name": "pr-review-remake",
+      "source": "softleader",
+      "folder": "plugins/wip/skills/pr-review-remake",
+      "folderSha256": "23da83eeece5d980c17cc469adb90b0b1ca8b99f10fa3ff651ed30044efde29b",
+      "files": {
+        "README.md": "d9bf4fea7748d16f63f36265d8bf94fab4f9b43ff701b8c5e1b4f0176635208e",
+        "SKILL.md": "e3aef2108d5315c8157f62bcd8f6df93afb2b6dc85082b20231dbc9f1e53605c",
+        "agents/openai.yaml": "9d04f0fd852b29d2d64b34f8b22bf2a6c71c819bd24119936d017aa2c3ee9757",
+        "evals/README.md": "e7f93c6ef5e2d1f5f24d1dae33a15e633507c9ac259e31a35ebd48536fb759f3",
+        "evals/evals.json": "bd74aea5c216f541f77ed2cb6808db46ffb73ff1b41ee38c40aa2e85f4f189dd",
+        "evals/trigger-evals.json": "f644e673d0eb1dac1a7bb1fdd6bc6d54f539c6744157823f6b65bdb26f14ac9a",
+        "references/verifier.md": "7d0bd059a9286576bb2a30b78e97f5a1608760c2a56456b34929a1ad08874826"
+      },
+      "compiledFolderSha256": "23da83eeece5d980c17cc469adb90b0b1ca8b99f10fa3ff651ed30044efde29b",
+      "compiledFiles": {
+        "README.md": "d9bf4fea7748d16f63f36265d8bf94fab4f9b43ff701b8c5e1b4f0176635208e",
+        "SKILL.md": "e3aef2108d5315c8157f62bcd8f6df93afb2b6dc85082b20231dbc9f1e53605c",
+        "agents/openai.yaml": "9d04f0fd852b29d2d64b34f8b22bf2a6c71c819bd24119936d017aa2c3ee9757",
+        "evals/README.md": "e7f93c6ef5e2d1f5f24d1dae33a15e633507c9ac259e31a35ebd48536fb759f3",
+        "evals/evals.json": "bd74aea5c216f541f77ed2cb6808db46ffb73ff1b41ee38c40aa2e85f4f189dd",
+        "evals/trigger-evals.json": "f644e673d0eb1dac1a7bb1fdd6bc6d54f539c6744157823f6b65bdb26f14ac9a",
+        "references/verifier.md": "7d0bd059a9286576bb2a30b78e97f5a1608760c2a56456b34929a1ad08874826"
+      }
+    },
+    {
+      "name": "simplify",
+      "source": "softleader",
+      "folder": "plugins/deprecated/skills/simplify",
+      "folderSha256": "4ddff92f393494dca7809abe767996f02de964acb78371a996b1984db22eaf90",
+      "files": {
+        "README.md": "22e5ea0c503a36f36cfece20e514bf2251280327e2b09692048c69735a1b810a",
+        "SKILL.md": "dcbb7c292c9cdf0cb933fdb2a155cab7a41cf4d2a8e16ae27a54e0edada65651",
+        "agents/openai.yaml": "8404a8803df0745840824ec511b9482a7f336bef83243a539b2ed6a0f97c8515"
+      },
+      "compiledFolderSha256": "4ddff92f393494dca7809abe767996f02de964acb78371a996b1984db22eaf90",
+      "compiledFiles": {
+        "README.md": "22e5ea0c503a36f36cfece20e514bf2251280327e2b09692048c69735a1b810a",
+        "SKILL.md": "dcbb7c292c9cdf0cb933fdb2a155cab7a41cf4d2a8e16ae27a54e0edada65651",
+        "agents/openai.yaml": "8404a8803df0745840824ec511b9482a7f336bef83243a539b2ed6a0f97c8515"
+      }
+    },
+    {
+      "name": "log-analysis",
+      "source": "softleader",
+      "folder": "plugins/deprecated/skills/log-analysis",
+      "folderSha256": "fe96e155ba0493f68b553b4c103124942ca520438ea59564567161f5c4a5b2c0",
+      "files": {
+        "README.md": "4c5d664a62aa27859605e3b07855c6fe551a60bb59cde4d0a2ada0f507d171c0",
+        "SKILL.md": "c1edfd57a08d952502e30ff75d59cb830d1d0259d3bb3cf2b793ecbb8f9e5a49",
+        "agents/openai.yaml": "4ac0ce2742d91d2ef116fb3963846e11755849749efbefd85a5d98c37c06ef37",
+        "references/error-patterns.md": "746824b363c95f107005826c257be9a3a3d66271d463e14a97cd5bec7e3814ec",
+        "references/source-correlation.md": "9750f64ca0d231c50bf959ea7187b334b568b0805893789a0f8a6844cb9bee84"
+      },
+      "compiledFolderSha256": "fe96e155ba0493f68b553b4c103124942ca520438ea59564567161f5c4a5b2c0",
+      "compiledFiles": {
+        "README.md": "4c5d664a62aa27859605e3b07855c6fe551a60bb59cde4d0a2ada0f507d171c0",
+        "SKILL.md": "c1edfd57a08d952502e30ff75d59cb830d1d0259d3bb3cf2b793ecbb8f9e5a49",
+        "agents/openai.yaml": "4ac0ce2742d91d2ef116fb3963846e11755849749efbefd85a5d98c37c06ef37",
+        "references/error-patterns.md": "746824b363c95f107005826c257be9a3a3d66271d463e14a97cd5bec7e3814ec",
+        "references/source-correlation.md": "9750f64ca0d231c50bf959ea7187b334b568b0805893789a0f8a6844cb9bee84"
+      }
+    },
+    {
+      "name": "gh-body-file",
+      "source": "seven",
+      "folder": "skills/gh-body-file",
+      "folderSha256": "7f3a644d6d5c9215a94c0e2314f9a54a5a5fdbb2544d949cb501848f70bebb17",
+      "files": {
+        "README.md": "77f04ae726d9f7e0f90e546097c7e9f24b035d1fe64925a6bef63787b61d8903",
+        "SKILL.md": "2a5b17106314f3cba41165ded9364c181533679126614c677d0ad663b902c9e5",
+        "evals/evals.json": "65549fd3dcd568a833281e94af3d6d9957029a41a2daae03a10f85289c9c653a"
+      },
+      "compiledFolderSha256": "7f3a644d6d5c9215a94c0e2314f9a54a5a5fdbb2544d949cb501848f70bebb17",
+      "compiledFiles": {
+        "README.md": "77f04ae726d9f7e0f90e546097c7e9f24b035d1fe64925a6bef63787b61d8903",
+        "SKILL.md": "2a5b17106314f3cba41165ded9364c181533679126614c677d0ad663b902c9e5",
+        "evals/evals.json": "65549fd3dcd568a833281e94af3d6d9957029a41a2daae03a10f85289c9c653a"
+      }
+    },
+    {
+      "name": "daily-work-log",
+      "source": "seven",
+      "folder": "skills/daily-work-log",
+      "folderSha256": "a7f214aa6b5bcf0c4d0e567fceb8eecf82947ca625877a13643baec9c26892da",
+      "files": {
+        "README.md": "9c4d965e6d15d9c68d561503bc389a86c3f113a3ec3c155c6e34a019e4321bab",
+        "SKILL.md": "fa92c51c8d4c561eb1e6237505b801cddd4b04dce4b846ad4642534f7917cde0",
+        "evals/evals.json": "252cc6eee1731b4b40c2f90e99990855e384c42583475dadc41b06e2e7336400",
+        "scripts/collect-daily-work-log.ps1": "aa8befc4b914348700146f7f9cf9b583b700672848690c05de92bf4492de8b5d",
+        "scripts/format-daily-work-log-evidence.ps1": "4ecda6e5b91f0571f04d4a9d0515ec65417c01449863cedf2e73f8351850e699",
+        "tests/collect-daily-work-log.tests.ps1": "2832841e15f0540b24699813f976d85839d32fc8b307076f22c6b58535c5ebb3"
+      },
+      "compiledFolderSha256": "a7f214aa6b5bcf0c4d0e567fceb8eecf82947ca625877a13643baec9c26892da",
+      "compiledFiles": {
+        "README.md": "9c4d965e6d15d9c68d561503bc389a86c3f113a3ec3c155c6e34a019e4321bab",
+        "SKILL.md": "fa92c51c8d4c561eb1e6237505b801cddd4b04dce4b846ad4642534f7917cde0",
+        "evals/evals.json": "252cc6eee1731b4b40c2f90e99990855e384c42583475dadc41b06e2e7336400",
+        "scripts/collect-daily-work-log.ps1": "aa8befc4b914348700146f7f9cf9b583b700672848690c05de92bf4492de8b5d",
+        "scripts/format-daily-work-log-evidence.ps1": "4ecda6e5b91f0571f04d4a9d0515ec65417c01449863cedf2e73f8351850e699",
+        "tests/collect-daily-work-log.tests.ps1": "2832841e15f0540b24699813f976d85839d32fc8b307076f22c6b58535c5ebb3"
+      }
+    },
+    {
+      "name": "code-intent-comments",
+      "source": "seven",
+      "folder": "skills/code-intent-comments",
+      "folderSha256": "9d5600ff01730728e001665daa143894c4e1cad8fe3d31643f8bffedfbdc55d3",
+      "files": {
+        "README.md": "94485d5529d785544474afdab45604bd768692a9526593b39f6c84983f4dc623",
+        "SKILL.md": "2851d10f063dac104e69ec67897f39e380eff9368696307c733e381790b5e406",
+        "evals/evals.json": "bccc8ac97678ba240353a0457cd72a8107c190d97aa4be96a8312603f7150d41"
+      },
+      "compiledFolderSha256": "9d5600ff01730728e001665daa143894c4e1cad8fe3d31643f8bffedfbdc55d3",
+      "compiledFiles": {
+        "README.md": "94485d5529d785544474afdab45604bd768692a9526593b39f6c84983f4dc623",
+        "SKILL.md": "2851d10f063dac104e69ec67897f39e380eff9368696307c733e381790b5e406",
+        "evals/evals.json": "bccc8ac97678ba240353a0457cd72a8107c190d97aa4be96a8312603f7150d41"
+      }
+    },
+    {
+      "name": "finish-and-admin-merge",
+      "source": "seven",
+      "folder": "skills/finish-and-admin-merge",
+      "folderSha256": "d83564b200389936138b0fdd45c80962fbeee2f3ee1307fb839f6afb1b625238",
+      "files": {
+        "README.md": "c1b9c3a0a0fd6b4146269fb6204aeda3a11f67a0d51080031eab73a55198205f",
+        "SKILL.md": "b6b022f1c0403d96227139f5d11eddabac1a1abdebf2868b3fc970cc628b6be7",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "edfdd69553137f2bdf4ba37b055f1dd91f9831fb1b6db80368e29a088a016d93"
+      },
+      "compiledFolderSha256": "d83564b200389936138b0fdd45c80962fbeee2f3ee1307fb839f6afb1b625238",
+      "compiledFiles": {
+        "README.md": "c1b9c3a0a0fd6b4146269fb6204aeda3a11f67a0d51080031eab73a55198205f",
+        "SKILL.md": "b6b022f1c0403d96227139f5d11eddabac1a1abdebf2868b3fc970cc628b6be7",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "edfdd69553137f2bdf4ba37b055f1dd91f9831fb1b6db80368e29a088a016d93"
+      }
+    },
+    {
+      "name": "generate-ut-report",
+      "source": "seven",
+      "folder": "skills/generate-ut-report",
+      "folderSha256": "3b7671630c5e0a0c6a14f421e517201d1cf2424bede0af8b4fc864716e811eac",
+      "files": {
+        "README.md": "3e2f3bc0110addd8435171bb43659e9f4d23b261d69011e24a1f9deba2a41c1f",
+        "SKILL.md": "b85daf186908cfe64a7074d20ce8f67048d9845fac3408972a110a325bdc0880",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "63d648770d910f9e6b7d9d4f5378671b2e53faa11aaf2b5de9f8ccafd43aac35",
+        "references/final-response.md": "521d3a0ccd80986fe6be9ae0d6b9f0f714c81ab6605b2c36a712f17e24ab029a",
+        "references/html-report-contract.md": "9ecd29caf03519041690eb3176a419b6f80f700a88d7b89012a44393b1369c57"
+      },
+      "compiledFolderSha256": "3b7671630c5e0a0c6a14f421e517201d1cf2424bede0af8b4fc864716e811eac",
+      "compiledFiles": {
+        "README.md": "3e2f3bc0110addd8435171bb43659e9f4d23b261d69011e24a1f9deba2a41c1f",
+        "SKILL.md": "b85daf186908cfe64a7074d20ce8f67048d9845fac3408972a110a325bdc0880",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "63d648770d910f9e6b7d9d4f5378671b2e53faa11aaf2b5de9f8ccafd43aac35",
+        "references/final-response.md": "521d3a0ccd80986fe6be9ae0d6b9f0f714c81ab6605b2c36a712f17e24ab029a",
+        "references/html-report-contract.md": "9ecd29caf03519041690eb3176a419b6f80f700a88d7b89012a44393b1369c57"
+      }
+    },
+    {
+      "name": "make-function-manual-sop",
+      "source": "seven",
+      "folder": "skills/make-function-manual-sop",
+      "folderSha256": "f304604cab2407ddfac5a630e6f16b7467200d4ee899e6f35c5fe67859996ddc",
+      "files": {
+        "README.md": "ca26658443d50ca0a2918a8bfed26d4046ef966f6379081c7fcc3e5ac745e371",
+        "SKILL.md": "9a5d37237df1cbca8c7635f954714a35e40088642c914dae333579d62d84d3f8",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "b2458cb333ffbf8596673e81d3bdd41ce18945d4ce95f0d5d04874bbe5ffba79",
+        "references/document-contract.md": "68929f7c9976598b5df26bb00dad0c48041d45dc8ddce461eb8a41bf49c46251",
+        "references/rendering-and-delivery.md": "7f141c657d845a9cf15a0df5d7174bec13515d8ab00796c43ee7a36a400f46e5"
+      },
+      "compiledFolderSha256": "f304604cab2407ddfac5a630e6f16b7467200d4ee899e6f35c5fe67859996ddc",
+      "compiledFiles": {
+        "README.md": "ca26658443d50ca0a2918a8bfed26d4046ef966f6379081c7fcc3e5ac745e371",
+        "SKILL.md": "9a5d37237df1cbca8c7635f954714a35e40088642c914dae333579d62d84d3f8",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "b2458cb333ffbf8596673e81d3bdd41ce18945d4ce95f0d5d04874bbe5ffba79",
+        "references/document-contract.md": "68929f7c9976598b5df26bb00dad0c48041d45dc8ddce461eb8a41bf49c46251",
+        "references/rendering-and-delivery.md": "7f141c657d845a9cf15a0df5d7174bec13515d8ab00796c43ee7a36a400f46e5"
+      }
+    },
+    {
+      "name": "push-post-pr",
+      "source": "seven",
+      "folder": "skills/push-post-pr",
+      "folderSha256": "be02a919cdeba28072b4f0c841dcdf72249e09e8840d3346661dc7e3f75faec3",
+      "files": {
+        "README.md": "2e86ff1075613f859bb105b07726b7b4635e89d86d09a502dfe1c78cfd4a848f",
+        "SKILL.md": "acc3b95fad30bce2f9303739e1ef5c87716cb05ba42e590e8faff0d19f33ad7b",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "8a0d8be7938c9195fd3b2b0ec7cdbdd7e6440a09578b5cc9c87b14bd3f28486e",
+        "references/shell-execution.md": "5cd73bed9648c258bd701c0c8fe813e0e8b0d483b9e91ca2f49fd84ea7b8ab69"
+      },
+      "compiledFolderSha256": "be02a919cdeba28072b4f0c841dcdf72249e09e8840d3346661dc7e3f75faec3",
+      "compiledFiles": {
+        "README.md": "2e86ff1075613f859bb105b07726b7b4635e89d86d09a502dfe1c78cfd4a848f",
+        "SKILL.md": "acc3b95fad30bce2f9303739e1ef5c87716cb05ba42e590e8faff0d19f33ad7b",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "8a0d8be7938c9195fd3b2b0ec7cdbdd7e6440a09578b5cc9c87b14bd3f28486e",
+        "references/shell-execution.md": "5cd73bed9648c258bd701c0c8fe813e0e8b0d483b9e91ca2f49fd84ea7b8ab69"
+      }
+    },
+    {
+      "name": "start-from-matt",
+      "source": "seven",
+      "folder": "skills/start-from-matt",
+      "folderSha256": "092e0de7e7bfc11b32673b274acc3c35f5093c19829531b54c8536ed16658fd3",
+      "files": {
+        "README.md": "e88601201778667a20014fea8207394817d5ad20fa128fecc1152cb671117078",
+        "SKILL.md": "ec9ec6343b99c0b7042eb02228bae1573aa0e48cb0d4dc534c59cc52aaac6583",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "28b4c802e576665dd815a68dd11458958278bace33df576abdbeacf3504033a2"
+      },
+      "compiledFolderSha256": "092e0de7e7bfc11b32673b274acc3c35f5093c19829531b54c8536ed16658fd3",
+      "compiledFiles": {
+        "README.md": "e88601201778667a20014fea8207394817d5ad20fa128fecc1152cb671117078",
+        "SKILL.md": "ec9ec6343b99c0b7042eb02228bae1573aa0e48cb0d4dc534c59cc52aaac6583",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "28b4c802e576665dd815a68dd11458958278bace33df576abdbeacf3504033a2"
+      }
+    },
+    {
+      "name": "to-spec-or-ticket",
+      "source": "seven",
+      "folder": "skills/to-spec-or-ticket",
+      "folderSha256": "aa0c90f4161aa337f1fbae542c7b3486b20dc2a70edaecfdbc554c187e0697f1",
+      "files": {
+        "README.md": "294f2396207229e92199df7d3fd4efc09998e16a007286e6c639cf10970deac0",
+        "SKILL.md": "7820f9d90b3d6718da5fd6ee280d6bcafe34bb9dec5c11efe20f28a39f99ba9d",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "483e8d3977c56fee9b82d16557f10a03a42f9074624af62e07fb2b294e5479b9"
+      },
+      "compiledFolderSha256": "aa0c90f4161aa337f1fbae542c7b3486b20dc2a70edaecfdbc554c187e0697f1",
+      "compiledFiles": {
+        "README.md": "294f2396207229e92199df7d3fd4efc09998e16a007286e6c639cf10970deac0",
+        "SKILL.md": "7820f9d90b3d6718da5fd6ee280d6bcafe34bb9dec5c11efe20f28a39f99ba9d",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "483e8d3977c56fee9b82d16557f10a03a42f9074624af62e07fb2b294e5479b9"
+      }
+    },
+    {
+      "name": "write-design-spec-for-user-confirm",
+      "source": "seven",
+      "folder": "skills/write-design-spec-for-user-confirm",
+      "folderSha256": "f1ee581358bc9056ac1b9972cb61e6f129aff01788e525f04c37c8e9ff26adcf",
+      "files": {
+        "README.md": "9e5c03b62308c66efa8b3985670080947613b89b75c9b17abfca77599f9c540b",
+        "SKILL.md": "410ef48f10745b4bd6c2440db4e054e94ef5bbe77269e41db93956998b1ad3fe",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "e2e6cb7ce1118516ac503f5abb1ea9fb1091d511c0a3d6b15f4f0af7248054b8"
+      },
+      "compiledFolderSha256": "f1ee581358bc9056ac1b9972cb61e6f129aff01788e525f04c37c8e9ff26adcf",
+      "compiledFiles": {
+        "README.md": "9e5c03b62308c66efa8b3985670080947613b89b75c9b17abfca77599f9c540b",
+        "SKILL.md": "410ef48f10745b4bd6c2440db4e054e94ef5bbe77269e41db93956998b1ad3fe",
+        "agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+        "evals/evals.json": "e2e6cb7ce1118516ac503f5abb1ea9fb1091d511c0a3d6b15f4f0af7248054b8"
+      }
+    },
+    {
+      "name": "i-have-adhd",
+      "source": "adhd",
+      "folder": "skills/i-have-adhd",
+      "folderSha256": "8bde2852e1062dd5f2528d101fd552adf5dd100fe61c721b7edb9041c59af398",
+      "files": {
+        "SKILL.md": "88955c019bbb1419ff4b49dbb1f80a867467de6233d7865af2e06a7d7b76c7d3",
+        "agents/gemini.toml": "5108a6123beb9df24846e0dd3f902c652d18522dfbc56e5762032ea383041c62",
+        "agents/openai.yaml": "2c51291283dcefdca43ca6b0c08172f225c7c26a9783ec444d6bdfa51ca96f8f"
+      },
+      "compiledFolderSha256": "8bde2852e1062dd5f2528d101fd552adf5dd100fe61c721b7edb9041c59af398",
+      "compiledFiles": {
+        "SKILL.md": "88955c019bbb1419ff4b49dbb1f80a867467de6233d7865af2e06a7d7b76c7d3",
+        "agents/gemini.toml": "5108a6123beb9df24846e0dd3f902c652d18522dfbc56e5762032ea383041c62",
+        "agents/openai.yaml": "2c51291283dcefdca43ca6b0c08172f225c7c26a9783ec444d6bdfa51ca96f8f"
+      }
+    },
+    {
+      "name": "playwright-cli",
+      "source": "playwright",
+      "folder": "skills/playwright-cli",
+      "folderSha256": "f5db8f5534d25ac7b64c84428d2885ea971d4000737eb9c5c389a97a0ca563ef",
+      "files": {
+        "SKILL.md": "9bba755285a4c9ad72a4a41b9c7baef6fb516d329c0b44ed0573715f4479b906",
+        "references/element-attributes.md": "bf19aa4671e0a50a0fefa9c790f39124e803060eefe395042b723c29fcb7faa2",
+        "references/playwright-tests.md": "c5b0719fef2cfdff50bd744051b2f9afc119775db4b48e9b2882c1cf3886797c",
+        "references/pr-attachments.md": "24b118e74598be72e73e24fe223d295b9099c85b1860a7c8f6e5690c9038fa2a",
+        "references/request-mocking.md": "54e801c9663fc2b6d68ceb058cb1c360724c2499f42acc7852a68e83e5b5f37c",
+        "references/running-code.md": "3029569ed6ddaeffc0b87badde967efdc2973b1677f078830098146eb3b78ebe",
+        "references/session-management.md": "a4f16271f95d3eec7bc56e659d8adbb8f6ad7d603a6fa15efdcdd071a50c6ce3",
+        "references/storage-state.md": "9ac47f9ae4a1aedcd2077f8ac9ab1ba6bee1962cb83ff51adcd36fb6d83b5ec6",
+        "references/test-generation.md": "27ecb11ef647999bd7486695bb1aacc3682097e6bb5742804cb6c8769c2b5364",
+        "references/tracing.md": "ef73e71bee792e341df9cd4f60529c929ade48b538ac76e033f4f20843e8dbda",
+        "references/video-recording.md": "1c800b897824cb54394c34265d8ebffdbb530adfc8d612c5d798b667a1799f48"
+      },
+      "compiledFolderSha256": "f5db8f5534d25ac7b64c84428d2885ea971d4000737eb9c5c389a97a0ca563ef",
+      "compiledFiles": {
+        "SKILL.md": "9bba755285a4c9ad72a4a41b9c7baef6fb516d329c0b44ed0573715f4479b906",
+        "references/element-attributes.md": "bf19aa4671e0a50a0fefa9c790f39124e803060eefe395042b723c29fcb7faa2",
+        "references/playwright-tests.md": "c5b0719fef2cfdff50bd744051b2f9afc119775db4b48e9b2882c1cf3886797c",
+        "references/pr-attachments.md": "24b118e74598be72e73e24fe223d295b9099c85b1860a7c8f6e5690c9038fa2a",
+        "references/request-mocking.md": "54e801c9663fc2b6d68ceb058cb1c360724c2499f42acc7852a68e83e5b5f37c",
+        "references/running-code.md": "3029569ed6ddaeffc0b87badde967efdc2973b1677f078830098146eb3b78ebe",
+        "references/session-management.md": "a4f16271f95d3eec7bc56e659d8adbb8f6ad7d603a6fa15efdcdd071a50c6ce3",
+        "references/storage-state.md": "9ac47f9ae4a1aedcd2077f8ac9ab1ba6bee1962cb83ff51adcd36fb6d83b5ec6",
+        "references/test-generation.md": "27ecb11ef647999bd7486695bb1aacc3682097e6bb5742804cb6c8769c2b5364",
+        "references/tracing.md": "ef73e71bee792e341df9cd4f60529c929ade48b538ac76e033f4f20843e8dbda",
+        "references/video-recording.md": "1c800b897824cb54394c34265d8ebffdbb530adfc8d612c5d798b667a1799f48"
+      }
+    },
+    {
+      "name": "web-design-guidelines",
+      "source": "vercel",
+      "folder": "skills/web-design-guidelines",
+      "folderSha256": "f910cd9c88f04e87d03b2b7829b56fcf50b3be4582965f12bc163e3f6b5b59d2",
+      "files": {
+        "SKILL.md": "f4647ca866a3accf763777f83e7682954f0187cd6bea7eea0399796652414e8f"
+      },
+      "compiledFolderSha256": "f910cd9c88f04e87d03b2b7829b56fcf50b3be4582965f12bc163e3f6b5b59d2",
+      "compiledFiles": {
+        "SKILL.md": "f4647ca866a3accf763777f83e7682954f0187cd6bea7eea0399796652414e8f"
+      }
+    }
+  ]
+}

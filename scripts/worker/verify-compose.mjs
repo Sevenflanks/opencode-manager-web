@@ -16,6 +16,11 @@ const repo = fileURLToPath(new URL("../..", import.meta.url))
 const option = (name) => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined }
 const context = option("--context")
 if (!context) throw new Error("必須明確指定 --context <local-docker-context>。")
+const skillsContext = option("--skills-context")
+if (process.argv.includes("--skills-context") && (!skillsContext?.trim() || skillsContext.startsWith("--"))) throw new Error("--skills-context 必須指定 <private-worker-skills> 路徑。")
+const composeFile = path.join(repo, "deploy/worker/compose.yaml")
+const selectedComposeFiles = [composeFile, ...(skillsContext ? [path.join(repo, "deploy/worker/compose.skills-build.yaml")] : [])]
+const contextpathOnly = skillsContext ? path.resolve(skillsContext) : undefined
 const project = `omw-verify-${randomBytes(8).toString("hex")}`
 const runDirectory = await mkdtemp(path.join(os.tmpdir(), `${project}-`))
 const evidencePath = path.join(runDirectory, "evidence.json")
@@ -65,7 +70,7 @@ try {
   token = (await readFile(secrets.tokenFile, "utf8")).trimEnd()
   password = (await readFile(secrets.passwordFile, "utf8")).trimEnd()
   basic = `Basic ${Buffer.from(`worker:${password}`).toString("base64")}`
-  const binding = { context, project, repo, image, envFile: secrets.envFile, composeFile: path.join(repo, "deploy/worker/compose.yaml"), secretDirectory,
+  const binding = { context, project, repo, image, envFile: secrets.envFile, composeFile, selectedComposeFiles, contextpathOnly, secretDirectory,
     watchdogMilliseconds: 22 * 60_000, watchdogEvidence: path.join(runDirectory, "watchdog-cleanup.json") }
   owner = dockerOwner(binding)
   await check("explicit-local-context", async () => {

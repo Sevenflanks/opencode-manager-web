@@ -1,0 +1,888 @@
+{
+  "ask-matt": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "32b3c71d6dbb5a7c15147e8a503a9df28e9a567f45eba6a6bb42aa903225c6ff",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "code-review": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "47f4e52c21694def9c7c11cbfbf891ca35eac7a93e395797515be3c8a409ae50",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "codebase-design": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "2c20617f87ec8af6a434859f381b2f061a69b530444e74eb39e78bb016a6d1e2",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "diagnosing-bugs": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "9168404abda0967a5d32977e3498cd95fda6807018852f3de736a78357c82b40",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "domain-modeling": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "7b925d7b1e341a2eeae33ad68a8a8c0ab889a38ddd22a7598e4c240e5a7556a3",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "grill-with-docs": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "7de372c13488f1ee96cc11cd8907b56b6809cc93eef776eeddd37de6b6cbe3fe",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "implement": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "f28bed1a2a7dcf604c802a99869bae9d577b6bfc2061fe655c8b0dbb1ee16cfd",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "implement-spec": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "7a22dd2e60b8fcece478ced9d2533582adf3520d695acd3ab715341535c9e56d",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "improve-codebase-architecture": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "552240a5ab5cec6b67c15dd1ad6e9f6962b1bca6ce870059a8c2713760c20392",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "pr": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "ab63f1cf78647389edcd386c9427c5dfca27ed2836930c24773ffee834c19bcd",
+      "startLine": 11,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "prototype": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "714de632d116bb73f65cdb5a882db15b9369a6713b9a47c0fad827848f0bfbe3",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "research": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "985569f15739c713d6784887c3d186d4ef9ac85bec5ad9c068d25bf0739928e4",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "retro": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "33fbc28568e3146f20fd908b12998bc0ab30aa4f4c87288199a40793efa94696",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "setup-matt-pocock-skills": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "9a0c21694be19fa3eefc39343355d3af7414716ba364882c7432c2f821eac3e9",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "tdd": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "93ea419b76e9caaf26153b828e984f7c3fb136f4caa67b14af95f32ea965a1cc",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "to-spec": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "43ad9cf318e5e7d3d1fa360253a37021796dc87a0c2e595ad262661a10f85088",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "to-tickets": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "56ec23c5b2782785d4e65bff9e315b6d3aeb4ef977c174a219e99489fada1995",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "triage": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "917b0baf74be583e74f110857ed45df2766617f75c00baf61fd136d7af515edf",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "wayfinder": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "fee6e1d0c50f0e736b4ef8a599060c959afae904c9a97d82c97f049fcc3aa0f1",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "wizard": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "bdf31d48211ea559878f95a4f344aeabf8d85897488ba564382bab0b000daac1",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "grill-me": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "caaf8b8de1684f96e26b28f3c29189db5c89cce4b73e1c93d86164f66ef88637",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "grilling": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "handoff": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "4cbb043950dad2ffd3662ff1a5a0b51ae676004b5cae10e3787e8ee7a4ee69d3",
+      "startLine": 7,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "teach": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "a32df9dcdfc0c4fdc1c98e1ed3940c5f56b84c1aa90ff60346f32b8b53915b43",
+      "startLine": 7,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "to-questionnaire": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "b5eb929842ee0e93d867c5e906d183d350f2f2d149eaeaa86967d94d8eda1d3b",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "wait-what": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "d961bb37defd975c539427edb8f450cdbccdcdd552e213c1ece46676a7970905",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "writing-for-agents": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "551adca942227b44192edba88acd4e8db911f0121ce58ad16944ccf6a896a74a",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "git-commit-co-author": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "9befe38f2da6b19533a4bd61f757e23451ad74494f02f5ee219565d181d32f30",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "pr-review": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "e23d009421bff3d99772ba1b59bd33eeaac653f0600d61c106c952ee534a5f99",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "release-workflow": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "458f4d327538e6018014356b01f6f136b095b438533dff7178b12a48e4ead4cd",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "vue-nuxt-test-architecture": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "59b197e91a94c82a60eb3b9a0c34145b3af925f55045fcb137494b8aea128855",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "get-pr-ready": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "f29024a2e24f140309e651cc586ba7ba916e483fd83019a3c6380b2da1548599",
+      "startLine": 8,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "go-for-it": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "9e6e20891ad529ad3665a238c8b692a775bca0f983ca7bd597811c29f58bd9fb",
+      "startLine": 8,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "jenkins": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "10ce835016a12b3217e4cbfb765343cc583a155e6d7e554e475fbfd122088990",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "kibana": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "aea3599663f1e3defd16cebc64604663a19467cbe53d42bab6a2b10b6730cc36",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "kubernetes": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "e297d8848ce899fe970645328963daba6a624f1d473868558e567cb37f078246",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "mantis": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "0b5e6ba793a96eca1cfac68dc886e50f1a35434ee89c9070599d5d175a8bef35",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "erp": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "f4155fe890edac38521dd0af203c299133c2c7d6bb81361afca61cafbd963869",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "github-issue-conventions": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "4f44f1cdb5c016e750a02f8992a8ea5956cf20ae92ef6f6a013fef60f43e5e73",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "explain": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "329be8eaf457e13e21ea17428baa736b0337c30abf9a5638132e6e9d014db12c",
+      "startLine": 5,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "catchup": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "33b6843046c3ad5c3c9681f4ebe65359146ac357af7c57978d8d9df2d05c42a0",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "llms-docs": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "55b1d51ecdac83ee6be7a5c7e76127384f882346837b0215e94c1b2e2facedbd",
+      "startLine": 10,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "re-construct-prompt": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "a37c872e2419069da85fd6927b7514ef24d2584f2cf58a83bebd8ee71f9827d1",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "what-next": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "4e2a50d6dd6c4421e292e2293ad5e22e49a4d5942f75257bd81e7e6e96b14bd1",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "get-pr-ready-remake": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "f580bccd8121a79fb66ea56820febf4bc2e54c58bba65c08b610ac7e6cf4247c",
+      "startLine": 8,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "go-for-it-remake": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "187336fdb16a07b53d6c7b46622257d9a4a6be32aedfbfaef258bb5a33f947e3",
+      "startLine": 8,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "pr-review-remake": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "e3aef2108d5315c8157f62bcd8f6df93afb2b6dc85082b20231dbc9f1e53605c",
+      "startLine": 7,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "simplify": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "dcbb7c292c9cdf0cb933fdb2a155cab7a41cf4d2a8e16ae27a54e0edada65651",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "log-analysis": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "c1edfd57a08d952502e30ff75d59cb830d1d0259d3bb3cf2b793ecbb8f9e5a49",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "gh-body-file": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "2a5b17106314f3cba41165ded9364c181533679126614c677d0ad663b902c9e5",
+      "startLine": 9,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        },
+        {
+          "path": "adapters/gh-body-file-linux.md",
+          "sha256": "4e387f4e381b74106136bc387223266a24a85183e6990c1d396b80ee7fcce23b"
+        }
+      ]
+    }
+  ],
+  "daily-work-log": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "fa92c51c8d4c561eb1e6237505b801cddd4b04dce4b846ad4642534f7917cde0",
+      "startLine": 9,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        },
+        {
+          "path": "adapters/daily-work-log-linux.md",
+          "sha256": "6ffd97aad00a19fe3b44aa2b429423ed05660230fe769665412de3b541314670"
+        }
+      ]
+    },
+    {
+      "file": "scripts/collect-worker-git-evidence.py",
+      "add": true,
+      "adapters": [
+        {
+          "path": "adapters/collect-worker-git-evidence.py",
+          "sha256": "cf8d7368fdacf4f8cd24e31d7e327fdcc8d64a7062f9f28fe17c783e5e77fea3"
+        }
+      ]
+    }
+  ],
+  "code-intent-comments": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "2851d10f063dac104e69ec67897f39e380eff9368696307c733e381790b5e406",
+      "startLine": 9,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "finish-and-admin-merge": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "b6b022f1c0403d96227139f5d11eddabac1a1abdebf2868b3fc970cc628b6be7",
+      "startLine": 10,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "generate-ut-report": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "b85daf186908cfe64a7074d20ce8f67048d9845fac3408972a110a325bdc0880",
+      "startLine": 10,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "make-function-manual-sop": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "9a5d37237df1cbca8c7635f954714a35e40088642c914dae333579d62d84d3f8",
+      "startLine": 10,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "push-post-pr": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "acc3b95fad30bce2f9303739e1ef5c87716cb05ba42e590e8faff0d19f33ad7b",
+      "startLine": 10,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "start-from-matt": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "ec9ec6343b99c0b7042eb02228bae1573aa0e48cb0d4dc534c59cc52aaac6583",
+      "startLine": 10,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "to-spec-or-ticket": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "7820f9d90b3d6718da5fd6ee280d6bcafe34bb9dec5c11efe20f28a39f99ba9d",
+      "startLine": 10,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "write-design-spec-for-user-confirm": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "410ef48f10745b4bd6c2440db4e054e94ef5bbe77269e41db93956998b1ad3fe",
+      "startLine": 10,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "i-have-adhd": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "88955c019bbb1419ff4b49dbb1f80a867467de6233d7865af2e06a7d7b76c7d3",
+      "startLine": 10,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "playwright-cli": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "9bba755285a4c9ad72a4a41b9c7baef6fb516d329c0b44ed0573715f4479b906",
+      "startLine": 6,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ],
+  "web-design-guidelines": [
+    {
+      "file": "SKILL.md",
+      "beforeSha256": "f4647ca866a3accf763777f83e7682954f0187cd6bea7eea0399796652414e8f",
+      "startLine": 9,
+      "deleteLines": 0,
+      "adapters": [
+        {
+          "path": "adapters/worker-runtime.md",
+          "sha256": "bd4ff9e5beadac6e3eefcf0b18e3d48ede7e9ff81e6729b8218675b93eec7dae"
+        }
+      ]
+    }
+  ]
+}
