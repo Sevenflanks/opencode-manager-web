@@ -16,6 +16,8 @@ export interface LaunchResult {
   instanceId: string
 }
 export interface InspectResult {
+  // 遠端 runtime 的 stopped recovery 必須在 execution 的網路環境核對，缺值不可回退 Manager loopback。
+  portAvailable?: boolean
   processState?: "running" | "not-found" | "unknown"
   running: boolean
   matched: boolean

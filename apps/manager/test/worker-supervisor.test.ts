@@ -4,7 +4,32 @@ import { buildExecutionApp } from "../src/worker/supervisor.js"
 import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { createServer } from "node:net"
 import { localDirectories } from "../src/directory.js"
+
+test("same-epoch not-found inspection proves port availability in execution network only", async () => {
+  const listener = createServer()
+  await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve))
+  const port = (listener.address() as { port: number }).port
+  const app = buildExecutionApp({ token: "a".repeat(32), executable: process.execPath, runtimePort: port })
+  const headers = { authorization: `Bearer ${"a".repeat(32)}` }
+  try {
+    const epoch = (await app.inject({ url: "/v1/execution", headers })).json().epoch
+    const inspect = (scope: string) => app.inject({ method: "POST", url: "/v1/inspect", headers, payload: { epoch: scope, instanceId: "stopped" } })
+    const busy = (await inspect(epoch)).json()
+    assert.equal(busy.processState, "not-found")
+    assert.equal(busy.matched, false)
+    assert.equal(busy.portAvailable, false)
+    await new Promise<void>((resolve) => listener.close(() => resolve()))
+    assert.equal((await inspect(epoch)).json().portAvailable, true)
+    const stale = (await inspect("stale")).json()
+    assert.equal(stale.processState, "unknown")
+    assert.notEqual(stale.portAvailable, true)
+  } finally {
+    if (listener.listening) await new Promise<void>((resolve) => listener.close(() => resolve()))
+    await app.close()
+  }
+})
 
 test("authenticated direct Start rejects a canonical directory outside workspace before accepting an attempt", async () => {
   const disk = await mkdtemp(path.join(tmpdir(), "omw-start-boundary-"))

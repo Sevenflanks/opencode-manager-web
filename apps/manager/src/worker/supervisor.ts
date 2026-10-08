@@ -1,4 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto"
+import { createServer } from "node:net"
 import Fastify from "fastify"
 import { spawn, type ChildProcess } from "node:child_process"
 import { readdir, readFile, readlink } from "node:fs/promises"
@@ -9,6 +10,15 @@ import { proxyRuntime, proxyRuntimeUpgrade } from "./proxy.js"
 import { localDirectories, type DirectoryPort } from "../directory.js"
 import { ManagerError } from "../errors.js"
 import { resolveStartDirectory } from "./directory.js"
+
+// Compose 的 Manager 與 execution 可分屬不同 network namespace；port-free 必須由 listener 所在端證明。
+function runtimePortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer()
+    server.once("error", () => resolve(false))
+    server.listen(port, "127.0.0.1", () => server.close((error) => resolve(!error)))
+  })
+}
 
 export interface ExecutionOptions {
   token: string
@@ -176,7 +186,8 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
   })
   app.post<{ Body: Identity }>("/v1/inspect", async (request) => {
     if (!request.body || request.body.epoch !== epoch) return { processState: "unknown", running: false, matched: false, portOwnerMatched: false, portOwnedByOther: false }
-    if (!matches(request.body)) return { processState: "not-found", running: false, matched: false, portOwnerMatched: false, portOwnedByOther: false }
+    if (!matches(request.body)) return { processState: "not-found", running: false, matched: false, portOwnerMatched: false, portOwnedByOther: false,
+      portAvailable: !mutation && await runtimePortAvailable(options.runtimePort) }
     const members = await namespaceProcesses()
     const running = members.length > 0
     const owners = await listenerOwners(options.runtimePort)
@@ -184,7 +195,7 @@ export function buildExecutionApp(options: ExecutionOptions, directories: Direct
     const portOwnerMatched = rootRunning && listenerIdentity !== null && owners.length === 1 && owners[0] === listenerIdentity
     return { processState: running ? "running" : "not-found", running, matched: running,
       portOwnerMatched, portOwnedByOther: owners.length > 0 && !portOwnerMatched && rootRunning, rootRunning,
-      managedProcessCount: members.length }
+      managedProcessCount: members.length, portAvailable: !running && !mutation && await runtimePortAvailable(options.runtimePort) }
   })
   app.post<{ Body: Identity }>("/v1/stop", async (request, reply) => {
     const failedAttemptMatches = request.body?.epoch === epoch && !current && lastAcceptedAttempt?.stopped === true

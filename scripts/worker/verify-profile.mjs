@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { randomBytes } from "node:crypto"
+import { randomBytes, createHash } from "node:crypto"
 import { spawn } from "node:child_process"
 import { mkdtemp, mkdir, readFile, writeFile, rm, readlink, chmod, stat, readdir } from "node:fs/promises"
 import os from "node:os"
@@ -8,13 +8,31 @@ import { fileURLToPath } from "node:url"
 import { setTimeout as delay } from "node:timers/promises"
 import { initializeWorker } from "./bootstrap.mjs"
 import { dockerOwner } from "./docker-owner.mjs"
+import { bundleInventory, profileRoles, excludedSkills, permissionAction, bootstrapSummary, anonymousContext7Definitions, context7ToolNames } from "./verify-skills-profile.mjs"
+import { auditCompiled } from "./skills-bundle-audit.mjs"
 
 const repo = fileURLToPath(new URL("../..", import.meta.url))
 const option = name => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined }
 const acpTools = ["compress", "decompress", "search_context", "acp_status", "acp_context_recap"]
-const curatedSkills = ["development-test", "git-github-workflow", "git-commit-co-author", "linux-process-lifecycle", "officecli", "officecli-docx", "officecli-xlsx", "officecli-pptx"]
 const allowed = ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "GH_TOKEN", "GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL", "JAVA_HOME", "MAVEN_HOME", "OFFICECLI_SKIP_UPDATE", "OFFICECLI_NO_AUTO_INSTALL", "OFFICECLI_NO_AUTO_RESIDENT"]
 const forbidden = ["OMW_BROWSER_PASSWORD", "OMW_BROWSER_PASSWORD_FILE", "OMW_EXECUTION_TOKEN", "OMW_EXECUTION_TOKEN_FILE", "OMW_AUTH_SEED_FILE", "OMW_GITHUB_TOKEN_FILE", "OMW_WORKER_PROFILE_SOURCE", "OMW_WORKER_DEPENDENCIES_SOURCE", "UNRELATED_FIXTURE_ENV"]
+
+async function sourceHashes() {
+  const hashes = {}
+  // 與 Docker allowlist 相同範圍；不讀 credentials、生成物或 host private bundle。
+  const excluded = /^(?:node_modules|dist|test-results|playwright-report|\.runs|\.git|prototypes|\.omw|\.scratch|\.serena|\.ssh|\.config|\.local|\.cache|auth\.json)$|^\.env(?:\.|$)|secret|\.(?:log|pem|key)$|\.(?:sqlite|db)(?:-|$)/
+  const walk = async relative => {
+    for (const entry of await readdir(path.join(repo, relative), { withFileTypes: true })) {
+      if (excluded.test(entry.name)) continue
+      const file = `${relative}/${entry.name}`
+      if (entry.isDirectory()) await walk(file)
+      else if (entry.isFile()) hashes[file] = createHash("sha256").update(await readFile(path.join(repo, file))).digest("hex")
+    }
+  }
+  for (const root of ["apps", "packages", "scripts", "deploy/worker"]) await walk(root)
+  for (const file of ["package.json", "package-lock.json", "tsconfig.base.json", ".dockerignore"]) hashes[file] = createHash("sha256").update(await readFile(path.join(repo, file))).digest("hex")
+  return Object.fromEntries(Object.entries(hashes).sort(([a], [b]) => a.localeCompare(b)))
+}
 
 async function nativeShellSmoke(request) {
   const session = await request("/session", { title: "offline native toolchain" })
@@ -24,6 +42,7 @@ async function nativeShellSmoke(request) {
     ...["gh", "java", "javac", "mvn", "officecli", "node", "python3", "git"].map(name =>
       `location=$(command -v ${name} || true); printf "LOOKUP ${name}=%s\\n" "$location"; ${name} ${name === "java" || name === "javac" ? "-version" : "--version"}; printf "EXIT ${name}=%s\\n" "$?"`),
     'printf "JAVA_HOME="; test "$JAVA_HOME" = /opt/omw-worker/toolchain/java && echo fixed || echo wrong',
+    `python3 -B -c 'import requests, yaml; print("NATIVE_PYTHON_IMPORTS="+requests.__version__+","+yaml.__version__)'; printf "PYTHON_IMPORT_EXIT=%s\\n" "$?"`,
     'scratch=$(mktemp -d); printf "class NativeSmoke { public static void main(String[] args) { System.out.print(25); } }" > "$scratch/NativeSmoke.java"; javac --release 25 -d "$scratch" "$scratch/NativeSmoke.java" && java -cp "$scratch" NativeSmoke; printf "\\nCOMPILER_EXIT=%s\\n" "$?"; rm -rf "$scratch"',
     ...["java", "javac", "mvn", "gh"].map(name => `test ! -w "$(readlink -f "$(command -v ${name})")"; printf "READONLY ${name}=%s\\n" "$?"`),
     'test ! -w /usr/local/bin && test ! -w /opt/omw-worker/toolchain && test ! -w "$JAVA_HOME/bin"; printf "IMAGE_BIN_BOUNDARY=%s\\n" "$?"',
@@ -45,6 +64,8 @@ async function nativeShellSmoke(request) {
     assert.match(output, new RegExp(`EXIT ${name}=0\\b`), `${name} version failed`)
   }
   assert.match(output, /JAVA_HOME=fixed/)
+  assert.match(output, /NATIVE_PYTHON_IMPORTS=2\.28\.1,6\.0/)
+  assert.match(output, /PYTHON_IMPORT_EXIT=0\b/)
   assert.match(output, /javac 25\./)
   assert.match(output, /Apache Maven 3\.9\.11/)
   assert.match(output, /Java version: 25\./)
@@ -56,7 +77,7 @@ async function nativeShellSmoke(request) {
   assert.equal(result.info.cost, 0)
   assert.equal(result.info.tokens.input, 0)
   assert.equal(result.info.tokens.output, 0)
-  return { shell: "native-login", tools: 8, modelCalls: 0, pathOverride: false }
+  return { shell: "native-login", tools: 8, pythonImports: { requests: "2.28.1", yaml: "6.0" }, modelCalls: 0, pathOverride: false }
 }
 
 async function linuxSmoke(fixtureOnly) {
@@ -107,7 +128,7 @@ async function linuxSmoke(fixtureOnly) {
   const controlToken = "synthetic-profile-control-32-characters"
   const nativeOrigin = "http://127.0.0.1:41966"
   let app, identity
-  const deadline = setTimeout(() => process.exit(124), 75_000)
+  const deadline = setTimeout(() => process.exit(124), fixtureOnly ? 75_000 : 120_000)
   const checks = []
   try {
     let executable = "/usr/local/bin/opencode", args
@@ -146,9 +167,9 @@ async function linuxSmoke(fixtureOnly) {
     assert.equal(info.capacity, "available", "bootstrap/build helpers 不可留在 execution namespace")
     identity = { epoch: info.epoch, instanceId: "profile-smoke" }
     await control("/v1/start", { ...identity, directory: "/workspace" })
-    const get = async (pathname, body) => {
+    const get = async (pathname, body, timeout = 35_000) => {
       const response = await fetch(nativeOrigin + pathname, { headers: { authorization: `Basic ${Buffer.from("fixture:synthetic-browser-fixture").toString("base64")}`, origin: nativeOrigin, "content-type": "application/json" },
-        ...(body ? { method: "POST", body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(35_000) })
+        ...(body ? { method: "POST", body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeout) })
       assert.equal(response.status, 200, `native ${pathname}`)
       return response.json()
     }
@@ -174,12 +195,49 @@ async function linuxSmoke(fixtureOnly) {
       assert.ok(config.instructions.includes(`${runtime}/AGENTS.md`))
       assert.ok(config.skills.paths.includes(`${runtime}/skills`))
       const skills = await get("/skill")
-      for (const name of curatedSkills) assert.ok(skills.some(skill => skill.name === name && skill.description), `skill missing: ${name}`)
+      const inventory = await bundleInventory("/opt/omw-worker/skills-bundle", runtime)
+      assert.equal(new Set(skills.map(skill => skill.name)).size, skills.length)
+      console.log(JSON.stringify({ nativeSkillNames: skills.map(skill => skill.name) }))
+      const builtinSkills = skills.filter(skill => !inventory.profileNames.includes(skill.name)).map(skill => skill.name)
+      assert.deepEqual(builtinSkills, ["customize-opencode"], "fixed native built-in skill baseline")
+      assert.equal(skills.filter(skill => inventory.profileNames.includes(skill.name)).length, 66)
+      for (const name of inventory.profileNames) {
+        const skill = skills.find(skill => skill.name === name)
+        assert.ok(skill?.description, `skill missing: ${name}`)
+        assert.ok(skill.location.startsWith(`${runtime}/skills/`), `absolute skill location: ${name}`)
+      }
+      for (const name of excludedSkills) assert.ok(!skills.some(skill => skill.name === name))
+      const agents = await get("/agent")
+      assert.equal(config.subagent_depth, 1)
+      for (const name of profileRoles) {
+        const agent = agents.find(agent => agent.name === name)
+        assert.equal(agent?.mode, "subagent", name)
+        for (const target of [...profileRoles, "unconfigured-role"]) assert.equal(permissionAction(agent.permission, "task", target), "deny", `${name} -> ${target}`)
+      }
+      const plan = agents.find(agent => agent.name === "plan")
+      for (const name of ["general", "general-simple", "general-complex"]) assert.equal(permissionAction(plan.permission, "task", name), "deny")
+      const sourceConfig = JSON.parse(await readFile(`${runtime}/opencode.json`, "utf8"))
+      assert.equal(config.mcp.context7.enabled, sourceConfig.mcp.context7.enabled)
+      assert.equal(config.mcp.context7.enabled, true)
+      assert.equal(config.mcp.context7.oauth, false)
+      assert.equal(config.mcp.context7.headers, undefined)
+      const mcp = await get("/mcp", undefined, 20_000)
+      console.log(JSON.stringify({ nativeContext7: mcp.context7 }))
+      assert.equal(mcp.context7.status, "connected", `native Context7 unavailable: ${JSON.stringify(mcp.context7)}`)
+      const directDefinitions = await anonymousContext7Definitions()
+      for (const name of context7ToolNames) {
+        for (const role of ["explore", "scout", "verifier"]) assert.equal(permissionAction(agents.find(agent => agent.name === role).permission, `context7_${name}`, "*"), "ask")
+      }
       const commands = await get("/command")
-      for (const name of ["task-plan", "verify", "deliver", "acp"]) assert.ok(commands.some(command => command.name === name), `command missing: ${name}`)
-      checks.push({ name: "native-offline-profile", version: health.version, compactionAuto: config.compaction.auto,
-        acpTools: ids.filter(id => acpTools.includes(id)), skills: skills.filter(skill => curatedSkills.includes(skill.name)).map(skill => skill.name),
-        commands: commands.filter(command => ["task-plan", "verify", "deliver", "acp"].includes(command.name)).map(command => command.name),
+      assert.ok(commands.some(command => command.name === "acp"), "ACP command missing")
+      for (const name of ["task-plan", "verify", "deliver"]) assert.ok(!commands.some(command => command.name === name), `obsolete command: ${name}`)
+      checks.push({ name: "native-profile-and-anonymous-context7", version: health.version, compactionAuto: config.compaction.auto,
+        acpTools: ids.filter(id => acpTools.includes(id)), skills: inventory.profileNames, builtinSkills, inventory,
+        agents: profileRoles, permissionEvidence: "native-effective-config-and-agent-rules-only; no LLM delegation", subagentDepth: config.subagent_depth,
+        context7: { enabled: true, oauth: false, status: mcp.context7.status, nativeConnectionVerified: true,
+          nativeToolMetadataHTTPAvailable: false, expectedNativeToolIDs: context7ToolNames.map(name => `context7_${name}`),
+          limitation: "1.18.34 /experimental/tool/ids 與 /experimental/tool 只列 builtin/plugin，未直接觀察 native MCP cached definitions；不冒稱模型工具已呼叫", directDefinitions },
+        commands: commands.map(command => command.name),
         responseCounts: { tools: ids.length, skills: skills.length, commands: commands.length }, ordinaryConfigMerged: true })
       checks.push({ name: "native-shell-toolchain", ...await nativeShellSmoke(get) })
     }
@@ -216,6 +274,8 @@ async function linuxSmoke(fixtureOnly) {
 async function hostVerification() {
   const context = option("--context")
   if (!context) throw new Error("必須明確指定 --context <local-docker-context>。")
+  const skillsContext = option("--skills-context")
+  if (!skillsContext && !option("--image")) throw new Error("build 必須指定 --skills-context <private-worker-skills>；沒有 wrapper／網路 latest fallback。")
   const project = `omw-verify-${randomBytes(8).toString("hex")}`
   const image = `${project}:verification`
   const runDirectory = await mkdtemp(path.join(os.tmpdir(), `${project}-profile-`))
@@ -229,17 +289,20 @@ async function hostVerification() {
     watchdogEvidence: path.join(runDirectory, "watchdog-cleanup.json") }
   const owner = dockerOwner(binding)
   const evidence = { project, context, image, startedAt: new Date().toISOString(), checks: [], versions: {}, noModelCalls: true, noCredentials: true }
+  evidence.sourceFiles = await sourceHashes()
+  evidence.sourceFilesSha256 = createHash("sha256").update(JSON.stringify(evidence.sourceFiles)).digest("hex")
   let watchdog, authorized = false
   const save = () => writeFile(evidencePath, JSON.stringify(evidence, null, 2))
   const check = async (name, operation) => {
     const started = Date.now()
+    const progress = setInterval(() => console.log(`RUN ${name} ${Math.round((Date.now() - started) / 1000)}s`), 20_000)
     try { const detail = await operation(); evidence.checks.push({ name, status: "passed", milliseconds: Date.now() - started, detail }); console.log(`PASS ${name}`) }
     catch (error) {
       const message = ["synthetic-public-fixture-token", "synthetic-profile-control-32-characters", "synthetic-browser-fixture"].reduce((text, value) => text.replaceAll(value, "[REDACTED]"), error.message)
       evidence.checks.push({ name, status: "failed", milliseconds: Date.now() - started, error: message })
       throw new Error(`驗證失敗：${name}：${message}`)
     }
-    finally { await save() }
+    finally { clearInterval(progress); await save() }
   }
   try {
     await check("explicit-local-context", async () => {
@@ -255,6 +318,8 @@ async function hostVerification() {
     evidence.lifecycle = { applicable: true, platform: "Windows", selected_tier: "external-launcher", owner_binding: { kind: "official-interface-current-run", project, image },
       final_disposition: { requested: "Stop", status: "planned" }, os_inspection_performed: false, lifecycle_shell_calls: [], downstream_result: null,
       watchdog: { deadlineMilliseconds: binding.watchdogMilliseconds, evidencePath: binding.watchdogEvidence } }
+    await save()
+    console.log(`Ownership: ${bindingFile}`)
     const reuse = option("--image")
     if (reuse) {
       await check("reuse-fixed-image", async () => {
@@ -264,8 +329,20 @@ async function hostVerification() {
         return { imageId: id }
       })
     } else {
+      await check("missing-named-context-fails-closed", async () => {
+        let failure
+        try { await owner.docker(["buildx", "build", "--target", "worker-skills", "-f", "deploy/worker/Dockerfile", "--progress", "plain", "."], 90_000) }
+        catch (error) { failure = error.message }
+        assert.match(failure ?? "", /Missing mandatory --build-context worker-skills=/)
+        assert.doesNotMatch(failure, /load metadata for .*worker-skills:latest/)
+        await writeFile(path.join(runDirectory, "missing-context.log"), failure)
+        return { expectedFailure: true, fallback: "none", networkLatestPull: false }
+      })
+      await check("private-skills-context-audit", async () => {
+        return await auditCompiled(skillsContext)
+      })
       await check("build-full-current-worker-image", async () => {
-        const args = ["build", "--target", "worker", "-f", "deploy/worker/Dockerfile", "-t", image]
+        const args = ["buildx", "build", "--build-context", `worker-skills=${path.resolve(skillsContext)}`, "--target", "worker", "-f", "deploy/worker/Dockerfile", "-t", image, "--output", "type=docker", "--progress", "plain"]
         const cache = option("--cache-from")
         if (cache) args.push("--cache-from", cache)
         const output = await owner.docker([...args, "."], 20 * 60_000)
@@ -276,19 +353,16 @@ async function hostVerification() {
     evidence.versions.imageId = await owner.docker(["image", "inspect", image, "--format", "{{.Id}}"])
     const run = (name, args, timeout = 100_000) => owner.docker(["run", "--rm", "--init", "--network", "none", "--name", `${project}-${name}`,
       "--label", `com.docker.compose.project=${project}`, "--entrypoint", "/usr/bin/timeout", image, "--signal=TERM", "--kill-after=5s", "90s", "node", ...args], timeout)
-    if (!process.argv.includes("--shell-only")) await check("linux-bootstrap-20-zero-skips", async () => {
+    if (!process.argv.includes("--shell-only")) await check("linux-bootstrap-current-zero-skips", async () => {
       const output = await run("bootstrap", ["--test", "scripts/worker/bootstrap.test.mjs"])
       await writeFile(path.join(runDirectory, "bootstrap.log"), output)
-      assert.match(output, /(?:#|ℹ) pass 20\b/)
-      assert.match(output, /(?:#|ℹ) fail 0\b/)
-      assert.match(output, /(?:#|ℹ) skipped 0\b/)
-      return { passed: 20, failed: 0, skipped: 0 }
+      return bootstrapSummary(output)
     })
-    for (const mode of process.argv.includes("--shell-only") ? ["native"] : ["fixture", "native"]) await check(`${mode}-profile-no-network`, async () => {
+    for (const mode of process.argv.includes("--shell-only") ? ["native"] : ["fixture", "native"]) await check(`${mode}-profile-${mode === "native" ? "anonymous-context7" : "no-network"}`, async () => {
       // supervisor 必須直接為 tini child，不能用 timeout/shell 當 namespace owner。
-      const output = await owner.docker(["run", "--rm", "--init", "--network", "none", "--name", `${project}-${mode}`,
+      const output = await owner.docker(["run", "--rm", "--init", "--network", mode === "native" ? "bridge" : "none", "--name", `${project}-${mode}`,
         "--label", `com.docker.compose.project=${project}`, "--mount", `type=bind,source=${path.join(repo, "scripts/worker/verify-profile.mjs")},target=/opt/omw/scripts/worker/verify-profile.mjs,readonly`,
-        "--entrypoint", "node", image, "scripts/worker/verify-profile.mjs", `--${mode}`], 100_000)
+        "--entrypoint", "node", image, "scripts/worker/verify-profile.mjs", `--${mode}`], mode === "native" ? 150_000 : 100_000)
       await writeFile(path.join(runDirectory, `${mode}.log`), output)
       const json = output.split("\n").findLast(line => line.startsWith('{"mode"'))
       assert.ok(json, "profile evidence missing")
@@ -306,7 +380,24 @@ async function hostVerification() {
       const output = await run("toolchain", ["scripts/worker/toolchain-smoke.mjs"])
       return JSON.parse(output)
     })
+    if (!process.argv.includes("--shell-only")) await check("skills-helper-and-playwright-cli", async () => {
+      const output = await owner.docker(["run", "--rm", "--init", "--network", "none", "--user", "1000:1000", "--shm-size", "256m",
+        "--name", `${project}-skills-tools`, "--label", `com.docker.compose.project=${project}`,
+        "--mount", `type=bind,source=${runDirectory},target=/evidence`, "--entrypoint", "/usr/bin/timeout", image,
+        "--signal=TERM", "--kill-after=5s", "160s", "node", "scripts/worker/verify-skills-profile.mjs", "--inside", "/evidence"], 175_000)
+      await writeFile(path.join(runDirectory, "skills-tools.log"), output)
+      return JSON.parse(await readFile(path.join(runDirectory, "skills-tools.json"), "utf8"))
+    })
+    evidence.sourceFilesAfter = await sourceHashes()
+    evidence.sourceChanges = [...new Set([...Object.keys(evidence.sourceFiles), ...Object.keys(evidence.sourceFilesAfter)])]
+      .filter(file => evidence.sourceFiles[file] !== evidence.sourceFilesAfter[file])
+      .map(file => ({ file, before: evidence.sourceFiles[file], after: evidence.sourceFilesAfter[file] }))
+    assert.equal(evidence.sourceChanges.length, 0, "build／smoke 期間 source inputs 已改動，請依 sourceChanges 核對；不能沿用 byte-identical 證據")
+    evidence.sourceInputsUnchanged = true
     evidence.completedAt = new Date().toISOString()
+  } catch (error) {
+    evidence.failure = { message: error.message }
+    throw error
   } finally {
     if (authorized) {
       evidence.cleanup = await owner.cleanup()
@@ -314,7 +405,7 @@ async function hostVerification() {
       if (evidence.lifecycle) {
         evidence.lifecycle.final_disposition.status = evidence.cleanup.status
         evidence.lifecycle.lifecycle_result = { status: evidence.cleanup.status }
-        evidence.lifecycle.downstream_result = { passed: evidence.checks.every(check => check.status === "passed") }
+        evidence.lifecycle.downstream_result = { passed: !evidence.failure && evidence.checks.every(check => check.status === "passed") }
         evidence.lifecycle.minimum_outcomes = Object.fromEntries(["ownership_binding", "stdio", "readiness", "observation", "disposition", "cleanup_or_handoff", "lifecycle_callback"].map(name => [name, "owner handled"]))
       }
     }

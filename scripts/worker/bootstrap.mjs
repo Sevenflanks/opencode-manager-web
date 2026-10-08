@@ -122,7 +122,7 @@ function profileDirectory(environment) {
   if (inside(runtime, global) || inside(global, runtime) || inside(runtime, authPath(environment))) fail("Profile 必須是獨立的工作目錄。")
   return runtime
 }
-async function copyProfile(environment) {
+async function copyProfile(environment, changes) {
   if (environment.OMW_WORKER_PROFILE_SOURCE === undefined) return "absent"
   const source = absolute(environment.OMW_WORKER_PROFILE_SOURCE)
   const runtime = profileDirectory(environment)
@@ -154,9 +154,13 @@ async function copyProfile(environment) {
     }
   }
   const hashes = Object.create(null)
+  const writes = new Map()
+  const removals = new Map()
+  // 全部 collision／移除目標先驗完，避免後段衝突讓設定指向尚未完整更新的 bundle。
   for (const [name, content] of files) {
     const destination = path.join(runtime, name)
     hashes[name] = digest(content)
+    await noSymlinks(destination)
     if (await metadata(destination)) {
       const current = digest(await regular(destination, 16 * 1024 * 1024))
       // 接受操作者已合併或上次部分升級的成果，即使 manifest 還是舊版也可重試。
@@ -167,7 +171,7 @@ async function copyProfile(environment) {
         continue
       }
     }
-    await atomicFile(destination, content)
+    writes.set(destination, content)
   }
   // Manifest 只管理 curated files；cache／使用者新增檔案不做 recursive cleanup。
   for (const name of Object.keys(prior.files)) if (!files.has(name)) {
@@ -177,9 +181,22 @@ async function copyProfile(environment) {
       const info = await lstat(destination)
       if (!info.isFile()) fail("Managed profile file 不是 regular file。")
       owned(info)
-      if (digest(await regular(destination, 16 * 1024 * 1024)) === prior.files[name]) await unlink(destination)
+      if (digest(await regular(destination, 16 * 1024 * 1024)) === prior.files[name]) removals.set(destination, { name, hash: prior.files[name] })
+      else changes.retainedManagedFiles.push({ path: name, reason: "user-modified" })
     }
   }
+  // 維持逐檔 atomic publish 與舊 manifest 的 partial-retry 契約，不做整批 rollback。
+  for (const [destination, content] of writes) await atomicFile(destination, content)
+  for (const [destination, { name, hash }] of removals) {
+    if (!await metadata(destination)) continue
+    owned(await lstat(destination))
+    // 只移除仍等於上次受管內容的 regular file；不跟隨外部 symlink 或清除整個目錄。
+    if (digest(await regular(destination, 16 * 1024 * 1024)) === hash) {
+      await unlink(destination)
+      changes.removedManagedFiles.push(name)
+    } else changes.retainedManagedFiles.push({ path: name, reason: "user-modified" })
+  }
+  // 移除來源後保留的修改檔交還使用者，不再受新 manifest 管理；只在本次升級回報，重啟不重複警告。
   await atomicFile(manifestFile, JSON.stringify({ version: 1, files: hashes }) + "\n")
   environment.OPENCODE_CONFIG = config
   environment.OPENCODE_CONFIG_DIR = runtime
@@ -288,11 +305,14 @@ async function safeStep(message, operation) {
 
 /** 同程序 startup hook；不可把它改成常駐 wrapper，否則會破壞 execution PID ownership。 */
 export async function initializeWorker(environment = process.env) {
+  const profileChanges = { removedManagedFiles: [], retainedManagedFiles: [] }
   const auth = await safeStep("OMW_AUTH_SEED_FILE 初始化失敗：檢查完整 OAuth JSON、來源可讀及私有目的地權限；execution 不啟動。", () => seedAuth(environment))
-  const profile = await safeStep("OMW_WORKER_PROFILE_SOURCE 初始化失敗：檢查 curated source、獨立可寫 profile 與 runtime config 路徑；若來源升級與 runtime 修改分歧，或來源新增檔案與未追蹤同名檔案衝突，請先備份並明確合併為與來源相同的內容後重試；execution 不啟動。", () => copyProfile(environment))
+  const profile = await safeStep("OMW_WORKER_PROFILE_SOURCE 初始化失敗：檢查 curated source、獨立可寫 profile 與 runtime config 路徑；若來源升級與 runtime 修改分歧，或來源新增檔案與未追蹤同名檔案衝突，請先備份並明確合併為與來源相同的內容後重試；execution 不啟動。", () => copyProfile(environment, profileChanges))
+  // Startup caller 可忽略返回值；共同初始化入口仍須讓操作人看到保留原因，只輸出已驗證的受管 relative paths。
+  if (profileChanges.retainedManagedFiles.length) console.warn("[OMW_WORKER_PROFILE_RETAINED] " + JSON.stringify({ count: profileChanges.retainedManagedFiles.length, files: profileChanges.retainedManagedFiles }))
   const dependencies = await safeStep("OMW_WORKER_DEPENDENCIES_SOURCE 初始化失敗：檢查固定 image dependencies 與既有 configdir 的完整離線依賴；execution 不啟動。", () => prepareDependencies(environment))
   const githubStatus = await safeStep("OMW_GITHUB_TOKEN_FILE 初始化失敗：檢查 readonly PAT file 與私有 Git/gh 工作目錄；execution 不啟動。", () => github(environment))
-  return { auth, profile, dependencies, github: githubStatus, environment: {
+  return { auth, profile, profileChanges, dependencies, github: githubStatus, environment: {
     opencodeConfig: Boolean(environment.OPENCODE_CONFIG && environment.OPENCODE_CONFIG_DIR),
     githubToken: Boolean(environment.GH_TOKEN), githubConfig: Boolean(environment.GH_CONFIG_DIR), gitConfig: Boolean(environment.GIT_CONFIG_GLOBAL),
   } }

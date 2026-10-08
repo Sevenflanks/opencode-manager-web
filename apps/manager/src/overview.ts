@@ -117,7 +117,7 @@ export class InstanceOverview {
       state, endpoint: record.endpoint, port: record.port, pid: record.pid, launchedAt: record.launchedAt,
       healthVersion: record.healthVersion, stopAllowed, remoteUrlUnavailableReason, primarySession, primarySummary, trackingHidden,
       recovery: {
-        recheckAllowed: state === "unreachable" || state === "failed",
+        recheckAllowed: state === "unreachable" || state === "failed" || (state === "stopped" && !removeAllowed),
         resumeAllowed: supports(capabilities, "sessions") && primarySession !== null && (state === "unreachable" || state === "stopped"),
         hideAllowed: trackingHidden || state === "unreachable" || state === "failed", removeAllowed,
       },
@@ -139,6 +139,9 @@ function safeStoredError(value: string | null): string | null {
 }
 
 const SAFE_STORED_ERROR_CODES = new Set([
+  "STOPPED_ALLOCATION_IDENTITY_UNVERIFIED",
+  "STOPPED_ALLOCATION_SCOPE_UNVERIFIED",
+  "STOPPED_ALLOCATION_PORT_UNVERIFIED",
   "INSTANCE_IDENTITY_CHECK_FAILED",
   "INSTANCE_IDENTITY_UNVERIFIED",
   "INSTANCE_READINESS_FAILED",
