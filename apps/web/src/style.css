@@ -438,4 +438,5 @@ h3 { font-size: .95rem; }
   text-decoration: none;
 }
 .native-web-link svg { width: 1rem; height: 1rem; flex-shrink: 0; }
+.worker-entry-actions .native-web-link { border-color: transparent; }
 .native-web-link:focus-visible { outline: 2px solid #50c8c6; outline-offset: 2px; }

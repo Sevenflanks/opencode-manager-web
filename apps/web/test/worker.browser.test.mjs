@@ -56,44 +56,69 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
     let page
     let connectivity = structuredClone(workerConnectivity)
     let connectivityFailure = false
+    let connectivityHold = null
     let instances = []
+    let shortcuts = [{ id: "project", name: "Worker shortcut", directory: "/projects/demo" }]
     let stopped = []
     let capacity = { state: "available", maxInstances: 1 }
     let capacityStatus = 200
     let capacityNetworkFailure = false
+    let capacityHold = null
     let overviewStatus = 200
     let startRefusal = false
+    let startDirectoryRefusal = false
+    let shortcutSaveFailure = false
+    let canonicalDirectories = {}
     const capacityRequests = []
     const overviewRequests = []
     const resumedIds = []
     const apiEvents = []
     const startedDirectories = []
+    const directoryRequests = []
     const unsupportedRequests = []
-    const routeApi = route => {
+    const routeApi = async route => {
       const url = new URL(route.request().url())
       apiEvents.push(`${route.request().method()} ${url.pathname}`)
       if (/settings\/credentials|manager\/shutdown|connectivity\/(register|enable)|launcher/.test(url.pathname)) unsupportedRequests.push(url.pathname)
       if (url.pathname === "/api/v1/connectivity") {
+        if (connectivityHold) await connectivityHold
         if (connectivityFailure) return route.fulfill({ status: 503, json: { error: { code: "HTTP_ERROR", message: "unavailable" } } })
         return route.fulfill({ json: connectivity })
       }
       if (url.pathname === "/api/v1/worker/capacity") {
         capacityRequests.push(route.request())
+        if (capacityHold) await capacityHold
         if (capacityNetworkFailure) return route.abort("failed")
         return route.fulfill({ status: capacityStatus, json: capacity, headers: { "cache-control": "no-store" } })
       }
       if (url.pathname === "/api/v1/overview") {
         overviewRequests.push(url)
         return route.fulfill({ status: overviewStatus, json: {
-        shortcuts: [{ id: "project", name: "Worker shortcut", directory: "/projects/demo" }],
+        shortcuts,
         instances: instances.filter(item => (!item.trackingHidden || url.searchParams.get("includeHidden") === "true") && (!url.searchParams.get("q") || item.projectDirectory.includes(url.searchParams.get("q")))),
         history: { total: stopped.length, revision: String(stopped.length) },
         } })
       }
       if (url.pathname === "/api/v1/instances/history") return route.fulfill({ json: { instances: stopped, total: stopped.length, nextOffset: null, revision: String(stopped.length) } })
-      if (url.pathname === "/api/v1/directories") return route.fulfill({ json: { current: "/projects/demo", parent: "/projects", children: [], errors: [] } })
+      if (url.pathname === "/api/v1/directories") {
+        const directory = url.searchParams.get("path")
+        directoryRequests.push(directory)
+        const current = canonicalDirectories[directory] ?? directory
+        return route.fulfill({ json: { current, parent: current === "/workspace" ? null : "/workspace", children: [], errors: [] } })
+      }
+      if (url.pathname.startsWith("/api/v1/shortcuts/") && route.request().method() === "DELETE") {
+        shortcuts = shortcuts.filter(shortcut => shortcut.id !== decodeURIComponent(url.pathname.split("/").at(-1)))
+        return route.fulfill({ status: 204 })
+      }
+      if (url.pathname === "/api/v1/shortcuts" && route.request().method() === "POST") {
+        if (shortcutSaveFailure) return route.fulfill({ status: 400, json: { error: { code: "DIRECTORY_NOT_FOUND", message: "internal execution detail" } } })
+        const shortcut = { id: "new-shortcut", ...route.request().postDataJSON() }
+        shortcuts.push(shortcut)
+        return route.fulfill({ json: shortcut })
+      }
       if (url.pathname === "/api/v1/instances" && route.request().method() === "POST") {
         if (startRefusal) return route.fulfill({ status: 503, json: { error: { code: "WORKER_CAPACITY_UNAVAILABLE", message: "internal execution detail" } } })
+        if (startDirectoryRefusal) return route.fulfill({ status: 400, json: { error: { code: "WORKER_DIRECTORY_OUTSIDE_WORKSPACE", message: "internal execution detail" } } })
         startedDirectories.push(route.request().postDataJSON().directory)
         instances = [instanceFixture("new-live"), ...instances]
         capacity = { state: "occupied", maxInstances: 1 }
@@ -127,6 +152,10 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
       }
       if (url.pathname.endsWith("/primary-todos")) return route.fulfill({ json: { instanceId: decodeURIComponent(url.pathname.split("/").at(-2)), sessionId: "ses-root", todos: [{ content: "Verify Worker task", status: "in_progress", priority: "high" }] } })
       if (url.pathname.endsWith("/open-url")) return route.fulfill({ json: { instanceId: instances[0].id, sessionId: "ses-root", url: "https://native.example.test/project/session/ses-root" } })
+      if (url.pathname.endsWith("/sessions") && route.request().method() === "POST") {
+        instances = [instanceFixture("session-live", "ready", true)]
+        return route.fulfill({ json: { instanceId: "session-live", sessionId: "ses-root", url: "https://native.example.test/project/session/ses-root" } })
+      }
       if (url.pathname.endsWith("/sessions")) return route.fulfill({ json: { roots: [{ id: "ses-root", title: "Saved work" }], unknownParent: [] } })
       if (/^\/api\/v1\/instances\/[^/]+$/.test(url.pathname)) return route.fulfill({ json: [...instances, ...stopped].find(item => item.id === decodeURIComponent(url.pathname.split("/").at(-1))) ?? null })
       return route.fulfill({ status: 404 })
@@ -141,20 +170,196 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
     t.beforeEach(async () => {
       connectivity = structuredClone(workerConnectivity)
       connectivityFailure = false
+      connectivityHold = null
       instances = []
+      shortcuts = [{ id: "project", name: "Worker shortcut", directory: "/projects/demo" }]
       stopped = []
       capacity = { state: "available", maxInstances: 1 }
       capacityStatus = 200
       capacityNetworkFailure = false
+      capacityHold = null
       overviewStatus = 200
       startRefusal = false
+      startDirectoryRefusal = false
+      shortcutSaveFailure = false
+      canonicalDirectories = {}
       capacityRequests.length = 0
       overviewRequests.length = 0
       resumedIds.length = 0
       apiEvents.length = 0
       startedDirectories.length = 0
+      directoryRequests.length = 0
       unsupportedRequests.length = 0
       await freshPage()
+    })
+
+    await t.test("Worker default workspace is browse-only, keyboard accessible, and custom workspace shortcut takes precedence", async () => {
+      shortcuts = []
+      await page.goto(origin)
+      await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
+      let panel = page.getByRole("dialog", { name: "啟動 Instance" })
+      const defaultWorkspace = panel.getByRole("button", { name: /預設工作目錄/ })
+      await defaultWorkspace.waitFor()
+      await panel.locator(".current-directory code").getByText("/workspace", { exact: true }).waitFor()
+      assert.deepEqual(directoryRequests, ["/workspace"], "first open browses root automatically via GET only")
+      assert.equal(await panel.locator(".shortcut-card").count(), 1)
+      assert.equal(await panel.getByText("尚無目錄捷徑，仍可直接瀏覽既有目錄。", { exact: true }).count(), 0)
+      assert.equal(await panel.getByText("1 個", { exact: true }).count(), 1)
+      assert.equal(await panel.getByRole("button", { name: "編輯目錄捷徑" }).count(), 0)
+      assert.equal(await panel.getByRole("button", { name: "移除目錄捷徑" }).count(), 0)
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true)
+      await page.setViewportSize({ width: 1440, height: 900 })
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true)
+      assert.equal(await defaultWorkspace.isVisible(), true)
+      await page.setViewportSize({ width: 390, height: 844 })
+      await defaultWorkspace.focus()
+      await defaultWorkspace.press("Enter")
+      await panel.locator(".current-directory code").getByText("/workspace", { exact: true }).waitFor()
+      assert.deepEqual(directoryRequests, ["/workspace", "/workspace"])
+      await Promise.all([
+        page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/directories"),
+        defaultWorkspace.click(),
+      ])
+      assert.deepEqual(directoryRequests, ["/workspace", "/workspace", "/workspace"])
+      assert.deepEqual(startedDirectories, [])
+      assert.equal(apiEvents.some(event => /^(POST|PATCH|DELETE) \/api\/v1\/shortcuts/.test(event)), false)
+
+      await page.getByRole("button", { name: "關閉啟動面板" }).click()
+      shortcuts = [{ id: "workspace", name: "我的工作區", directory: "/workspace" }]
+      await page.goto(origin)
+      await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
+      panel = page.getByRole("dialog", { name: "啟動 Instance" })
+      assert.equal(await panel.locator(".shortcut-card").count(), 1)
+      assert.equal(await panel.getByRole("button", { name: /預設工作目錄/ }).count(), 0)
+      assert.equal(await panel.getByRole("button", { name: /我的工作區/ }).count(), 1)
+      assert.equal(await panel.getByRole("button", { name: "編輯目錄捷徑" }).count(), 1)
+      assert.equal(await panel.getByRole("button", { name: "移除目錄捷徑" }).count(), 1)
+      await panel.getByRole("button", { name: "編輯目錄捷徑" }).click()
+      assert.equal(await panel.getByRole("textbox", { name: "目錄捷徑名稱" }).inputValue(), "我的工作區")
+      await panel.getByRole("button", { name: "取消", exact: true }).click()
+      await panel.getByRole("button", { name: "移除目錄捷徑" }).click()
+      await page.getByRole("alertdialog").getByRole("button", { name: "移除捷徑", exact: true }).click()
+      await panel.getByRole("button", { name: /預設工作目錄/ }).waitFor()
+      assert.equal(await panel.locator(".shortcut-card").count(), 1)
+      assert.equal(shortcuts.length, 0)
+
+      connectivity = { ...workerConnectivity, mode: "loopback" }
+      shortcuts = []
+      await page.goto(origin)
+      await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
+      panel = page.getByRole("dialog", { name: "啟動 Instance" })
+      assert.equal(await panel.getByRole("button", { name: /預設工作目錄/ }).count(), 0)
+      await panel.getByText("尚無目錄捷徑，仍可直接瀏覽既有目錄。", { exact: true }).waitFor()
+    })
+
+    await t.test("Worker first browse waits for mode and preserves confirmed directory and drafts while shortcut form has deliberate focus", async () => {
+      let release
+      connectivityHold = new Promise(resolve => { release = resolve })
+      await page.goto(origin)
+      await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
+      const panel = page.getByRole("dialog", { name: "啟動 Instance" })
+      assert.deepEqual(directoryRequests, [])
+      connectivityHold = null
+      release()
+      await panel.locator(".current-directory code").getByText("/workspace", { exact: true }).waitFor()
+      assert.deepEqual(directoryRequests, ["/workspace"])
+      assert.equal(await panel.getByRole("textbox", { name: "目錄捷徑名稱" }).count(), 0)
+      assert.equal(await panel.locator(".shortcut-form").isVisible(), false)
+      assert.equal(await panel.getByRole("button", { name: "新增捷徑", exact: true }).getAttribute("aria-expanded"), "false")
+      assert.equal(await panel.evaluate(el => el.contains(document.activeElement) && document.activeElement.tagName !== "INPUT"), true)
+      const pathInput = panel.getByRole("textbox", { name: "瀏覽並啟動" })
+      await pathInput.fill("/workspace/project")
+      await panel.getByRole("button", { name: "瀏覽", exact: true }).click()
+      await panel.locator(".current-directory code").getByText("/workspace/project", { exact: true }).waitFor()
+      await panel.getByRole("button", { name: "關閉啟動面板" }).click()
+      await panel.waitFor({ state: "hidden" })
+      await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
+      assert.equal(await pathInput.inputValue(), "/workspace/project")
+      assert.deepEqual(directoryRequests, ["/workspace", "/workspace/project"])
+      await pathInput.fill("/workspace/draft")
+      await panel.getByRole("button", { name: "關閉啟動面板" }).click()
+      await panel.waitFor({ state: "hidden" })
+      await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
+      assert.equal(await pathInput.inputValue(), "/workspace/draft")
+      assert.deepEqual(directoryRequests, ["/workspace", "/workspace/project"])
+      assert.equal(await panel.getByRole("button", { name: "啟動全新 Instance", exact: true }).count(), 0)
+      await panel.getByRole("button", { name: "編輯目錄捷徑" }).click()
+      const name = panel.getByRole("textbox", { name: "目錄捷徑名稱" })
+      assert.equal(await name.inputValue(), "Worker shortcut")
+      assert.equal(await name.evaluate(el => el === document.activeElement), true)
+      await panel.getByRole("button", { name: "取消", exact: true }).click()
+      assert.equal(await panel.locator(".shortcut-form").isVisible(), false)
+      const add = panel.getByRole("button", { name: "新增捷徑", exact: true })
+      assert.equal(await add.evaluate(el => el === document.activeElement), true)
+      await add.click()
+      assert.equal(await add.getAttribute("aria-expanded"), "true")
+      await name.fill("New shortcut")
+      await panel.getByRole("textbox", { name: "目錄捷徑目錄", exact: true }).fill("/workspace/new")
+      await panel.getByRole("button", { name: "新增目錄", exact: true }).click()
+      await panel.getByRole("button", { name: /New shortcut/ }).waitFor()
+      assert.equal(await panel.locator(".shortcut-form").isVisible(), false)
+      assert.deepEqual(startedDirectories, [])
+    })
+
+    await t.test("Worker workspace guidance uses canonical browse results and root recovery remains GET-only after Start refusal", async () => {
+      canonicalDirectories = { "/workspace/link": "/external/project", "/external/alias": "/workspace/real" }
+      await page.goto(origin)
+      await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
+      const panel = page.getByRole("dialog", { name: "啟動 Instance" })
+      await panel.getByText("Instance 只能在 /workspace 或其子目錄啟動", { exact: true }).waitFor()
+      await panel.locator(".current-directory code").getByText("/workspace", { exact: true }).waitFor()
+      const pathInput = panel.getByRole("textbox", { name: "瀏覽並啟動", exact: true })
+      const browseButton = panel.getByRole("button", { name: "瀏覽", exact: true })
+      const root = panel.getByRole("button", { name: "回到 /workspace", exact: true })
+      await pathInput.fill("/external/unconfirmed")
+      assert.equal(await panel.locator(".workspace-directory-warning").count(), 0, "draft is not canonical evidence")
+      await pathInput.fill("/workspace/link")
+      await browseButton.click()
+      await panel.locator(".current-directory code").getByText("/external/project", { exact: true }).waitFor()
+      await panel.locator(".workspace-directory-warning").waitFor()
+      await root.click()
+      await panel.locator(".current-directory code").getByText("/workspace", { exact: true }).waitFor()
+      assert.equal(await panel.locator(".workspace-directory-warning").count(), 0)
+      await pathInput.fill("/workspace-sibling")
+      await browseButton.click()
+      await panel.locator(".workspace-directory-warning").waitFor()
+      await panel.getByRole("button", { name: "新增捷徑", exact: true }).click()
+      await panel.getByRole("textbox", { name: "目錄捷徑名稱", exact: true }).fill("Outside shortcut")
+      await panel.getByRole("textbox", { name: "目錄捷徑目錄", exact: true }).fill("/workspace-sibling")
+      await panel.getByRole("button", { name: "新增目錄", exact: true }).click()
+      await panel.getByRole("button", { name: /Outside shortcut/ }).waitFor()
+      await pathInput.fill("/external/alias")
+      await browseButton.click()
+      await panel.locator(".current-directory code").getByText("/workspace/real", { exact: true }).waitFor()
+      assert.equal(await panel.locator(".workspace-directory-warning").count(), 0, "canonical result decides, not the requested path")
+      startDirectoryRefusal = true
+      await panel.getByRole("button", { name: "啟動全新 Instance", exact: true }).click()
+      await panel.getByRole("alert").filter({ hasText: "請選擇 /workspace 或其子目錄" }).waitFor()
+      const beforeRoot = apiEvents.length
+      await root.click()
+      await panel.locator(".current-directory code").getByText("/workspace", { exact: true }).waitFor()
+      assert.equal(apiEvents.slice(beforeRoot).some(event => /^(POST|PATCH|DELETE) /.test(event)), false)
+      assert.equal(await panel.getByRole("alert").filter({ hasText: "請選擇 /workspace 或其子目錄" }).isVisible(), true, "navigation must not reinterpret Start outcome as stopped")
+      assert.equal(await page.locator(".toast-error").count(), 0)
+      assert.deepEqual(startedDirectories, [])
+      assert.equal(apiEvents.filter(event => event === "POST /api/v1/instances").length, 1, "only the explicit Start requests a mutation")
+    })
+
+    await t.test("Worker shortcut save failures retain their global error independently of panel Start errors", async () => {
+      shortcutSaveFailure = true
+      await page.goto(origin)
+      await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
+      const panel = page.getByRole("dialog", { name: "啟動 Instance" })
+      await panel.getByRole("button", { name: "新增捷徑", exact: true }).click()
+      await panel.getByRole("textbox", { name: "目錄捷徑名稱", exact: true }).fill("Missing shortcut")
+      await panel.getByRole("textbox", { name: "目錄捷徑目錄", exact: true }).fill("/workspace/missing")
+      await panel.getByRole("button", { name: "新增目錄", exact: true }).click()
+      await page.locator(".toast-error").waitFor()
+      await panel.locator(".lifecycle-error").waitFor()
+      await panel.press("Escape")
+      await panel.waitFor({ state: "hidden" })
+      assert.equal(await page.locator(".toast-error").isVisible(), true, "closing Start panel only clears Start-owned errors")
+      assert.deepEqual(startedDirectories, [])
     })
 
     await t.test("Worker identity is clear across viewport sizes and stale connectivity remains degraded", async () => {
@@ -338,6 +543,45 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
       }
     })
 
+    await t.test("panel recheck restores stale connectivity with fresh capacity and occupied returns to the list without mutations", async () => {
+      await page.clock.install()
+      capacity = { state: "unknown", maxInstances: 1 }
+      await page.goto(origin)
+      await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
+      const panel = page.getByRole("dialog", { name: "啟動 Instance" })
+      await panel.getByRole("button", { name: /預設工作目錄/ }).click()
+      connectivityFailure = true
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+      await page.getByRole("heading", { name: "連線資料已過期", exact: true }).waitFor({ state: "attached" })
+      connectivityFailure = false
+      capacity = { state: "available", maxInstances: 1 }
+      let release
+      capacityHold = new Promise(resolve => { release = resolve })
+      const retry = panel.getByRole("button", { name: "重新檢查", exact: true })
+      const before = capacityRequests.length
+      const pendingCapacity = page.waitForRequest(request => new URL(request.url()).pathname === "/api/v1/worker/capacity")
+      await retry.click()
+      await pendingCapacity
+      assert.equal(await retry.isDisabled(), true)
+      assert.equal(await panel.getByRole("button", { name: "啟動全新 Instance", exact: true }).isDisabled(), true)
+      await retry.evaluate(button => { button.click(); button.click() })
+      assert.equal(capacityRequests.length, before + 1)
+      capacityHold = null
+      release()
+      await panel.getByText("Worker 目前執行環境可用，可啟動或接續 Instance。", { exact: true }).waitFor()
+      assert.equal(await panel.getByRole("button", { name: "啟動全新 Instance", exact: true }).isEnabled(), true)
+      await panel.getByRole("button", { name: "關閉啟動面板" }).click()
+      capacity = { state: "occupied", maxInstances: 1 }
+      instances = [instanceFixture("occupied")]
+      await page.goto(origin)
+      await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
+      await panel.getByRole("button", { name: "返回 Instance 清單", exact: true }).click()
+      await panel.waitFor({ state: "hidden" })
+      assert.equal(await page.locator(".app-root").getAttribute("data-mobile-view"), "list")
+      assert.equal(apiEvents.some(event => /^(POST|PATCH|DELETE) /.test(event)), false)
+      assert.deepEqual(startedDirectories, [])
+    })
+
     await t.test("capacity refresh follows overview, polling and recheck while stale overview still refuses mutations and native root", async () => {
       await page.clock.install()
       instances = [{ ...instanceFixture("lost", "unreachable", true), recovery: { recheckAllowed: true, resumeAllowed: true, hideAllowed: true, removeAllowed: false } }]
@@ -397,7 +641,16 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
         await panel.getByRole("alert").waitFor()
         assert.ok(capacityRequests.length > beforeStart)
         assert.deepEqual(startedDirectories, [])
-        await panel.getByRole("button", { name: "關閉啟動面板" }).click()
+        assert.equal(await page.locator(".toast-error").count(), 0, "start errors belong only to the panel")
+        const close = panel.getByRole("button", { name: "關閉啟動面板" })
+        assert.equal(await close.evaluate(button => {
+          const box = button.getBoundingClientRect()
+          return button.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))
+        }), true)
+        await panel.getByRole("alert").waitFor({ state: "visible" })
+        await close.click()
+        await panel.waitFor({ state: "hidden" })
+        assert.equal(await page.locator(".toast-error").count(), 0)
         capacity = { state: "available", maxInstances: 1 }
         await page.goto(origin)
         await page.getByRole("button", { name: /Worker Project/ }).click()
@@ -437,8 +690,19 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
       instances = [instanceFixture("session-live")]
       await page.goto(origin)
       await page.getByRole("button", { name: /Worker Project/ }).click()
-      await page.locator(".advanced-sessions > summary").click()
+      const primary = page.getByRole("button", { name: "建立入口 Session", exact: true })
+      await primary.waitFor()
+      assert.equal(await page.locator(".primary-actions > :first-child").textContent(), "建立入口 Session")
+      assert.equal(await page.locator(".advanced-sessions").getAttribute("open"), null)
+      const beforeChooser = apiEvents.length
+      await page.getByRole("button", { name: "選擇既有 Session", exact: true }).click()
+      await page.getByRole("button", { name: "切換為入口 Session：Saved work", exact: true }).waitFor()
+      assert.equal(await page.locator(".advanced-sessions").getAttribute("open"), "")
+      assert.equal(await page.locator(".advanced-sessions > summary").evaluate(node => node === document.activeElement && node.getBoundingClientRect().top >= 0 && node.getBoundingClientRect().bottom <= innerHeight), true)
+      assert.equal(apiEvents.slice(beforeChooser).some(event => /^(POST|PATCH|DELETE) /.test(event)), false)
+      assert.equal(await page.getByRole("alertdialog").count(), 0)
       await page.getByRole("button", { name: "切換為入口 Session：Saved work", exact: true }).click()
+      assert.equal(apiEvents.some(event => event === "POST /api/v1/instances/session-live/primary-session"), false)
       await page.getByRole("alertdialog").getByRole("button", { name: "切換", exact: true }).click()
       await page.getByRole("heading", { name: "Saved work", exact: true }).waitFor()
       await page.getByText("Verify Worker task", { exact: true }).waitFor()
@@ -446,6 +710,30 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
       await page.getByRole("button", { name: "進入入口 Session", exact: true }).click()
       const popup = await popupPromise
       await popup.waitForURL("https://native.example.test/project/session/ses-root")
+      await popup.close()
+    })
+
+    await t.test("Worker entry Session creation retains explicit confirmation and native provider access", async () => {
+      instances = [instanceFixture("session-live")]
+      await page.goto(origin)
+      await page.getByRole("button", { name: /Worker Project/ }).click()
+      const create = page.getByRole("button", { name: "建立入口 Session", exact: true })
+      await create.click()
+      assert.equal(apiEvents.some(event => event === "POST /api/v1/instances/session-live/sessions"), false)
+      await page.getByRole("alertdialog").getByRole("button", { name: "取消", exact: true }).click()
+      await page.getByRole("alertdialog").waitFor({ state: "hidden" })
+      assert.equal(await create.evaluate(node => node === document.activeElement), true)
+      await page.getByRole("link", { name: "開啟原生 OpenCode Web", exact: true }).waitFor()
+      await page.getByText("Provider 登入與重新登入請在原生 OpenCode Web 中操作。", { exact: true }).waitFor()
+      await create.click()
+      const popupPromise = page.context().waitForEvent("page")
+      await page.getByRole("alertdialog").getByRole("button", { name: "建立並開啟", exact: true }).click()
+      const popup = await popupPromise
+      await popup.waitForURL("https://native.example.test/project/session/ses-root")
+      await page.getByRole("heading", { name: "Saved work", exact: true }).waitFor()
+      assert.equal(apiEvents.filter(event => event === "POST /api/v1/instances/session-live/sessions").length, 1)
+      await page.getByRole("button", { name: "進入入口 Session", exact: true }).waitFor()
+      assert.equal(await create.count(), 0)
       await popup.close()
     })
 
@@ -500,6 +788,11 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
       await settings.getByRole("button", { name: "關閉 OMW 設定" }).click()
       await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
       const panel = page.getByRole("dialog", { name: "啟動 Instance" })
+      await panel.getByRole("textbox", { name: "目錄捷徑名稱", exact: true }).waitFor()
+      assert.equal(await panel.getByRole("textbox", { name: "目錄捷徑名稱", exact: true }).evaluate(node => node === document.activeElement), true)
+      assert.equal(await panel.getByRole("button", { name: "新增捷徑", exact: true }).count(), 0)
+      assert.equal(await panel.getByRole("button", { name: "重新檢查", exact: true }).count(), 0)
+      assert.equal(await panel.getByRole("button", { name: "返回 Instance 清單", exact: true }).count(), 0)
       await panel.getByRole("button", { name: /Worker shortcut/ }).click()
       await panel.getByRole("button", { name: "啟動全新 Instance", exact: true }).click()
       await page.getByRole("heading", { name: "demo", exact: true }).waitFor()
