@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.6.1...v0.7.0) (2026-10-08)
+
+
+### Features
+
+* **worker:** Linux 開發 profile 與獨立授權初始化 ([#106](https://github.com/Sevenflanks/opencode-manager-web/issues/106)) ([05e77de](https://github.com/Sevenflanks/opencode-manager-web/commit/05e77de38d007c7086b7d47ce800c26a684c40d4))
+* **worker:** 完成 Linux Worker、Compose 與真實訂閱驗收 ([#103](https://github.com/Sevenflanks/opencode-manager-web/issues/103)) ([ece9cdd](https://github.com/Sevenflanks/opencode-manager-web/commit/ece9cdd4fb7f2cd3acc8aa40b27fc8f73dfb2aab))
+* **worker:** 完成 SLKE 多 Worker 部署與 SSO 驗收 ([#107](https://github.com/Sevenflanks/opencode-manager-web/issues/107)) ([3f7ee51](https://github.com/Sevenflanks/opencode-manager-web/commit/3f7ee51b4278bbfd3a52f3f2323ee51195f53ba4)), closes [#102](https://github.com/Sevenflanks/opencode-manager-web/issues/102)
+* **worker:** 預載完整 skills bundle 與 Linux 工作流程工具 ([#109](https://github.com/Sevenflanks/opencode-manager-web/issues/109)) ([10ed6aa](https://github.com/Sevenflanks/opencode-manager-web/commit/10ed6aa2628fae71a8b36520109fa712069a7c5f))
+
+
+### Bug Fixes
+
+* **worker:** 統一失聯執行個體的配置回收核對 ([#110](https://github.com/Sevenflanks/opencode-manager-web/issues/110)) ([b410b36](https://github.com/Sevenflanks/opencode-manager-web/commit/b410b367aa4c21419c6d7b0fdcc8f0e413e3c4bd))
+
 ## [0.6.1](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.6.0...v0.6.1) (2026-10-02)
 
 
