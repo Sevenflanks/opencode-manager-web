@@ -399,6 +399,7 @@ export class ManagerService {
     this.repository.saveInstance(record)
     this.resumeIntents.delete(record.id)
     this.closeActivityObserver(record.id)
+    if (runtime.allocationScope) return await this.recheckStoppedAllocation(this.requireInstance(record.id))
     if (await loopbackPortAvailable(record.port)) this.repository.releaseAllocationForInstance(record.id)
     return await this.present(record)
   }
@@ -712,7 +713,7 @@ export class ManagerService {
   private async recheckUnlocked(id: string): Promise<ManagedInstance> {
     this.cancelResumeBinding(id)
     const record = this.requireInstance(id)
-    if (record.state === "stopped") return await this.present(record)
+    if (record.state === "stopped") return await this.recheckStoppedAllocation(record)
     record.state = "unreachable"
     record.healthVersion = null
     record.error = "INSTANCE_IDENTITY_UNVERIFIED"
@@ -776,6 +777,39 @@ export class ManagerService {
       this.closeActivityObserver(id)
     }
     return await this.present(record)
+  }
+
+  private async recheckStoppedAllocation(record: InstanceRecord): Promise<ManagedInstance> {
+    const allocation = this.repository.getAllocationForInstance(record.id)
+    if (!allocation) return await this.present(record)
+    const runtime = this.runtimeFor(record)
+    let failure = "STOPPED_ALLOCATION_IDENTITY_UNVERIFIED"
+    try {
+      if (!hasExactIdentity(record) || allocation.port !== record.port) throw new Error()
+      const verifyScope = async () => {
+        if (!runtime.allocationScope) return
+        const authority = await runtime.allocationScope()
+        // 舊 allocation 無 scope 時只接受成功 launch 保存的 epoch；namespace 空不能替未知 launch 作證。
+        if (authority.state !== "available" || authority.scope !== record.creationTimeTicks
+          || authority.scope !== (allocation.allocationScope ?? record.creationTimeTicks)) throw new Error()
+      }
+      failure = "STOPPED_ALLOCATION_SCOPE_UNVERIFIED"
+      await verifyScope()
+      failure = "STOPPED_ALLOCATION_IDENTITY_UNVERIFIED"
+      const identity = await runtime.inspect(record)
+      // Worker 同 epoch 的正常 not-found 會 matched=false；消失證據與 running identity 的 matched 不同。
+      if (identity.processState !== "not-found" || identity.running !== false || identity.portOwnedByOther !== false) throw new Error()
+      failure = "STOPPED_ALLOCATION_PORT_UNVERIFIED"
+      const portFree = runtime.allocationScope ? identity.portAvailable === true : await loopbackPortAvailable(record.port)
+      if (!portFree) throw new Error()
+      failure = "STOPPED_ALLOCATION_SCOPE_UNVERIFIED"
+      await verifyScope()
+      this.repository.finishStoppedAllocationRecheck(record, allocation, null)
+    } catch {
+      // 保留 stopped 與 exact identity 以便重試；錯誤只記錄核對階段，不附 transport／credential。
+      this.repository.finishStoppedAllocationRecheck(record, allocation, failure)
+    }
+    return await this.present(this.requireInstance(record.id))
   }
 
   private requireInstance(id: string): InstanceRecord {
