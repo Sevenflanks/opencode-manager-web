@@ -75,8 +75,9 @@ const recoveryActionKeys = {
   tracking: "hideAllowed",
   remove: "removeAllowed",
 } as const
-type ErrorArea = "action" | "connectivity" | "remote" | "sessions" | "browse" | "lifecycle" | "settings"
+type ErrorArea = "action" | "start" | "connectivity" | "remote" | "sessions" | "browse" | "lifecycle" | "settings"
 const errorDetails = reactive<Record<ErrorArea, PresentedError | null>>({
+  start: null,
   action: null, connectivity: null, remote: null,
   sessions: null, browse: null, lifecycle: null, settings: null,
 })
@@ -114,6 +115,9 @@ watch(historyQuery, persistMobileListHistory, { flush: "post" })
 const historyError = computed(() => historyFailure.value ? presentError(historyFailure.value, t) : null)
 const mutating = ref(false)
 const actionError = ref("")
+const startError = ref("")
+const capacityRechecking = ref(false)
+let returnToListAfterStartPanelClose = false
 const notice = ref<{ key: MessageKey; params?: Record<string, string | number> } | null>(null)
 const filtersRail = ref<HTMLElement | null>(null)
 const filterCanLeft = ref(false)
@@ -140,6 +144,8 @@ const detailPane = ref<HTMLElement | null>(null)
 const shortcutId = ref<string | null>(null)
 const shortcutName = ref("")
 const shortcutDirectory = ref("")
+const shortcutFormOpen = ref(false)
+let workerBrowseInitialized = false
 const browserPath = ref("")
 const listing = ref<DirectoryListing | null>(null)
 const browsingPath = ref("")
@@ -316,6 +322,12 @@ watch(() => Boolean(mutating.value || lifecyclePending.value || switchingSession
 }, { flush: "sync" })
 
 const selected = computed(() => overview.value.instances.find((instance) => instance.id === selectedId.value) ?? null)
+const workerEntrySession = computed(() => workerMode.value && selected.value?.state === "ready" && !selected.value.primarySession)
+// browse.current 是後端解析 symlink 後的已確認目錄；輸入中的 draft 不代表權限判定。
+const workerBrowseOutsideWorkspace = computed(() => workerMode.value && listing.value !== null
+  && listing.value.current !== "/workspace" && !listing.value.current.startsWith("/workspace/"))
+const workerWorkspaceRecovery = computed(() => workerMode.value
+  && (workerBrowseOutsideWorkspace.value || (Boolean(startError.value) && errorDetails.start?.code === "WORKER_DIRECTORY_OUTSIDE_WORKSPACE")))
 const selectedSummaryFailure = computed(() => selected.value?.primarySummary.activity === "unknown"
   ? presentStatusError(selected.value.primarySummary.error, t, "session.summaryUnknown") : null)
 const selectedFailure = computed(() => selected.value?.error ? presentStatusError(selected.value.error, t, "error.unknown") : null)
@@ -376,6 +388,8 @@ const connectivityMode = computed<"loopback" | "tailnet" | "worker" | "unknown">
   return value === "loopback" || value === "tailnet" || value === "worker" ? value : "unknown"
 })
 const workerMode = computed(() => connectivityMode.value === "worker")
+const showDefaultWorkspaceShortcut = computed(() => workerMode.value
+  && !overview.value.shortcuts.some(shortcut => shortcut.directory === "/workspace"))
 // 舊 Manager 沒有 capabilities；保留原模式行為，Worker 則不把缺欄位當成本機功能授權。
 const tailscaleSupported = computed(() => Boolean(connectivity.value) && !workerMode.value && connectivity.value?.capabilities?.tailscale !== false)
 const credentialUpdateSupported = computed(() => Boolean(connectivity.value) && !workerMode.value && connectivity.value?.capabilities?.credentialUpdate !== false)
@@ -561,7 +575,7 @@ onBeforeUnmount(() => {
   sessionsGeneration++
 })
 
-async function loadConnectivity(source: "user" | "background" = "user"): Promise<void> {
+async function loadConnectivity(source: "user" | "background" = "user", freshCapacity = false): Promise<void> {
   if (source === "background" && document.visibilityState === "hidden") return
   if (connectivityRegistering.value) return
   const generation = ++connectivityReadGeneration
@@ -570,19 +584,24 @@ async function loadConnectivity(source: "user" | "background" = "user"): Promise
     connectivityFallbackOpen.value = false
   }
   connectivityLoading.value = true
+  let timeout: number | undefined
   try {
-    const next = await managerApi.connectivity()
+    const next = freshCapacity ? await Promise.race([
+      managerApi.connectivity(),
+      new Promise<never>((_, reject) => { timeout = window.setTimeout(() => reject(new Error("Connectivity timeout")), 15_000) }),
+    ]) : await managerApi.connectivity()
     if (generation !== connectivityReadGeneration) return
     connectivity.value = next
     connectivityStale.value = false
     connectivityError.value = ""
-    if (workerMode.value && (source === "user" || workerCapacity.value === "unknown")) await loadWorkerCapacity()
+    if (workerMode.value && (source === "user" || workerCapacity.value === "unknown")) await loadWorkerCapacity(freshCapacity)
   } catch (cause) {
     if (generation !== connectivityReadGeneration) return
     // 保留最後一次成功結果供診斷，但一定降級為 stale，避免舊的綠色狀態被當成目前可用。
     connectivityStale.value = connectivity.value !== null
     connectivityError.value = message(cause, "connectivity")
   } finally {
+    window.clearTimeout(timeout)
     if (generation === connectivityReadGeneration) connectivityLoading.value = false
   }
 }
@@ -614,6 +633,26 @@ function loadWorkerCapacity(fresh = false): Promise<WorkerCapacity["state"]> {
   })()
   capacityFlight = flight
   return flight
+}
+
+async function recheckStartCapacity(): Promise<void> {
+  if (!workerMode.value || capacityRechecking.value || mutating.value) return
+  capacityRechecking.value = true
+  startError.value = ""
+  errorDetails.start = null
+  workerCapacity.value = "unknown"
+  try {
+    await loadConnectivity("user", true)
+    if (overviewStale.value) await loadOverview(true, "user")
+  } finally {
+    capacityRechecking.value = false
+  }
+}
+
+function returnFromStartPanel(): void {
+  if (mutating.value || startPanelClosing.value) return
+  returnToListAfterStartPanelClose = true
+  closeStartPanel(false)
 }
 
 async function registerConnectivity(): Promise<void> {
@@ -1137,12 +1176,25 @@ function editShortcut(shortcut: DirectoryShortcut): void {
   shortcutId.value = shortcut.id
   shortcutName.value = shortcut.name
   shortcutDirectory.value = shortcut.directory
+  if (workerMode.value) {
+    shortcutFormOpen.value = true
+    void nextTick(() => startPanel.value?.querySelector<HTMLElement>(".shortcut-form input")?.focus())
+  }
 }
 
 function clearShortcutForm(): void {
   shortcutId.value = null
   shortcutName.value = ""
   shortcutDirectory.value = ""
+  if (workerMode.value) {
+    shortcutFormOpen.value = false
+    void nextTick(() => startPanel.value?.querySelector<HTMLElement>(".shortcut-form-toggle")?.focus({ preventScroll: true }))
+  }
+}
+
+function toggleShortcutForm(): void {
+  shortcutFormOpen.value = !shortcutFormOpen.value
+  if (shortcutFormOpen.value) void nextTick(() => startPanel.value?.querySelector<HTMLElement>(".shortcut-form input")?.focus())
 }
 
 async function saveShortcut(): Promise<void> {
@@ -1207,14 +1259,14 @@ function updateBrowserPath(value: string): void {
 async function start(directory: string): Promise<void> {
   if (browsingPath.value || !listing.value || browserPath.value !== listing.value.current || directory !== listing.value.current) return
   await mutate(async () => {
-    if (!await ensureInstanceCapacity("action")) return
+    if (!await ensureInstanceCapacity(workerMode.value ? "start" : "action")) return
     const instance = await managerApi.start(directory)
     await selectNewInstance(instance)
     lifecycleError.value = ""
     showNotice(instance.state === "ready" ? "notice.started" : "notice.startedUnreachable", { id: shortId(instance.id) })
     revealDetailAfterStartPanelClose = true
     closeStartPanel(false, true)
-  })
+  }, workerMode.value ? "start" : "action")
 }
 
 async function selectNewInstance(target: ManagedInstance | string): Promise<boolean> {
@@ -1489,6 +1541,17 @@ function openNewSession(instance: ManagedInstance): void {
   })
 }
 
+function revealSessionChooser(): void {
+  if (!workerEntrySession.value) return
+  const chooser = detailPane.value?.querySelector<HTMLDetailsElement>(".advanced-sessions")
+  if (!chooser) return
+  chooser.open = true
+  const summary = chooser.querySelector<HTMLElement>("summary")
+  summary?.scrollIntoView({ block: "start" })
+  summary?.focus({ preventScroll: true })
+  if (!sessionsLoaded.value && !sessionsLoading.value) void loadSessions()
+}
+
 async function createNewSession(instance: ManagedInstance): Promise<void> {
   if (!ensureFreshOverviewMutation("action")) return
   invalidateOverview()
@@ -1623,21 +1686,26 @@ function restoreConfirmationFocus(): void {
 
 function confirmationFallbackFocus(): HTMLElement | null {
   if (!startPanelBlocking.value || startPanelClosing.value || !startPanel.value) return null
-  const shortcutNameInput = startPanel.value.querySelector<HTMLElement>('.shortcut-form input:not([disabled])')
+  const shortcutNameInput = !workerMode.value ? startPanel.value.querySelector<HTMLElement>('.shortcut-form input:not([disabled])') : null
   if (shortcutNameInput && !shortcutNameInput.hidden && shortcutNameInput.getClientRects().length > 0) return shortcutNameInput
   return Array.from(startPanel.value.querySelectorAll<HTMLElement>(
     'button:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
   )).find((element) => !element.hidden && element.getClientRects().length > 0) ?? null
 }
 
-async function mutate(operation: () => Promise<void>): Promise<void> {
+async function mutate(operation: () => Promise<void>, area: "action" | "start" = "action"): Promise<void> {
   beginUserAction()
+  if (area === "start") {
+    startError.value = ""
+    errorDetails.start = null
+  }
   invalidateOverview()
   mutating.value = true
   try {
     await operation()
   } catch (cause) {
-    actionError.value = message(cause, "action")
+    if (area === "start") startError.value = message(cause, area)
+    else actionError.value = message(cause, area)
   } finally {
     mutating.value = false
   }
@@ -1753,9 +1821,31 @@ watch(actionError, () => {
   if (activeSwipe?.kind === "error") cancelSwipe()
 })
 
+watch([startPanelOpen, connectivityMode], ([open, mode]) => {
+  if (!open || mode === "unknown") return
+  if (mode === "worker") {
+    shortcutFormOpen.value = false
+    if (!workerBrowseInitialized) {
+      workerBrowseInitialized = true
+      if (!browserPath.value && !listing.value && !browsingPath.value) void browse("/workspace")
+    }
+  }
+  void nextTick(() => {
+    const current = document.activeElement
+    if (current instanceof HTMLElement && startPanel.value?.contains(current)
+      && !current.closest(".start-panel-head")) return
+    const target = mode === "worker"
+      ? startPanel.value?.querySelector<HTMLElement>(".shortcut-main")
+      : startPanel.value?.querySelector<HTMLElement>(".shortcut-form input")
+    target?.focus({ preventScroll: true })
+  })
+}, { flush: "post" })
+
 function openStartPanel(): void {
   cancelSwipe()
   beginUserAction()
+  startError.value = ""
+  errorDetails.start = null
   if (!startPanelBlocking.value) {
     returnFocusElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
     previousBodyOverflow = document.body.style.overflow
@@ -1766,8 +1856,9 @@ function openStartPanel(): void {
   document.body.style.overflow = "hidden"
   startPanelOpen.value = true
   void nextTick(() => {
-    const initialFocus = startPanel.value?.querySelector<HTMLElement>(".shortcut-form input")
-      ?? startPanel.value?.querySelector<HTMLElement>(".start-panel-head button")
+    const initialFocus = connectivityMode.value !== "unknown" && !workerMode.value
+      ? startPanel.value?.querySelector<HTMLElement>(".shortcut-form input")
+      : startPanel.value?.querySelector<HTMLElement>(".shortcut-main, .start-panel-head button")
     initialFocus?.focus()
   })
 }
@@ -1786,6 +1877,8 @@ function closeStartPanel(restoreFocus = true, force = false): void {
 
 function finishStartPanelClose(): void {
   if (startPanelOpen.value) return
+  startError.value = ""
+  errorDetails.start = null
   const focusTarget = restoreFocusAfterStartPanelClose ? returnFocusElement : null
   const shouldRevealDetail = revealDetailAfterStartPanelClose
   startPanelClosing.value = false
@@ -1793,7 +1886,10 @@ function finishStartPanelClose(): void {
   revealDetailAfterStartPanelClose = false
   document.body.style.overflow = previousBodyOverflow
   void nextTick(() => {
-    if (focusTarget) focusTarget.focus()
+    if (returnToListAfterStartPanelClose) {
+      returnToListAfterStartPanelClose = false
+      void returnToList()
+    } else if (focusTarget) focusTarget.focus()
     else if (shouldRevealDetail) void revealSelectedDetail()
   })
 }
@@ -2047,12 +2143,13 @@ function recoveryActionAllowed(action: RecoveryAction): boolean {
   const key = recoveryActionKeys[action]
   return recoveryMetadataValid.value && recovery?.[key] === true && (action !== "resume" || !instanceCapacityBlocked.value)
 }
-async function ensureInstanceCapacity(area: "action" | "lifecycle"): Promise<boolean> {
+async function ensureInstanceCapacity(area: "action" | "start" | "lifecycle"): Promise<boolean> {
   if (!workerMode.value) return true
   const state = await loadWorkerCapacity(true)
   if (state === "available") return true
   const key = state === "occupied" ? "worker.capacityFull" : "worker.capacityUnknown"
   if (area === "action") actionError.value = localError(area, key)
+  else if (area === "start") startError.value = localError(area, key)
   else lifecycleError.value = localError(area, key)
   return false
 }
@@ -2383,10 +2480,17 @@ function displayedError(area: ErrorArea, current: string): string {
           </div>
           <p v-if="statusCategory(selected) === 'attention'" class="status-attention primary-session-attention"><AlertTriangleIcon />{{ attentionSummary(selected) }}</p>
           <p v-else-if="selected.state === 'ready' && selected.primarySummary.scope === 'unknown'" class="inline-error primary-session-attention"><AlertTriangleIcon />{{ t('session.unknownWorkScope') }}</p>
-          <div class="detail-actions primary-actions">
-            <a v-if="nativeWebAvailable" class="native-web-link" :href="nativeWebRoot!" target="_blank" rel="noopener noreferrer">{{ t('worker.openNative') }}<ExternalLinkIcon /></a>
-            <Button :disabled="opening || selected.state !== 'ready' || !selected.primarySession" @click="openPrimarySession(selected)"><ExternalLinkIcon />{{ opening ? t('ui.connecting') : t('session.openPrimary') }}</Button>
-            <Button variant="outline" class="new-session-button" :disabled="overviewMutationsBlocked || opening || selected.state !== 'ready'" @click="openNewSession(selected)"><PlusIcon />{{ opening ? t('ui.connecting') : t('terms.newSession') }}</Button>
+          <div class="detail-actions primary-actions" :class="{ 'worker-entry-actions': workerEntrySession }">
+            <template v-if="workerEntrySession">
+              <Button :disabled="overviewMutationsBlocked || opening" @click="openNewSession(selected)"><PlusIcon />{{ opening ? t('ui.connecting') : t('worker.createEntrySession') }}</Button>
+              <Button variant="outline" aria-controls="session-history-chooser" @click="revealSessionChooser">{{ t('worker.chooseSession') }}</Button>
+              <a v-if="nativeWebAvailable" class="native-web-link" :href="nativeWebRoot!" target="_blank" rel="noopener noreferrer">{{ t('worker.openNative') }}<ExternalLinkIcon /></a>
+            </template>
+            <template v-else>
+              <a v-if="nativeWebAvailable" class="native-web-link" :href="nativeWebRoot!" target="_blank" rel="noopener noreferrer">{{ t('worker.openNative') }}<ExternalLinkIcon /></a>
+              <Button :disabled="opening || selected.state !== 'ready' || !selected.primarySession" @click="openPrimarySession(selected)"><ExternalLinkIcon />{{ opening ? t('ui.connecting') : t('session.openPrimary') }}</Button>
+              <Button variant="outline" class="new-session-button" :disabled="overviewMutationsBlocked || opening || selected.state !== 'ready'" @click="openNewSession(selected)"><PlusIcon />{{ opening ? t('ui.connecting') : t('terms.newSession') }}</Button>
+            </template>
           </div>
           <p v-if="workerMode" class="status-note">{{ t('worker.providerLogin') }}</p>
           <section class="primary-todos" :aria-label="t('todo.heading')" :aria-busy="todosLoading">
@@ -2441,7 +2545,7 @@ function displayedError(area: ErrorArea, current: string): string {
           <p v-if="tailscaleSupported && selected.remoteUrlUnavailableReason" class="inline-error"><ErrorDetails :summary="t('ui.remoteUnavailable')" :diagnostic="safeDiagnostic(selected.remoteUrlUnavailableReason)" /></p>
            <p v-if="selectedFailure" class="inline-error"><ErrorDetails :summary="selectedFailure.summary" :code="selectedFailure.code" /></p>
 
-          <details :key="selected.id" class="advanced-sessions">
+          <details :key="selected.id" id="session-history-chooser" class="advanced-sessions">
             <summary>{{ t('session.history') }}</summary>
             <section class="sessions-panel">
               <div class="section-heading"><div><p class="eyebrow">{{ t('session.projectInfo') }}</p><h3>{{ t('terms.mainSession') }}</h3></div><Button variant="ghost" size="sm" class="no-press-transform" @click="loadSessions"><RefreshCwIcon :class="{ spin: sessionsLoading }" />{{ t('common.reload') }}</Button></div>
@@ -2505,13 +2609,23 @@ function displayedError(area: ErrorArea, current: string): string {
       </header>
       <div class="start-panel-body">
         <p v-if="workerMode" class="lifecycle-note" role="status">{{ t(workerCapacityMessage) }}</p>
+        <div v-if="workerMode && workerCapacityState !== 'available'" class="detail-actions">
+          <Button v-if="workerCapacityState === 'unknown'" variant="outline" :disabled="capacityRechecking || mutating" :aria-busy="capacityRechecking" @click="recheckStartCapacity"><RefreshCwIcon :class="{ spin: capacityRechecking }" />{{ t('ui.recheck') }}</Button>
+          <Button v-else variant="outline" :disabled="mutating" @click="returnFromStartPanel">{{ t('worker.returnToList') }}</Button>
+        </div>
         <p v-if="actionError" class="lifecycle-error" role="alert"><ErrorDetails :summary="displayedError('action', actionError)" :code="errorDetails.action?.code" :diagnostic="errorDetails.action?.diagnostic" /></p>
+        <p v-if="startError" class="lifecycle-error" role="alert"><ErrorDetails :summary="displayedError('start', startError)" :code="errorDetails.start?.code" :diagnostic="errorDetails.start?.diagnostic" /></p>
         <section class="shortcut-rail" aria-labelledby="shortcuts-title">
           <div class="section-heading">
             <div><p class="eyebrow">{{ t('ui.shortcutEyebrow') }}</p><h3 id="shortcuts-title">{{ t('terms.directoryShortcut') }}</h3></div>
-            <span>{{ t('common.count', { count: number(overview.shortcuts.length) }) }}</span>
+            <span>{{ t('common.count', { count: number(overview.shortcuts.length + Number(showDefaultWorkspaceShortcut)) }) }}</span>
           </div>
           <div class="shortcut-list">
+            <article v-if="showDefaultWorkspaceShortcut" class="shortcut-card">
+              <button type="button" class="shortcut-main" @click="browse('/workspace')">
+                <FolderIcon aria-hidden="true" /><span><strong>{{ t('ui.defaultWorkspace') }}</strong><code>/workspace</code></span>
+              </button>
+            </article>
             <article v-for="shortcut in overview.shortcuts" :key="shortcut.id" class="shortcut-card">
               <button type="button" class="shortcut-main" @click="browse(shortcut.directory)">
                 <FolderIcon /><span><strong>{{ shortcut.name }}</strong><code>{{ shortcut.directory }}</code></span>
@@ -2521,13 +2635,14 @@ function displayedError(area: ErrorArea, current: string): string {
                 <Button variant="ghost" size="icon" :aria-label="t('aria.removeShortcut')" @click="removeShortcut(shortcut)"><Trash2Icon /></Button>
               </div>
             </article>
-            <p v-if="overview.shortcuts.length === 0" class="empty-copy">{{ t('ui.shortcutEmpty') }}</p>
+            <p v-if="overview.shortcuts.length === 0 && !showDefaultWorkspaceShortcut" class="empty-copy">{{ t('ui.shortcutEmpty') }}</p>
           </div>
-          <form class="shortcut-form" @submit.prevent="saveShortcut">
+          <Button v-if="workerMode" variant="outline" class="shortcut-form-toggle" :aria-expanded="shortcutFormOpen" aria-controls="shortcut-form" @click="toggleShortcutForm"><FolderPlusIcon />{{ t('worker.addShortcut') }}</Button>
+          <form id="shortcut-form" v-show="!workerMode || shortcutFormOpen" class="shortcut-form" @submit.prevent="saveShortcut">
             <Input v-model="shortcutName" :placeholder="t('ui.shortcutName')" :aria-label="t('aria.shortcutName')" />
             <Input v-model="shortcutDirectory" :placeholder="t('ui.shortcutPath')" :aria-label="t('aria.shortcutDirectory')" />
             <Button type="submit" :disabled="mutating" :aria-label="shortcutId ? t('ui.shortcutUpdate') : t('ui.shortcutAdd')"><FolderPlusIcon /><span class="button-label">{{ shortcutId ? t('ui.shortcutUpdate') : t('ui.shortcutAdd') }}</span></Button>
-            <Button v-if="shortcutId" type="button" variant="ghost" @click="clearShortcutForm">{{ t('common.cancel') }}</Button>
+            <Button v-if="shortcutId || workerMode" type="button" variant="ghost" @click="clearShortcutForm">{{ t('common.cancel') }}</Button>
           </form>
         </section>
 
@@ -2537,6 +2652,9 @@ function displayedError(area: ErrorArea, current: string): string {
             <Input :model-value="browserPath" :placeholder="workerMode ? t('worker.directoryPlaceholder') : t('ui.browsePlaceholder')" :aria-label="t('ui.browseAndStart')" @update:model-value="updateBrowserPath" />
             <Button type="submit" variant="outline" :aria-label="t('ui.browse')"><SearchIcon /><span class="button-label">{{ t('ui.browse') }}</span></Button>
           </form>
+          <p v-if="workerMode" class="scope-note">{{ t('worker.workspaceStartHint') }}</p>
+          <p v-if="workerBrowseOutsideWorkspace" class="inline-error workspace-directory-warning" role="status"><AlertTriangleIcon />{{ t('worker.browseOutsideWorkspace') }}</p>
+          <Button v-if="workerWorkspaceRecovery" variant="outline" :disabled="mutating || Boolean(browsingPath)" @click="browse('/workspace')"><FolderIcon />{{ t('worker.returnToWorkspace') }}</Button>
           <p v-if="browsingPath" class="browse-status" role="status">{{ t('ui.browsing', { path: browsingPath }) }}</p>
           <div v-else-if="browseError" class="browse-error" role="alert">
             <p><ErrorDetails :summary="t('ui.browseFailed', { path: browserPath })" :code="errorDetails.browse?.code" :diagnostic="errorDetails.browse?.diagnostic" /></p>
@@ -2545,7 +2663,7 @@ function displayedError(area: ErrorArea, current: string): string {
           <template v-if="listing">
             <div class="current-directory">
               <code>{{ listing.current }}</code>
-              <Button variant="success" :disabled="mutating || Boolean(browsingPath) || browserPath !== listing.current || instanceCapacityBlocked" @click="start(listing.current)"><PlusIcon />{{ t('ui.startFresh') }}</Button>
+              <Button variant="success" :disabled="mutating || capacityRechecking || Boolean(browsingPath) || browserPath !== listing.current || instanceCapacityBlocked" @click="start(listing.current)"><PlusIcon />{{ t('ui.startFresh') }}</Button>
             </div>
             <button v-if="listing.parent" type="button" class="directory-row" @click="browse(listing.parent)"><ChevronLeftIcon />{{ t('ui.parentDirectory') }}</button>
             <button v-for="child in listing.children" :key="child.path" type="button" class="directory-row" @click="browse(child.path)"><FolderIcon />{{ child.name }}</button>

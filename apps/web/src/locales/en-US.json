@@ -12,7 +12,17 @@
     "capacityAvailable": "Worker's current execution environment is available to start or resume an Instance.",
     "capacityFull": "Worker's current execution environment is occupied. Stop its current Instance before starting or resuming.",
     "capacityUnknown": "Worker's current execution capacity could not be verified. Refresh or recheck before starting or resuming.",
+    "returnToList": "Return to Instance list",
+    "addShortcut": "Add shortcut",
+    "createEntrySession": "Create entry Session",
+    "chooseSession": "Choose existing Session",
+    "workspaceStartHint": "Instances can only start in /workspace or its subdirectories",
+    "browseOutsideWorkspace": "This directory is outside /workspace. You can browse or save a shortcut; return to /workspace to start an Instance.",
+    "returnToWorkspace": "Return to /workspace",
     "description": "Operates independently, not managed by a Coordinator. Use one Instance at a time. Project directories belong to the Worker execution environment.",
     "credentials": "Worker credentials are managed by the deployment. Your browser will request a separate login for native Web."
+  },
+  "ui": {
+    "defaultWorkspace": "Default workspace"
   }
 }
