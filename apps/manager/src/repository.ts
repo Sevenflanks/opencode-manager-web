@@ -289,17 +289,21 @@ export class ManagerRepository {
     return row ? mapAllocation(row) : null
   }
 
-  finishStoppedAllocationRecheck(expected: InstanceRecord, allocation: PortAllocation, error: string | null): boolean {
+  finishStoppedAllocationRecheck(expected: InstanceRecord, allocation: PortAllocation | null, error: string | null, recoverMissingProcess = false): boolean {
     this.database.exec("BEGIN IMMEDIATE")
     try {
       // Probe 跨 await；instance mutex 不涵蓋其他 service／connection。必須核對原 record 與 allocation UUID，
       // 不可只按 instance_id 刪除，否則舊結果會釋放後來替換的 reservation 或覆寫新 identity。
-      const unchanged = expected.state === "stopped" && allocation.instanceId === expected.id
+      const unchanged = (expected.state === "stopped" || recoverMissingProcess) && (!allocation || allocation.instanceId === expected.id)
         && JSON.stringify(this.getInstance(expected.id)) === JSON.stringify(expected)
         && JSON.stringify(this.getAllocationForInstance(expected.id)) === JSON.stringify(allocation)
       if (unchanged) {
-        this.saveInstance({ ...expected, error })
-        if (error === null) this.database.prepare("DELETE FROM port_allocations WHERE id = ? AND instance_id = ?").run(allocation.id, expected.id)
+        this.saveInstance({ ...expected, error, ...(recoverMissingProcess ? {
+          state: error === null ? "stopped" as const : "unreachable" as const,
+          healthVersion: null,
+          stoppedAt: error === null ? new Date().toISOString() : expected.stoppedAt,
+        } : {}) })
+        if (error === null && allocation) this.database.prepare("DELETE FROM port_allocations WHERE id = ? AND instance_id = ?").run(allocation.id, expected.id)
       }
       this.database.exec("COMMIT")
       return unchanged

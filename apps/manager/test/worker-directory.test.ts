@@ -91,7 +91,7 @@ test("public Manager browse/shortcuts/start use execution filesystem namespace, 
       activeDirectory = body.directory
       return Response.json({ pid: 12, instanceId: body.instanceId, directory: body.directory, executable: "/bin/opencode", creationTimeUtc: new Date().toISOString(), creationTimeTicks: "fixture-epoch", endpoint: "http://localhost:4096" })
     }
-    if (request.pathname === "/v1/inspect") return Response.json({ processState: activeDirectory ? "running" : "not-found", running: !!activeDirectory, matched: !!activeDirectory, portOwnerMatched: !!activeDirectory, portOwnedByOther: false })
+    if (request.pathname === "/v1/inspect") return Response.json({ processState: activeDirectory ? "running" : "not-found", running: !!activeDirectory, matched: !!activeDirectory, portOwnerMatched: !!activeDirectory, portOwnedByOther: false, portAvailable: !activeDirectory })
     if (request.pathname === "/v1/stop") { activeDirectory = null; return Response.json({ stopped: true, reason: null }) }
     if (request.pathname.endsWith("/global/health")) return Response.json({ healthy: true, version: "fixture" })
     if (request.pathname.endsWith("/path")) return Response.json({ directory: activeDirectory })

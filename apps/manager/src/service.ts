@@ -650,6 +650,10 @@ export class ManagerService {
   async reconcile(): Promise<void> {
     await this.cleanupExpiredReservations()
     for (const record of this.repository.listInstances().filter((instance) => instance.state !== "stopped")) {
+      if (this.runtimeFor(record).allocationScope) {
+        await this.recheckUnlocked(record.id)
+        continue
+      }
       record.state = "unreachable"
       record.healthVersion = null
       record.error = "Manager 已重啟，正在重新核對 Instance。"
@@ -714,6 +718,8 @@ export class ManagerService {
     this.cancelResumeBinding(id)
     const record = this.requireInstance(id)
     if (record.state === "stopped") return await this.recheckStoppedAllocation(record)
+    const original = { ...record }
+    const allocation = this.repository.getAllocationForInstance(id)
     record.state = "unreachable"
     record.healthVersion = null
     record.error = "INSTANCE_IDENTITY_UNVERIFIED"
@@ -738,6 +744,11 @@ export class ManagerService {
 
     if (identity.processState === "not-found" && !identity.portOwnedByOther) {
       this.rejectResumeBinding(id)
+      if (this.runtimeFor(record).allocationScope) {
+        this.closeActivityObserver(id)
+        // Manager loopback 不是 Worker port 證據；跨 await 仍須用原 record／allocation 快照做 CAS。
+        return await this.recheckStoppedAllocation(original, allocation, true)
+      }
       if (await loopbackPortAvailable(record.port)) {
         record.state = "stopped"
         record.stoppedAt = new Date().toISOString()
@@ -779,9 +790,12 @@ export class ManagerService {
     return await this.present(record)
   }
 
-  private async recheckStoppedAllocation(record: InstanceRecord): Promise<ManagedInstance> {
-    const allocation = this.repository.getAllocationForInstance(record.id)
-    if (!allocation) return await this.present(record)
+  private async recheckStoppedAllocation(record: InstanceRecord,
+    allocation = this.repository.getAllocationForInstance(record.id), recoverMissingProcess = false): Promise<ManagedInstance> {
+    if (!allocation) {
+      if (recoverMissingProcess) this.repository.finishStoppedAllocationRecheck(record, null, "INSTANCE_IDENTITY_UNVERIFIED", true)
+      return await this.present(this.requireInstance(record.id))
+    }
     const runtime = this.runtimeFor(record)
     let failure = "STOPPED_ALLOCATION_IDENTITY_UNVERIFIED"
     try {
@@ -804,10 +818,10 @@ export class ManagerService {
       if (!portFree) throw new Error()
       failure = "STOPPED_ALLOCATION_SCOPE_UNVERIFIED"
       await verifyScope()
-      this.repository.finishStoppedAllocationRecheck(record, allocation, null)
+      this.repository.finishStoppedAllocationRecheck(record, allocation, null, recoverMissingProcess)
     } catch {
-      // 保留 stopped 與 exact identity 以便重試；錯誤只記錄核對階段，不附 transport／credential。
-      this.repository.finishStoppedAllocationRecheck(record, allocation, failure)
+      // 核對失敗保留 exact identity 與 allocation 以便重試；錯誤不附 transport／credential。
+      this.repository.finishStoppedAllocationRecheck(record, allocation, failure, recoverMissingProcess)
     }
     return await this.present(this.requireInstance(record.id))
   }
