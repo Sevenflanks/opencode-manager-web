@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { validateConfig, imagePatch, deploy, createPlan, releaseGate, hash, validatePlan, reconcile, managerInspection, workspaceInspection } from './deploy-core.mjs'
+import { validateConfig, imagePatch, deploy, createPlan, releaseGate, hash, validatePlan, reconcile, clusterSnapshot, managerInspection, workspaceInspection } from './deploy-core.mjs'
 import { main, parseArgs, processRunner } from './deploy.mjs'
 import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import vm from 'node:vm'
+import { spawn } from 'node:child_process'
 
 const digest = `sha256:${'a'.repeat(64)}`
 const fixtureTemp = process.env.OMW_TEST_TMP_DIR ?? os.tmpdir()
@@ -245,10 +246,103 @@ test('public CLI creates exclusive private journal, preview has no commands; fin
   } finally { await rm(scratch, { recursive: true, force: true }) }
 })
 
+for (const [name, mutate, failure, phase] of [
+  ['Pending Pod', (sets, pods) => { pods[0].status.phase = 'Pending'; pods[0].status.conditions[0].status = 'False' }, 'POD_NOT_READY', 'Pending'],
+  ['CrashLoop Pod', (sets, pods) => { pods[0].status.conditions[0].status = 'False'; pods[0].status.containerStatuses[0].ready = false; pods[0].status.containerStatuses[0].state = { waiting: { reason: 'CrashLoopBackOff', message: 'synthetic-secret' } } }, 'POD_NOT_READY', 'Running'],
+  ['missing statuses', (sets, pods) => { delete pods[0].status.containerStatuses }, 'POD_STATUS_UNKNOWN', 'Running'],
+  ['missing entire status', (sets, pods) => { delete pods[0].status }, 'POD_STATUS_UNKNOWN', null],
+  ['template mismatch', sets => { sets[0].spec.template.spec.containers[0].image = 'previous-template' }, 'POD_TEMPLATE_OWNER_MISMATCH', 'Running'],
+]) for (const imageState of ['old', 'new', 'drift']) test(`readonly core/CLI observes ${name} with ${imageState} image; strict plan/deploy still refuse`, async () => {
+  const scratch = await mkdtemp(path.join(fixtureTemp, 'omw-deploy-status-'))
+  try {
+    const { writeFile } = await import('node:fs/promises')
+    const f = fixture(); const input = path.join(scratch, 'config.json'); await writeFile(input, JSON.stringify(f.c))
+    const journal = path.join(scratch, 'run')
+    const plan = await main(['plan', '--config', input, '--execute', '--out', journal], { runner: f.runner, print: () => {} })
+    const stored = { status: 'unresolved', target: 'omw-beta', reason: 'PATCH_RESULT_UNKNOWN_READONLY_RECONCILE_REQUIRED', producer: { rootPid: 456, descendantExitVerified: false }, planDigest: plan.digest }
+    await writeFile(path.join(journal, '0001.json'), JSON.stringify(stored))
+    f.options.resources = mutate
+    if (imageState !== 'old') f.deployments['omw-beta'].spec.template.spec.containers.forEach(v => { v.image = imageState === 'new' ? f.c.image : 'unexpected-image' })
+    await assert.rejects(clusterSnapshot(f.c, f.runner, false), new RegExp(failure))
+    await assert.rejects(createPlan(f.c, f.runner), new RegExp(failure))
+    await assert.rejects(deploy(plan, { ...f.execution, ackDiscard: plan.digest }), new RegExp(failure))
+    const observation = await reconcile(plan, f.runner)
+    assert.equal(observation.status, 'readonly-observation')
+    assert.equal(observation.completionClaimed, false)
+    assert.equal(observation.targets[0].classification, imageState === 'old' ? 'old-image-observed-not-retry-authorization' : imageState === 'new' ? 'new-image-observed-not-completion-proof' : 'drift-or-unknown')
+    assert.equal(observation.targets[0].current.uid, 'omw-beta-uid')
+    const pod = observation.targets[0].current.podObservations[0]
+    assert.equal(pod.uid, 'omw-beta-pod-1'); assert.equal(pod.ownerUid, 'omw-beta-rs-1'); assert.equal(pod.phase, phase)
+    assert.equal(pod.validationError, failure)
+    assert.equal(pod.ready, phase === null ? null : name === 'Pending Pod' || name === 'CrashLoop Pod' ? false : true)
+    if (name.startsWith('missing')) assert.equal(pod.containers, null)
+    if (name === 'CrashLoop Pod') assert.equal(pod.containers[0].state, 'waiting')
+    const printed = []
+    const status = await main(['status', '--journal', journal], { runner: f.runner, print: text => printed.push(JSON.parse(text)) })
+    assert.equal(status.completionClaimed, false)
+    assert.deepEqual(printed, [status])
+    assert.deepEqual(status.journal.at(-1), { status: stored.status, target: stored.target, reason: stored.reason, producer: stored.producer })
+    assert.equal(f.calls.filter(c => c.args[5] === 'patch').length, 0)
+    assert.ok(f.calls.slice(-5).every(c => c.executable === 'kubectl' && c.args[5] === 'get'))
+    assert.ok(!JSON.stringify(status).includes('synthetic-secret'))
+    assert.deepEqual(JSON.parse(await readFile(path.join(journal, '0001.json'), 'utf8')), stored)
+  } finally { await rm(scratch, { recursive: true, force: true }) }
+})
+
+for (const [name, reply, failure] of [
+  ['API unreachable', { code: 1, stdout: 'synthetic-secret', stderr: 'synthetic-secret' }, 'COMMAND_FAILED_OR_UNKNOWN'],
+  ['invalid API JSON', { code: 0, stdout: 'synthetic-secret' }, 'JSON_RESPONSE_UNKNOWN'],
+]) test(`CLI status prints stored journal before rejecting ${name}`, async () => {
+  const scratch = await mkdtemp(path.join(fixtureTemp, 'omw-deploy-status-'))
+  try {
+    const { writeFile } = await import('node:fs/promises')
+    const f = fixture(); const input = path.join(scratch, 'config.json'); await writeFile(input, JSON.stringify(f.c))
+    const journal = path.join(scratch, 'run')
+    await main(['plan', '--config', input, '--execute', '--out', journal], { runner: f.runner, print: () => {} })
+    const printed = [], before = await readdir(journal)
+    await assert.rejects(main(['status', '--journal', journal], { runner: async (exe, args) => { assert.equal(exe, 'kubectl'); assert.equal(args[5], 'get'); return reply }, print: text => printed.push(JSON.parse(text)) }), new RegExp(failure))
+    assert.equal(printed.length, 1)
+    assert.equal(printed[0].status, 'unresolved'); assert.equal(printed[0].reason, failure)
+    assert.equal(printed[0].completionClaimed, false)
+    assert.deepEqual(printed[0].journal, [{ status: 'planned', target: null, reason: null, producer: null }])
+    assert.ok(!JSON.stringify(printed).includes('synthetic-secret'))
+    assert.deepEqual(await readdir(journal), before)
+  } finally { await rm(scratch, { recursive: true, force: true }) }
+})
+
 test('real runner executes argument arrays with shell disabled and suppresses stderr', async () => {
   const result = await processRunner(process.execPath, ['-e', 'process.stdout.write(process.argv[1]);process.stderr.write("synthetic-secret")', 'space & ; $value'], { timeout: 5000 })
   assert.equal(result.code, 0); assert.equal(result.stdout, 'space & ; $value')
   assert.ok(!JSON.stringify(result).includes('synthetic-secret'))
+})
+
+for (const reason of ['deadline', 'output-limit']) test(`unaltered runner abandons owned finite Node fixture on ${reason}, redacts output and closes`, { timeout: 10_000 }, async () => {
+  let child, closed
+  // 不改 runner 本體；只包 spawn 邊界保留當次 handle，仍啟動真 Node，且 fixture 不產生 descendants。
+  const ownedSpawn = (executable, args, options) => {
+    assert.equal(executable, process.execPath); assert.equal(options.shell, false)
+    child = spawn(executable, args, options)
+    closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })))
+    return child
+  }
+  const runner = vm.runInNewContext(`(${processRunner.toString()})`, { spawn: ownedSpawn, process, path, Buffer, setTimeout, clearTimeout })
+  // 即使 test interruption 或 runner 的 kill 失效，也在 2 秒內自行退出。
+  const script = `setTimeout(() => process.exit(0), 2000); process.stderr.write('synthetic-private-stderr'); process.stdout.write(${reason === 'output-limit' ? "'synthetic-private-stdout'.repeat(200_000)" : "'synthetic-private-stdout'"});`
+  try {
+    const result = await runner(process.execPath, ['-e', script], { timeout: reason === 'deadline' ? 500 : 1500 })
+    assert.equal(result.code, null); assert.equal(result.stdout, ''); assert.equal(result.timedOut, true)
+    assert.equal(result.producer.reason, reason); assert.equal(result.producer.rootPid, child.pid)
+    assert.equal(result.producer.descendantExitVerified, false)
+    assert.ok(!JSON.stringify(result).includes('synthetic-private'))
+  } finally {
+    if (closed) {
+      let timer
+      try {
+        await Promise.race([closed, new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('OWNED_FIXTURE_CLOSE_DEADLINE')), 6000) })])
+        assert.ok(child.exitCode !== null || child.signalCode !== null, 'current-run child close/exit confirmed')
+      } finally { clearTimeout(timer) }
+    }
+  }
 })
 
 function managerApiFixture(connectivityOverride = {}) {

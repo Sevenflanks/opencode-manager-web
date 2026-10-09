@@ -107,7 +107,13 @@ export async function main(argv, { runner = processRunner, print = text => conso
       guard(record.planDigest === plan.digest, 'JOURNAL_PLAN_MISMATCH')
       records.push({ status: record.status, target: record.target ?? null, reason: record.reason ?? null, producer: record.producer ?? null })
     }
-    const result = { ...(await reconcile(plan, runner)), journal: records, completionClaimed: false }
+    let observation
+    try { observation = await reconcile(plan, runner) } catch (error) {
+      // 已讀 journal 不因 GET 失敗而消失；仍 reject，讓 CLI 保留 nonzero exit 與原錯誤契約。
+      print(JSON.stringify({ status: 'unresolved', reason: safeCode(error), journal: records, completionClaimed: false }, null, 2))
+      throw error
+    }
+    const result = { ...observation, journal: records, completionClaimed: false }
     print(JSON.stringify(result, null, 2)); return result
   }
   if (args.phase === 'plan') {

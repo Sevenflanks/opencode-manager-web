@@ -165,9 +165,13 @@ Journal 每 checkpoint 以 exclusive file 建立並 `fsync`；new run 目錄不�
 
 `status` 讀同 journal 的 plan、checkpoint，再做 readonly GET，分成 old image observed、new image observed、drift/unknown，永遠 `completionClaimed:false`。new image 不等於健康或整輪完成；old image 不等於允許重送。沒有完整 evidence graph 時不宣告成功、不自動恢復執行。先確認 producer／cluster 狀態，再由 operator 決定是否重新 plan；已改完 beta 但 alpha 尚未完成時，這版沒有自動 resume／alpha-only escape。需要另行人工程序決策，不重跑舊計畫。
 
+Pending、CrashLoop、缺少 container status 或 RS template 不符時，`status` 仍輸出 Deployment facts 與 exact owner UID chain 找到的 `podObservations`：Pod UID、phase、Ready、container state／restart count 及 validation error；缺少欄位表示 unknown。這些觀察不帶 raw status message／termination log，也不是健康、完成或重試授權。plan/deploy 與 rollout 仍使用 strict Pod validation。
+
+若 readonly GET 失敗（例如 API unreachable 或 JSON response unknown），`status` 先輸出已讀 journal 的 status／target／reason／producer，以及 `status:unresolved`、sanitized reason、`completionClaimed:false`，再以原錯誤結束（CLI exit 1）。不把觀察失敗當作成功，不新增 checkpoint、不改寫原 journal。
+
 ### 本輪驗證範圍
 
-`node --test scripts/worker/deploy.test.mjs` 使用 injected fake process runner、fixture API responses、短命 Node argument-array fixture，所有 temp resources `finally` 清理。最新 **63 tests passed、0 failed、0 skipped**；測試本身沒有真正 build/push、kubectl、models、production credentials／auth DB 存取或 cluster 變更。
+`node --test scripts/worker/deploy.test.mjs` 使用 injected fake process runner、fixture API responses、短命 Node argument-array fixture，所有 temp resources `finally` 清理。另以不修改本體的 serialized `processRunner`、持有實際 spawn handle 的邊界執行 timeout／output-limit Node fixtures；fixtures 無 descendants、兩秒自行退出，`finally` 確認當次 child close。最新 **82 tests passed、0 failed、0 skipped**；測試本身沒有真正 build/push、kubectl、models、production credentials／auth DB 存取或 cluster 變更。
 
 2026-10-09 另在實際環境執行一次成功的 **readonly plan**：核對已發布 v0.8.0 的 release／npm、remote manifest/index-child-config reference 與 source labels；取得兩個 Worker 的 owner UID chain、Ready、Manager 0.8.0、空 current／pending／execution namespace、各兩筆 stopped history 及三個 workspace metadata entries。原生 profile 可讀；前後兩 Worker 與 gateway 的 UID、container identities、non-image fingerprint 與 snapshot 均相同。29 個 external CLI 全部 exit 0、無 timeout；本輪約 16.6 秒。隨後 no-execute deploy preview 回傳相同 plan digest，**沒有額外 external CLI calls**。
 

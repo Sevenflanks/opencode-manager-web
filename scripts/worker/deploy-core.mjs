@@ -174,6 +174,9 @@ function deploymentFacts(d, name) {
 }
 const controller = (o, kind, uid) => o.metadata?.ownerReferences?.some(r => r.kind === kind && r.uid === uid && r.controller === true)
 export async function clusterSnapshot(c, runner, requirePods = true) {
+  return readCluster(c, runner, requirePods)
+}
+async function readCluster(c, runner, requirePods, observeOnly = false) {
   const deployments = []
   for (const name of names) deployments.push(await jsonCommand(runner, 'kubectl', kube(c, ['get', 'deployment', name, '-o', 'json'])))
   const sets = await jsonCommand(runner, 'kubectl', kube(c, ['get', 'replicasets', '-o', 'json']))
@@ -187,10 +190,33 @@ export async function clusterSnapshot(c, runner, requirePods = true) {
     const ownedPods = pods.items.filter(p => ownedSets.some(rs => controller(p, 'ReplicaSet', rs.metadata.uid)) && p.metadata.namespace === 'ai-tools')
     const live = ownedPods.filter(p => !p.metadata.deletionTimestamp)
     if (requirePods) guard(ownedPods.length === 1 && live.length === 1, 'POD_IDENTITY_AMBIGUOUS')
-    facts.pod = live.length === 1 && ownedPods.length === 1 ? podFacts(live[0], ownedSets, d) : null
+    if (observeOnly) {
+      // status 的不健康／未知 Pod 仍要可觀察；不得把這條容錯路徑供 plan/deploy 或 rollout 使用。
+      const observations = ownedPods.map(p => observePod(p, ownedSets, d))
+      facts.podObservations = observations.map(v => v.observation)
+      facts.pod = live.length === 1 && ownedPods.length === 1 ? observations[0].verified : null
+    } else facts.pod = live.length === 1 && ownedPods.length === 1 ? podFacts(live[0], ownedSets, d) : null
     result[facts.name] = facts
   }
   return result
+}
+function observePod(p, sets, d) {
+  let verified = null, validationError = null
+  try { verified = podFacts(p, sets, d) } catch (error) { validationError = safeCode(error) }
+  const rs = sets.find(s => controller(p, 'ReplicaSet', s.metadata.uid))
+  const ready = p.status?.conditions?.find(v => v.type === 'Ready')?.status
+  const statuses = p.status?.containerStatuses
+  return { verified, observation: {
+    name: p.metadata.name ?? null, uid: p.metadata.uid ?? null, ownerUid: rs?.metadata.uid ?? null,
+    phase: ['Pending', 'Running', 'Succeeded', 'Failed', 'Unknown'].includes(p.status?.phase) ? p.status.phase : null,
+    ready: ready === 'True' ? true : ready === 'False' ? false : null, terminating: Boolean(p.metadata.deletionTimestamp), validationError,
+    // 不帶出 raw status messages、termination logs 或任意 API body。
+    containers: Array.isArray(statuses) ? statuses.map(v => ({
+      name: v.name, ready: typeof v.ready === 'boolean' ? v.ready : null,
+      state: v.state?.running ? 'running' : v.state?.waiting ? 'waiting' : v.state?.terminated ? 'terminated' : 'unknown',
+      restarts: Number.isSafeInteger(v.restartCount) && v.restartCount >= 0 ? v.restartCount : null,
+    })) : null,
+  } }
 }
 function podFacts(p, sets, d) {
   const rs = sets.find(s => controller(p, 'ReplicaSet', s.metadata.uid))
@@ -259,14 +285,17 @@ async function waitHealthy(c, target, before, receipt, tuple, runner, options) {
 
 export async function reconcile(plan, runner) {
   validatePlan(plan)
-  const current = await clusterSnapshot(plan.config, runner, false)
-  return { status: 'readonly-observation', targets: plan.config.targets.map(target => {
+  const current = await readCluster(plan.config, runner, false, true)
+  return { status: 'readonly-observation', completionClaimed: false, targets: plan.config.targets.map(target => {
     const old = plan.baseline[target], now = current[target]
     const sameOwner = old.uid === now.uid && old.nonImageHash === now.nonImageHash
     const classification = sameOwner && now.containers.every(v => v.image === plan.config.image) ? 'new-image-observed-not-completion-proof'
       : sameOwner && now.specHash === old.specHash ? 'old-image-observed-not-retry-authorization' : 'drift-or-unknown'
     return { target, classification, current: now }
-  }), protected: names.filter(n => !plan.config.targets.includes(n)).map(name => ({ name, unchanged: hash(protectedFacts(current[name])) === hash(protectedFacts(plan.baseline[name])) })) }
+  }), protected: names.filter(n => !plan.config.targets.includes(n)).map(name => {
+    const { podObservations, ...snapshot } = current[name]
+    return { name, unchanged: hash(protectedFacts(snapshot)) === hash(protectedFacts(plan.baseline[name])) }
+  }) }
 }
 
 // 此 function 會以 Node 一次性送入 manager；default 邊界全部在函式內，toString() 不依賴 module closure。
