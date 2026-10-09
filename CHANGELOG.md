@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.8.0...v0.9.0) (2026-10-09)
+
+
+### Features
+
+* **deploy:** 新增 Worker 本機受控部署腳本 ([#113](https://github.com/Sevenflanks/opencode-manager-web/issues/113)) ([b030aed](https://github.com/Sevenflanks/opencode-manager-web/commit/b030aed135f3c1de152f5f7f6e8167f45689962d))
+
 ## [0.8.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.7.0...v0.8.0) (2026-10-08)
 
 
