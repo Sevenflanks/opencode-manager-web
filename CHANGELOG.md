@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.7.0...v0.8.0) (2026-10-08)
+
+
+### Features
+
+* **web:** 改善 Worker 啟動與 Session 操作 ([#111](https://github.com/Sevenflanks/opencode-manager-web/issues/111)) ([3da429b](https://github.com/Sevenflanks/opencode-manager-web/commit/3da429bab7722dc17b81bd950d7626925543f607))
+
 ## [0.7.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.6.1...v0.7.0) (2026-10-08)
 
 
