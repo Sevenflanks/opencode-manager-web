@@ -7,6 +7,9 @@ import os from 'node:os'
 import path from 'node:path'
 import vm from 'node:vm'
 import { spawn } from 'node:child_process'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
+import { StringDecoder } from 'node:string_decoder'
 
 const digest = `sha256:${'a'.repeat(64)}`
 const fixtureTemp = process.env.OMW_TEST_TMP_DIR ?? os.tmpdir()
@@ -316,6 +319,101 @@ test('real runner executes argument arrays with shell disabled and suppresses st
   assert.ok(!JSON.stringify(result).includes('synthetic-secret'))
 })
 
+async function controlledStdout(bytes, width) {
+  const child = new EventEmitter()
+  child.stdout = new PassThrough(); child.stderr = new PassThrough()
+  child.kill = () => {}; child.unref = () => {}
+  // 固定 byte 邊界，不靠 OS pipe 時序；只替換 spawn，執行未修改的公開 runner 本體。
+  const ownedSpawn = () => {
+    queueMicrotask(() => {
+      child.stdout.once('end', () => child.emit('close', 0))
+      for (let offset = 0; offset < bytes.length; offset += width) child.stdout.write(bytes.subarray(offset, offset + width))
+      child.stderr.end('synthetic-private-stderr')
+      child.stdout.end()
+    })
+    return child
+  }
+  const runner = vm.runInNewContext(`(${processRunner.toString()})`, { spawn: ownedSpawn, process, path, Buffer, StringDecoder, setTimeout, clearTimeout })
+  try { return await runner(process.execPath, ['controlled-stdout'], { timeout: 1000 }) }
+  finally {
+    child.stdout.destroy(); child.stderr.destroy()
+    assert.equal(child.stdout.destroyed && child.stderr.destroyed, true)
+  }
+}
+
+for (const format of ['JSON', 'text']) test(`unaltered runner preserves deterministic split UTF-8 ${format} and hash`, async () => {
+  const filename = '/中文目錄/測試😀🚀.txt'
+  const text = format === 'JSON' ? JSON.stringify({ entries: [{ path: filename }] }) : `ASCII prefix\n${filename}\n最後🙂`
+  for (const width of [1, 2, 3, 4, 7]) {
+    const result = await controlledStdout(Buffer.from(text), width)
+    assert.equal(result.code, 0); assert.equal(result.timedOut, false)
+    if (format === 'JSON') assert.equal(JSON.parse(result.stdout).entries[0].path, filename, `byte width ${width}`)
+    assert.equal(result.stdout, text, `byte width ${width}`)
+    assert.equal(hash(result.stdout), hash(text))
+    assert.ok(!JSON.stringify(result).includes('synthetic-private'))
+  }
+})
+
+test('unaltered runner preserves ASCII and flushes incomplete final UTF-8 bytes in text fallback', async () => {
+  const ascii = 'ASCII only\nspace & ; $value'
+  assert.equal((await controlledStdout(Buffer.from(ascii), 1)).stdout, ascii)
+  const bytes = Buffer.concat([Buffer.from('最後😀:'), Buffer.from([0xf0, 0x9f, 0x99])])
+  for (const width of [1, 2, bytes.length]) {
+    const result = await controlledStdout(bytes, width)
+    assert.equal(result.stdout, bytes.toString('utf8'), `end flush at byte width ${width}`)
+    assert.ok(result.stdout.endsWith('\uFFFD'), 'incomplete final bytes are not silently dropped')
+  }
+  const atLimit = Buffer.concat([Buffer.alloc(3_999_999, 0x61), Buffer.from([0xe4])])
+  const excess = await controlledStdout(atLimit, 65_536)
+  assert.equal(excess.stdout, ''); assert.equal(excess.timedOut, true)
+  assert.equal(excess.producer.reason, 'output-limit', 'end flush must not bypass the decoded output cap')
+})
+
+for (const format of ['ASCII', 'UTF-8']) test(`unaltered runner accepts exactly 4 MB ${format} and redacts one byte over limit`, async () => {
+  const text = format === 'ASCII' ? 'a'.repeat(4_000_000) : `${'中'.repeat(1_333_333)}!`
+  assert.equal(Buffer.byteLength(text), 4_000_000)
+  const exact = await controlledStdout(Buffer.from(text), 65_536)
+  assert.equal(exact.code, 0); assert.equal(exact.stdout, text)
+  const excess = await controlledStdout(Buffer.from(`${text}x`), 65_536)
+  assert.equal(excess.code, null); assert.equal(excess.stdout, ''); assert.equal(excess.timedOut, true)
+  assert.equal(excess.producer.reason, 'output-limit'); assert.equal(excess.producer.descendantExitVerified, false)
+  assert.ok(!JSON.stringify(excess).includes('synthetic-private'))
+})
+
+test('public CLI plan and deploy preserve Unicode workspace snapshot across different byte splits', async () => {
+  const scratch = await mkdtemp(path.join(fixtureTemp, 'omw-deploy-unicode-'))
+  try {
+    const { writeFile } = await import('node:fs/promises')
+    const f = fixture(), filename = '/中文目錄/測試😀🚀.txt'
+    for (const inventory of Object.values(f.inventories)) inventory.entries.push({ path: filename, type: 'file', size: 1, mtimeMs: 1, ctimeMs: 1, inode: 1, mode: 1 })
+    const reference = await createPlan(f.c, f.runner)
+    const input = path.join(scratch, 'config.json'); await writeFile(input, JSON.stringify(f.c))
+    let width = 1
+    const runner = async (exe, args, opts) => {
+      const reply = await f.runner(exe, args, opts)
+      assert.equal(reply.code, 0)
+      return controlledStdout(Buffer.from(reply.stdout), width)
+    }
+    const plan = await main(['plan', '--config', input], { runner, print: () => {} })
+    assert.equal(plan.data['omw-beta'].workspace[0].path, filename)
+    assert.equal(hash(plan.data), hash(reference.data)); assert.equal(plan.digest, reference.digest)
+    width = 2
+    const planFile = path.join(scratch, 'plan.json'); await writeFile(planFile, JSON.stringify(plan))
+    const output = path.join(scratch, 'run')
+    const deployRunner = async (exe, args, opts) => {
+      if (exe === 'kubectl' && args[5] === 'patch') {
+        const files = (await readdir(output)).filter(v => /^\d{4}\.json$/.test(v)).sort()
+        f.records.push(JSON.parse(await readFile(path.join(output, files.at(-1)), 'utf8')))
+      }
+      return runner(exe, args, opts)
+    }
+    f.options.readPatch = file => readFile(file, 'utf8')
+    const result = await main(['deploy', '--plan', planFile, '--execute', '--out', output, '--ack-discard', plan.digest, '--maintenance-window'], { runner: deployRunner, print: () => {} })
+    assert.equal(result.status, 'complete')
+    assert.deepEqual(f.calls.filter(c => c.args[5] === 'patch').map(c => c.args[7]), ['omw-beta', 'omw-alpha'])
+  } finally { await rm(scratch, { recursive: true, force: true }) }
+})
+
 for (const reason of ['deadline', 'output-limit']) test(`unaltered runner abandons owned finite Node fixture on ${reason}, redacts output and closes`, { timeout: 10_000 }, async () => {
   let child, closed
   // 不改 runner 本體；只包 spawn 邊界保留當次 handle，仍啟動真 Node，且 fixture 不產生 descendants。
@@ -325,7 +423,7 @@ for (const reason of ['deadline', 'output-limit']) test(`unaltered runner abando
     closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })))
     return child
   }
-  const runner = vm.runInNewContext(`(${processRunner.toString()})`, { spawn: ownedSpawn, process, path, Buffer, setTimeout, clearTimeout })
+  const runner = vm.runInNewContext(`(${processRunner.toString()})`, { spawn: ownedSpawn, process, path, Buffer, StringDecoder, setTimeout, clearTimeout })
   // 即使 test interruption 或 runner 的 kill 失效，也在 2 秒內自行退出。
   const script = `setTimeout(() => process.exit(0), 2000); process.stderr.write('synthetic-private-stderr'); process.stdout.write(${reason === 'output-limit' ? "'synthetic-private-stdout'.repeat(200_000)" : "'synthetic-private-stdout'"});`
   try {
@@ -442,6 +540,40 @@ test('rollout deadline unresolved never retries a mutation', async () => {
   f.options.onCall = (exe, args) => { if (exe === 'kubectl' && args[5] === 'get' && f.deployments['omw-beta'].metadata.generation > 1) f.deployments['omw-beta'].status.observedGeneration = 1 }
   await assert.rejects(deploy(plan, { ...f.execution, ackDiscard: plan.digest, now: () => clock, rolloutTimeoutMs: 2000, sleep: async ms => { clock += ms } }), /ROLLOUT_DEADLINE_UNRESOLVED/)
   assert.equal(f.calls.filter(c => c.args[5] === 'patch').length, 1)
+})
+for (const transition of ['Pending', 'missing status']) test(`post-patch ${transition} retries GET to Ready, verifies beta before alpha and never repatches`, async () => {
+  const f = fixture(); const plan = await createPlan(f.c, f.runner)
+  const pending = new Set(), transitions = [], sleeps = []
+  let clock = 0
+  f.options.onCall = (exe, args) => {
+    if (exe === 'kubectl' && args[5] === 'patch') {
+      const target = args[7]
+      if (target === 'omw-alpha') assert.ok(f.records.some(r => r.status === 'verified' && r.target === 'omw-beta'))
+      pending.add(target)
+    }
+  }
+  f.options.resources = (sets, pods) => {
+    for (const target of pending) {
+      // 只在 patch 後 generation=2 且 observedGeneration 已追上時改 Pod，確實觸及 waitHealthy catch。
+      if (f.deployments[target].metadata.generation !== 2) continue
+      assert.equal(f.deployments[target].status.observedGeneration, 2)
+      const pod = pods.find(p => p.metadata.name === `${target}-pod`)
+      if (transition === 'Pending') { pod.status.phase = 'Pending'; pod.status.conditions[0].status = 'False' }
+      else delete pod.status
+      transitions.push(target)
+    }
+  }
+  const result = await deploy(plan, { ...f.execution, ackDiscard: plan.digest, now: () => clock, rolloutTimeoutMs: 3000, sleep: async ms => {
+    assert.equal(ms, 1000)
+    const target = [...pending][0]
+    assert.ok(transitions.includes(target), 'retry follows an observed transitional Pod')
+    assert.equal(f.records.at(-1).status, 'accepted'); assert.equal(f.records.at(-1).target, target)
+    sleeps.push(target); pending.delete(target); clock += ms
+  } })
+  assert.equal(result.status, 'complete')
+  assert.deepEqual(sleeps, ['omw-beta', 'omw-alpha'])
+  assert.deepEqual(f.calls.filter(c => c.args[5] === 'patch').map(c => c.args[7]), ['omw-beta', 'omw-alpha'])
+  assert.deepEqual(f.records.map(r => [r.status, r.target ?? null]), [['intent', 'omw-beta'], ['accepted', 'omw-beta'], ['verified', 'omw-beta'], ['intent', 'omw-alpha'], ['accepted', 'omw-alpha'], ['verified', 'omw-alpha'], ['complete', null]])
 })
 test('Pod identity drift during health inspection is rejected before verified receipt', async () => {
   const f = fixture(); const plan = await createPlan(f.c, f.runner)

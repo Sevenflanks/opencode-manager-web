@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, readFile, readdir, realpath, lstat, open } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { StringDecoder } from 'node:string_decoder'
 import { createPlan, deploy, guard, reconcile, safeCode, validatePlan } from './deploy-core.mjs'
 
 const checkout = fileURLToPath(new URL('../..', import.meta.url))
@@ -47,7 +48,9 @@ export async function processRunner(executable, args, { timeout }) {
     executable = process.execPath; args = [npmCli, ...args]
   }
   return new Promise(resolve => {
-    let output = '', settled = false
+    let output = '', outputBytes = 0, settled = false
+    // workspace path 可能跨 Buffer 邊界；逐 chunk toString 會破壞字元並誤判 snapshot drift。
+    const decoder = new StringDecoder('utf8')
     const child = spawn(executable, args, { shell: false, env: environment, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     const finish = result => { if (!settled) { settled = true; clearTimeout(timer); resolve(result) } }
     const abandon = reason => {
@@ -55,11 +58,20 @@ export async function processRunner(executable, args, { timeout }) {
       finish({ code: null, stdout: '', timedOut: true, producer: { rootPid: child.pid ?? null, reason, descendantExitVerified: false } })
     }
     const timer = setTimeout(() => abandon('deadline'), timeout)
-    child.stdout.on('data', data => { output += data.toString(); if (Buffer.byteLength(output) > 4_000_000) abandon('output-limit') })
+    const append = text => { output += text; if (Buffer.byteLength(output) > 4_000_000) abandon('output-limit') }
+    child.stdout.on('data', data => {
+      outputBytes += data.length
+      if (outputBytes > 4_000_000) return abandon('output-limit')
+      append(decoder.write(data))
+    })
     // Raw stderr can contain credentials, auth headers or HTTP body; never publish or persist it.
     child.stderr.on('data', () => {})
     child.once('error', () => finish({ code: null, stdout: '', timedOut: false }))
-    child.once('close', code => finish({ code, stdout: code === 0 ? output : '', timedOut: false }))
+    child.once('close', code => {
+      if (settled) return
+      append(decoder.end()) // 一般文本也須保留最後不完整 bytes 的 replacement character；仍套用 output cap。
+      finish({ code, stdout: code === 0 ? output : '', timedOut: false })
+    })
   })
 }
 

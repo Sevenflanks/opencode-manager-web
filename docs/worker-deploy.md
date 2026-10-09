@@ -171,9 +171,13 @@ Pending、CrashLoop、缺少 container status 或 RS template 不符時，`statu
 
 ### 本輪驗證範圍
 
-`node --test scripts/worker/deploy.test.mjs` 使用 injected fake process runner、fixture API responses、短命 Node argument-array fixture，所有 temp resources `finally` 清理。另以不修改本體的 serialized `processRunner`、持有實際 spawn handle 的邊界執行 timeout／output-limit Node fixtures；fixtures 無 descendants、兩秒自行退出，`finally` 確認當次 child close。最新 **82 tests passed、0 failed、0 skipped**；測試本身沒有真正 build/push、kubectl、models、production credentials／auth DB 存取或 cluster 變更。
+`node --test scripts/worker/deploy.test.mjs` 使用 injected fake process runner、fixture API responses、短命 Node argument-array fixture，所有 temp resources `finally` 清理。另以不修改本體的 serialized `processRunner`、持有實際 spawn handle 的邊界執行 timeout／output-limit Node fixtures；fixtures 無 descendants、兩秒自行退出，`finally` 確認當次 child close。歷史結果保留：初版 `867c963` 為 **63 passed**，status 修正版本 `292fccb` 為 **82 passed**，均 0 failed／0 skipped。
 
-2026-10-09 另在實際環境執行一次成功的 **readonly plan**：核對已發布 v0.8.0 的 release／npm、remote manifest/index-child-config reference 與 source labels；取得兩個 Worker 的 owner UID chain、Ready、Manager 0.8.0、空 current／pending／execution namespace、各兩筆 stopped history 及三個 workspace metadata entries。原生 profile 可讀；前後兩 Worker 與 gateway 的 UID、container identities、non-image fingerprint 與 snapshot 均相同。29 個 external CLI 全部 exit 0、無 timeout；本輪約 16.6 秒。隨後 no-execute deploy preview 回傳相同 plan digest，**沒有額外 external CLI calls**。
+本次 review workset 2 新增 8 tests：固定 1／2／3／4／7-byte 切分的 controlled stdout streams 執行未修改的 serialized runner，驗中文／emoji JSON path、一般文本與 hash；涵蓋 ASCII、結尾不完整 UTF-8 bytes 的 flush、4 MB 邊界與超量去敏。公開 CLI plan/deploy 使用不同 byte 切分，驗相同 workspace data hash 與 plan digest；rollout fixture 則在 patch 後先 Pending／缺 status，再 Ready，驗 beta verified 先於 alpha patch，且每 target 僅 patch 一次。正式 runner 已改用 `StringDecoder`，跨 chunk 保留 UTF-8 狀態並在 close flush，原始 bytes 與解碼後輸出均受 4 MB 限制。
+
+本次同一組 **90 tests：修正前 RED 為 85 passed／5 failed；修正後 GREEN 為 90 passed／0 failed／0 skipped**。既有 timeout、output-limit、raw stderr 去敏與 readonly status 回歸皆通過；streams 與 journal fixtures 清理完成。測試沒有真正 build/push、kubectl、models、production credentials／auth DB 存取或 cluster 變更。
+
+2026-10-09 的歷史實機紀錄（保留於原交付版本 `867c963`；本次未重跑）曾成功執行 **readonly plan**：核對已發布 v0.8.0 的 release／npm、remote manifest/index-child-config reference 與 source labels；取得兩個 Worker 的 owner UID chain、Ready、Manager 0.8.0、空 current／pending／execution namespace、各兩筆 stopped history 及三個 workspace metadata entries。原生 profile 可讀；前後兩 Worker 與 gateway 的 UID、container identities、non-image fingerprint 與 snapshot 均相同。29 個 external CLI 全部 exit 0、無 timeout；當時約 16.6 秒。隨後 no-execute deploy preview 回傳相同 plan digest，**沒有額外 external CLI calls**。這是舊版本的實機證據，不是 `292fccb` 或本次 UTF-8 修正的實機驗收。
 
 第一輪 readonly plan 曾因誤讀 `connectivity.managerVersion` 而安全拒絕；實際欄位為 `connectivity.manager.version`。已修正並以直接執行 inspection 邏輯的 regression 保護，原失敗報告保留。這兩輪都沒有 patch、Start／Stop、模型請求或新登入，沒有以 mock 取代實機結果。
 
