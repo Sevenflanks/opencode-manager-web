@@ -151,13 +151,43 @@ test("stopped without allocation is cheap and idempotent; legacy known epoch can
   } finally { await f.close() }
 })
 
-test("local stopped recovery still uses local port proof without requiring Worker scope", async () => {
-  const f = stoppedFixture()
+test("local stopped recovery still uses local port proof without requiring Worker scope", { timeout: 10_000 }, async () => {
+  const listener = createServer()
+  const closeListener = async () => {
+    if (listener.listening) await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()))
+  }
+  const lifetime = setTimeout(() => { if (listener.listening) listener.close() }, 8_000)
+  let f: ReturnType<typeof stoppedFixture> | undefined
   try {
+    // 用自己持有的 OS 配發 port 驗證占用與釋放，不假設固定 port 在 CI 上可用。
+    await new Promise<void>((resolve, reject) => {
+      listener.once("error", reject)
+      listener.listen(0, "127.0.0.1", resolve)
+    })
+    const address = listener.address()
+    assert.ok(address && typeof address !== "string")
+    f = stoppedFixture("stopped", address.port)
     Object.defineProperty(f.runtime, "allocationScope", { value: undefined })
     f.control.inspection.portAvailable = false
-    assert.equal((await f.service.recheck(f.record.id)).recovery.removeAllowed, true)
-  } finally { await f.close() }
+    assert.equal(listener.listening, true)
+    const occupied = await f.service.recheck(f.record.id)
+    assert.equal(listener.listening, true)
+    assert.equal(occupied.recovery.removeAllowed, false)
+    assert.equal(occupied.recovery.recheckAllowed, true)
+    assert.equal(occupied.error, "STOPPED_ALLOCATION_PORT_UNVERIFIED")
+    assert.deepEqual(f.repository.getAllocationForInstance(f.record.id), f.allocation)
+
+    await closeListener()
+    assert.equal(listener.listening, false)
+    const released = await f.service.recheck(f.record.id)
+    assert.equal(released.recovery.removeAllowed, true)
+    assert.equal(released.recovery.recheckAllowed, false)
+    assert.equal(released.error, null)
+    assert.equal(f.repository.getAllocationForInstance(f.record.id), null)
+  } finally {
+    clearTimeout(lifetime)
+    try { await closeListener() } finally { await f?.close() }
+  }
 })
 
 test("Worker Stop retains allocation when execution port is busy even if Manager loopback is free", async () => {
