@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto"
-import { lstat, mkdir, readdir, readFile, readlink, symlink, open, link, rename, unlink } from "node:fs/promises"
+import { lstat, mkdir, readdir, readFile, readlink, symlink, open, link, rename, unlink, rmdir } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 const manifestName = ".omw-source-manifest.json"
+const migrationName = ".omw-skills-migration.json"
 const object = value => value !== null && typeof value === "object" && !Array.isArray(value)
 const text = value => typeof value === "string" && value.length > 0 && !/[\0\r\n]/.test(value)
 const digest = value => createHash("sha256").update(value).digest("hex")
@@ -74,8 +75,8 @@ function validateAuth(content) {
     } else fail("auth type 無效。")
   }
 }
-async function atomicFile(filename, content, createOnly = false) {
-  await privateDirectory(path.dirname(filename))
+async function atomicFile(filename, content, createOnly = false, { directory = privateDirectory, beforePublish } = {}) {
+  await directory(path.dirname(filename))
   const info = await metadata(filename)
   if (info && (!info.isFile() || info.isSymbolicLink())) fail("不可覆寫非 regular file。")
   if (info) owned(info)
@@ -84,6 +85,7 @@ async function atomicFile(filename, content, createOnly = false) {
     const file = await open(temporary, "wx", 0o600)
     try { await file.writeFile(content); await file.sync() }
     finally { await file.close() }
+    if (beforePublish) await beforePublish()
     // rename 會覆寫併發 winner；hard-link publish 只在 destination 不存在時成功。
     if (createOnly) {
       try { await link(temporary, filename) }
@@ -111,7 +113,7 @@ async function seedAuth(environment) {
 function relativeName(name) {
   if (typeof name !== "string" || !name || path.isAbsolute(name) || name.includes("\\")
     || name.split("/").some(part => !part || part === "." || part === "..")
-    || name === manifestName || name === "gitconfig" || name === "gh" || name.startsWith("gh/")
+    || /[\x00-\x1f\x7f]/.test(name) || name === migrationName || name === manifestName || name === "gitconfig" || name === "gh" || name.startsWith("gh/")
     || name.split("/").includes("auth.json")) fail("Profile 包含保留或無效檔名。")
   return name
 }
@@ -119,85 +121,243 @@ function profileDirectory(environment) {
   const home = absolute(environment.HOME)
   const runtime = absolute(environment.OMW_WORKER_PROFILE_DIR ?? path.join(home, ".config/omw-profile"))
   const global = path.join(environment.XDG_CONFIG_HOME ? absolute(environment.XDG_CONFIG_HOME) : path.join(home, ".config"), "opencode")
-  if (inside(runtime, global) || inside(global, runtime) || inside(runtime, authPath(environment))) fail("Profile 必須是獨立的工作目錄。")
+  const skills = path.join(home, ".agents/skills")
+  const auth = path.dirname(authPath(environment))
+  if (inside(runtime, global) || inside(global, runtime) || inside(runtime, auth) || inside(auth, runtime)
+    || inside(runtime, skills) || inside(skills, runtime) || inside(runtime, home)) fail("Profile 必須是獨立的工作目錄。")
   return runtime
+}
+function collision(name) {
+  const error = new Error("Profile collision")
+  error.profileCollision = relativeName(name)
+  throw error
+}
+function migrationRetry() {
+  const error = new Error("Migration source 改變")
+  error.profileRetry = true
+  throw error
+}
+const isSkill = name => name.startsWith("skills/")
+const validHash = hash => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash)
+async function tree(directory, prefix = "", requireOwner = false) {
+  const files = new Map()
+  await noSymlinks(directory)
+  const info = await metadata(directory)
+  if (!info) return files
+  if (!info.isDirectory()) fail("Profile root 不是 directory。")
+  if (requireOwner) owned(info)
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const name = relativeName(prefix + entry.name)
+    const filename = path.join(directory, entry.name)
+    if (requireOwner) owned(await lstat(filename))
+    if (entry.isDirectory()) for (const [child, bytes] of await tree(filename, name + "/", requireOwner)) files.set(child, bytes)
+    else if (entry.isFile()) files.set(name, await regular(filename, 16 * 1024 * 1024))
+    else fail("Profile 只允許 regular files/directories。")
+  }
+  return files
+}
+async function fileHash(filename) {
+  await noSymlinks(filename)
+  if (!await metadata(filename)) return null
+  owned(await lstat(filename))
+  return digest(await regular(filename, 16 * 1024 * 1024))
 }
 async function copyProfile(environment, changes) {
   if (environment.OMW_WORKER_PROFILE_SOURCE === undefined) return "absent"
   const source = absolute(environment.OMW_WORKER_PROFILE_SOURCE)
   const runtime = profileDirectory(environment)
-  if (inside(source, runtime) || inside(runtime, source)) fail("Profile source/runtime 不可重疊。")
-  const files = new Map()
-  async function collect(directory, prefix = "") {
-    await noSymlinks(directory)
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      const name = relativeName(prefix + entry.name)
-      if (entry.isDirectory()) await collect(path.join(directory, entry.name), name + "/")
-      else if (entry.isFile()) files.set(name, await regular(path.join(directory, entry.name), 16 * 1024 * 1024))
-      else fail("Profile 只允許 regular files/directories。")
-    }
+  const home = absolute(environment.HOME)
+  const skills = path.join(home, ".agents/skills")
+  const globalConfig = path.join(environment.XDG_CONFIG_HOME ? absolute(environment.XDG_CONFIG_HOME) : path.join(home, ".config"), "opencode")
+  const auth = path.dirname(authPath(environment))
+  if (inside(source, runtime) || inside(runtime, source) || inside(source, skills) || inside(skills, source)) fail("Profile source/runtime/skills 不可重疊。")
+  for (const protectedRoot of [globalConfig, auth]) {
+    if (inside(skills, protectedRoot) || inside(protectedRoot, skills) || inside(source, protectedRoot) || inside(protectedRoot, source)) fail("Profile source/skills 與 global config/auth 不可重疊。")
   }
-  await collect(source)
+  // HOME 由既有 runtime identity 提供；不搬 source、改 XDG 或建立 mirror/link。
+  await noSymlinks(runtime)
+  await noSymlinks(skills)
+  const files = await tree(source)
   if (!files.has("opencode.json")) fail("Profile 缺少 opencode.json。")
   const config = path.join(runtime, "opencode.json")
   if (environment.OPENCODE_CONFIG && absolute(environment.OPENCODE_CONFIG) !== config) fail("OPENCODE_CONFIG 必須指向 runtime opencode.json。")
   if (environment.OPENCODE_CONFIG_DIR && absolute(environment.OPENCODE_CONFIG_DIR) !== runtime) fail("OPENCODE_CONFIG_DIR 必須指向 runtime profile。")
-  await privateDirectory(runtime)
   const manifestFile = path.join(runtime, manifestName)
+  const receiptFile = path.join(runtime, migrationName)
   let prior = { version: 1, files: {} }
+  let priorBytes = Buffer.from("")
   if (await metadata(manifestFile)) {
-    prior = JSON.parse((await regular(manifestFile, 1024 * 1024)).toString("utf8"))
-    if (!object(prior) || prior.version !== 1 || !object(prior.files)) fail("Profile manifest 無效。")
+    priorBytes = await regular(manifestFile, 1024 * 1024)
+    prior = JSON.parse(priorBytes)
+    if (!object(prior) || ![1, 2].includes(prior.version) || !object(prior.files)
+      || (prior.version === 2 && (prior.skillsTarget !== "home-agents" || !object(prior.userSkills)))) fail("Profile manifest 無效。")
     for (const [name, hash] of Object.entries(prior.files)) {
       relativeName(name)
-      if (typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)) fail("Profile manifest 無效。")
+      if (!validHash(hash)) fail("Profile manifest 無效。")
+    }
+    for (const [name, baseline] of Object.entries(prior.userSkills ?? {})) {
+      relativeName(name)
+      if (!isSkill(name) || name in prior.files || (baseline !== null && !validHash(baseline))) fail("Profile manifest 無效。")
+    }
+  }
+  // v1 skills hashes 僅指 old profile；絕不可據此清除 global 同名使用者檔。
+  const target = name => isSkill(name) ? path.join(skills, name.slice(7)) : path.join(runtime, name)
+  const oldSkills = await tree(path.join(runtime, "skills"), "skills/", true)
+  const globalFiles = await tree(skills, "skills/", true)
+  const sourceHashes = Object.fromEntries([...files].map(([name, bytes]) => [name, digest(bytes)]))
+  let receipt
+  let receiptHash = await fileHash(receiptFile)
+  if (receiptHash !== null) {
+    receipt = JSON.parse(await regular(receiptFile, 1024 * 1024))
+    if (!object(receipt) || receipt.version !== 1 || !validHash(receipt.prior) || !object(receipt.sources) || !object(receipt.moves)) fail("Migration receipt 無效。")
+    // manifest 已發布、receipt cleanup 中斷：不把 stale receipt 用於另一輪 source 升級。
+    if (prior.version === 2 && receipt.prior !== digest(priorBytes)) receipt = undefined
+    else {
+      if (receipt.prior !== digest(priorBytes) || JSON.stringify(receipt.sources) !== JSON.stringify(sourceHashes)) migrationRetry()
+      for (const [name, move] of Object.entries(receipt.moves)) {
+        relativeName(name)
+        if (!isSkill(name) || !object(move) || !validHash(move.oldHash) || !validHash(move.hash)
+          || typeof move.user !== "boolean" || (move.baseline !== null && !validHash(move.baseline))) fail("Migration receipt 無效。")
+        const old = oldSkills.get(name)
+        const current = globalFiles.get(name)
+        if (old && digest(old) !== move.oldHash) collision(name)
+        if (!old && (!current || digest(current) !== move.hash)) collision(name)
+      }
     }
   }
   const hashes = Object.create(null)
+  const userSkills = Object.create(null)
   const writes = new Map()
   const removals = new Map()
+  const moves = Object.create(null)
+  const names = new Set([...files.keys(), ...Object.keys(prior.files), ...Object.keys(prior.userSkills ?? {}), ...oldSkills.keys(), ...Object.keys(receipt?.moves ?? {})])
+  const planWrite = async (name, content, approvedHash) => {
+    const destination = target(name)
+    const hash = await fileHash(destination)
+    // Caller 已按 ownership／collision 核准這份 bytes（或 absent=null）。重讀只能驗證，
+    // 不可把已觀察到的 user late write 重新核准為可覆寫基準；這不是 filesystem CAS。
+    if (hash !== approvedHash) collision(name)
+    if (approvedHash !== digest(content)) writes.set(destination, { name, content, expected: approvedHash })
+  }
   // 全部 collision／移除目標先驗完，避免後段衝突讓設定指向尚未完整更新的 bundle。
-  for (const [name, content] of files) {
-    const destination = path.join(runtime, name)
-    hashes[name] = digest(content)
-    await noSymlinks(destination)
-    if (await metadata(destination)) {
-      const current = digest(await regular(destination, 16 * 1024 * 1024))
-      // 接受操作者已合併或上次部分升級的成果，即使 manifest 還是舊版也可重試。
-      if (current === hashes[name]) continue
-      if (!prior.files[name]) fail("Profile 新增來源與未追蹤 runtime 檔案衝突。")
-      if (prior.files[name] && current !== prior.files[name]) {
-        if (hashes[name] !== prior.files[name]) fail("Profile 升級與使用者修改衝突。")
-        continue
+  for (const name of names) {
+    const content = files.get(name)
+    const incoming = sourceHashes[name]
+    const baseline = prior.files[name]
+    const old = oldSkills.get(name)
+    const resumed = receipt?.moves[name]
+    if (isSkill(name) && (old || resumed)) {
+      const currentBytes = globalFiles.get(name)
+      const currentHash = currentBytes ? digest(currentBytes) : null
+      const oldHash = old ? digest(old) : resumed.oldHash
+      const user = resumed ? resumed.user : prior.version !== 1 || !baseline || oldHash !== baseline
+      const sourceBaseline = resumed ? resumed.baseline : prior.version === 1 ? baseline ?? null : null
+      let output = old ?? currentBytes
+      if (content) {
+        if (user && digest(output) !== incoming && incoming !== sourceBaseline) collision(name)
+        if (!user || digest(output) === incoming) { output = content; hashes[name] = incoming }
+        else userSkills[name] = sourceBaseline
+      } else if (user) userSkills[name] = null
+      if (content || user) {
+        const outputHash = digest(output)
+        if (currentHash !== null && currentHash !== outputHash && currentHash !== oldHash) collision(name)
+        await planWrite(name, output, currentHash)
+        moves[name] = { oldHash, hash: outputHash, user: !hashes[name], baseline: userSkills[name] ?? null }
       }
+      if (old) removals.set(path.join(runtime, name), { name, hash: oldHash, migration: true })
+      continue
     }
-    writes.set(destination, content)
-  }
-  // Manifest 只管理 curated files；cache／使用者新增檔案不做 recursive cleanup。
-  for (const name of Object.keys(prior.files)) if (!files.has(name)) {
-    const destination = path.join(runtime, name)
-    if (await metadata(destination)) {
-      await noSymlinks(destination)
-      const info = await lstat(destination)
-      if (!info.isFile()) fail("Managed profile file 不是 regular file。")
-      owned(info)
-      if (digest(await regular(destination, 16 * 1024 * 1024)) === prior.files[name]) removals.set(destination, { name, hash: prior.files[name] })
+    const destination = target(name)
+    const current = await fileHash(destination)
+    // v1 target mapping 不授予 global ownership；只有 incoming 相同才可認作已發布。
+    const managed = !isSkill(name) || prior.version === 2 ? baseline : undefined
+    if (content) {
+      if (current === incoming || current === null || current === managed) {
+        hashes[name] = incoming
+        await planWrite(name, content, current)
+      } else if (managed && incoming === managed) hashes[name] = incoming
+      else if (isSkill(name) && Object.hasOwn(prior.userSkills ?? {}, name) && incoming === prior.userSkills[name]) {
+        userSkills[name] = prior.userSkills[name]
+      } else collision(name)
+    } else if (managed && current !== null) {
+      if (current === managed) removals.set(destination, { name, hash: managed })
       else changes.retainedManagedFiles.push({ path: name, reason: "user-modified" })
+    } else if (isSkill(name) && Object.hasOwn(prior.userSkills ?? {}, name) && current !== null) userSkills[name] = null
+  }
+  const nextManifest = JSON.stringify({ version: 2, skillsTarget: "home-agents", files: hashes, userSkills }) + "\n"
+  const expectedManifest = await fileHash(manifestFile)
+  if (expectedManifest !== (priorBytes.length ? digest(priorBytes) : null)) fail("Manifest 併發改變。")
+  // 只保留 hashes 的 retry receipt：custom 已移除 old、manifest 尚未發布時仍能辨認 user ownership。
+  // 先完成全部 preflight；receipt 不放 skills，也不是第二份 skills 或整批 filesystem transaction。
+  if (Object.keys(moves).length) {
+    const bytes = JSON.stringify({ version: 1, prior: digest(priorBytes), sources: sourceHashes, moves }) + "\n"
+    if (receipt) {
+      if (await fileHash(receiptFile) !== digest(bytes)) fail("Migration receipt 併發改變。")
+    } else {
+      if (await fileHash(receiptFile) !== receiptHash) fail("Migration receipt 併發改變。")
+      if (receiptHash !== null) await unlink(receiptFile)
+      if (!await atomicFile(receiptFile, bytes, true)) fail("Migration receipt 併發建立。")
+      receiptHash = digest(bytes)
     }
   }
-  // 維持逐檔 atomic publish 與舊 manifest 的 partial-retry 契約，不做整批 rollback。
-  for (const [destination, content] of writes) await atomicFile(destination, content)
-  for (const [destination, { name, hash }] of removals) {
-    if (!await metadata(destination)) continue
-    owned(await lstat(destination))
-    // 只移除仍等於上次受管內容的 regular file；不跟隨外部 symlink 或清除整個目錄。
-    if (digest(await regular(destination, 16 * 1024 * 1024)) === hash) {
-      await unlink(destination)
-      changes.removedManagedFiles.push(name)
-    } else changes.retainedManagedFiles.push({ path: name, reason: "user-modified" })
+  // global user directories 可以已有一般 mode；不 chmod 使用者目錄，新建目錄仍為 0700。
+  async function skillDirectory(directory) {
+    await noSymlinks(directory)
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    const info = await lstat(directory)
+    if (!info.isDirectory()) fail("Skills destination 無效。")
+    owned(info)
   }
-  // 移除來源後保留的修改檔交還使用者，不再受新 manifest 管理；只在本次升級回報，重啟不重複警告。
-  await atomicFile(manifestFile, JSON.stringify({ version: 1, files: hashes }) + "\n")
+  async function publish(destination, { name, content, expected }) {
+    const check = async () => { if (await fileHash(destination) !== expected) collision(name) }
+    await check()
+    if (!await atomicFile(destination, content, expected === null, {
+      directory: isSkill(name) ? skillDirectory : privateDirectory, beforePublish: check,
+    })) collision(name)
+  }
+  // 每檔 atomic publish，temp bytes 完成後再核對；仍不承諾 filesystem CAS。
+  // skills 搬移／清理完成前不發布新 opencode.json，失敗由 startup gate 阻止 execution。
+  for (const [destination, plan] of writes) {
+    if (destination !== config) await publish(destination, plan)
+  }
+  for (const [destination, { name, hash, migration }] of removals) {
+    const current = await fileHash(destination)
+    if (current === null) continue
+    if (migration && moves[name] && await fileHash(target(name)) !== moves[name].hash) collision(name)
+    if (current === hash) {
+      await unlink(destination)
+      // 搬移使用者檔不是 source-owned cleanup，不把它標成 removedManagedFiles。
+      if (!migration || (prior.files[name] && !files.has(name) && !moves[name]?.user)) changes.removedManagedFiles.push(name)
+    } else {
+      if (migration) collision(name)
+      changes.retainedManagedFiles.push({ path: name, reason: "user-modified" })
+    }
+  }
+  // 只移除 owned 且空的 old skills directories，user late child 或 link 一律 fatal。
+  async function removeEmpty(directory) {
+    await noSymlinks(directory)
+    const info = await metadata(directory)
+    if (!info) return
+    if (!info.isDirectory()) fail("Old skills root 無效。")
+    owned(info)
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (!entry.isDirectory()) fail("Old skills 有併發新增檔案。")
+      await removeEmpty(path.join(directory, entry.name))
+    }
+    await rmdir(directory)
+  }
+  await removeEmpty(path.join(runtime, "skills"))
+  for (const [name, move] of Object.entries(moves)) {
+    if (await fileHash(target(name)) !== move.hash) collision(name)
+  }
+  if (writes.has(config)) await publish(config, writes.get(config))
+  if (await fileHash(manifestFile) !== expectedManifest) fail("Manifest 併發改變。")
+  const checkManifest = async () => { if (await fileHash(manifestFile) !== expectedManifest) fail("Manifest 併發改變。") }
+  if (!await atomicFile(manifestFile, nextManifest, expectedManifest === null, { beforePublish: checkManifest })) fail("Manifest 併發建立。")
+  if (receiptHash !== null) {
+    if (await fileHash(receiptFile) !== receiptHash) fail("Migration receipt 併發改變。")
+    await unlink(receiptFile)
+  }
   environment.OPENCODE_CONFIG = config
   environment.OPENCODE_CONFIG_DIR = runtime
   return "ready"
@@ -300,7 +460,10 @@ async function github(environment) {
 }
 async function safeStep(message, operation) {
   try { return await operation() }
-  catch { throw new Error(message) }
+  catch (error) {
+    throw new Error(message + (error.profileCollision ? ` [OMW_WORKER_PROFILE_COLLISION] ${JSON.stringify({ path: error.profileCollision })}` : "")
+      + (error.profileRetry ? " [OMW_WORKER_PROFILE_MIGRATION_RETRY] 遷移未完成時來源已變更；請以同一份來源完成重試後再升級。" : ""))
+  }
 }
 
 /** 同程序 startup hook；不可把它改成常駐 wrapper，否則會破壞 execution PID ownership。 */

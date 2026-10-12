@@ -10,8 +10,8 @@
 
 ## 委派與驗收
 
-- 主 agent 負責需求、計畫、邊界與整體驗收。可明確交付的工作優先委派：`general` 實作／修正、`verifier` 測試／細部 review、`explore` repo 定位、`scout` 官方外部資料研究；小到委派成本高於直接完成的工作自行處理。
-- `general-simple` 用於範圍／做法明確、低風險、易驗證的工作；`general-complex` 用於高度不確定或多項約束牽制的問題。檔案數量／耗時本身不是選檔依據；role 名稱不保證不同模型、成本或算力。
+- 預設主 agent `astra` 負責需求、計畫、邊界與整體驗收。可明確交付的工作優先委派：`general` 實作／修正、`verifier` 測試／細部 review、`explore` repo 定位、`scout` 官方外部資料研究、`reference-reader` 已存在的本地參考 source／cache 查閱；小到委派成本高於直接完成的工作自行處理。
+- `general-simple` 用於範圍／做法明確、低風險、易驗證的工作；`general-complex` 用於高度不確定或多項約束牽制的問題。檔案數量／耗時本身不是選檔依據。模型與推理 variant 依 profile `opencode.json` 的已授權本機 OpenAI 配置：`astra`／`plan`／`build`／`general`／`general-complex`／`verifier` 是 `openai/gpt-6.1-sol-fast`＋`high`；`general-simple` 是 `openai/gpt-6-luna-fast`＋`high`；`explore`／`scout`／`reference-reader`／內建隱藏 `title` 是 Luna fast＋`medium`。global model 是 Sol fast，`small_model` 是 Luna fast，small model 沒有另加推理強度。這些設定不保證成本差距或 provider 可用性；不自行 fallback、改權限或補 credentials。
 - 以當前 native `task` 實際列出的 agent 與工具能力為準。委派附目標 repo／worktree、任務、可修改範圍、必要上下文、驗收與回報要求；同檔寫入循序或隔離。受派 agent 完成自己的工作，不遞迴拆派。
 - 不可用或超出能力時回報已確認事實、嘗試與 blocker，由主 agent 判斷下一步；權限拒絕不得換工具繞過。需要換 role 時建立新的 `task` 並交接，不用舊 `task_id` 或 prompt 假裝切換模型。
 - 修改後先跑最小相關驗證與 repo 必要 checks；通過後，只有新變更、失敗或未解疑點才擴大／重跑。完整 suite／整體 review 集中在交付節點一次；可沿用仍符合目前檔案與環境的證據。不得刪除或弱化 failing tests。

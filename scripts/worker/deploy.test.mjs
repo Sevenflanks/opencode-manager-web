@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { mock } from 'node:test'
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { validateConfig, imagePatch, deploy, createPlan, releaseGate, hash, validatePlan, reconcile, clusterSnapshot, managerInspection, workspaceInspection } from './deploy-core.mjs'
 import { main, parseArgs, processRunner } from './deploy.mjs'
 import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises'
@@ -47,7 +49,7 @@ function fixture(options = {}) {
     return [name, d]
   }))
   const calls = [], records = [], data = Object.fromEntries(['omw-beta', 'omw-alpha'].map(name => [name, { ok: true, mode: 'worker', managerVersion: '0.7.0', publicCapacity: 'available', controlCapacity: 'available', epoch: `${name}-epoch`, execution: null, currentCount: 0, pendingCount: 0, namespaceMembers: 0, historyRevision: 'empty-history', history: [] }]))
-  const inventories = Object.fromEntries(['omw-beta', 'omw-alpha'].map(name => [name, { ok: true, entries: [], profile: { configReadable: true, skills: 66 }, fileContentsRead: false, authDatabaseRead: false, contentOwnershipVerified: false }]))
+  const inventories = Object.fromEntries(['omw-beta', 'omw-alpha'].map(name => [name, { ok: true, entries: [], profile: { configReadable: true, skills: 66, skillsSource: 'profile-v1' }, profileMetadataRead: true, fileContentsRead: false, authDatabaseRead: false, contentOwnershipVerified: false }]))
   function resources() {
     const sets = [], pods = []
     for (const [name, d] of Object.entries(deployments)) {
@@ -585,23 +587,210 @@ test('Pod identity drift during health inspection is rejected before verified re
   assert.equal(f.calls.filter(c => c.args[5] === 'patch').length, 1)
 })
 
-test('workspace probe reads only metadata/profile accessibility; unknown symlinks fail closed', async () => {
+const runtimeProfile = '/home/node/.config/omw-profile'
+const globalSkills = '/home/node/.agents/skills'
+function workspaceFixture(version = 1) {
+  const roots = new Map([['/workspace', ['public.txt']], [version === 1 ? `${runtimeProfile}/skills` : globalSkills, ['fixture-skill']]])
+  const config = { model: 'synthetic-private-preference', ...(version === 1 ? { skills: { paths: [`${runtimeProfile}/skills`] } } : {}) }
+  const manifest = { version, ...(version === 2 ? { skillsTarget: 'home-agents', userSkills: {} } : {}), files: { 'opencode.json': 'a'.repeat(64), 'skills/fixture-skill/SKILL.md': 'b'.repeat(64) } }
+  const files = new Map([[`${runtimeProfile}/opencode.json`, JSON.stringify(config)], [`${runtimeProfile}/.omw-source-manifest.json`, JSON.stringify(manifest)]])
+  const types = new Map([['/workspace/public.txt', 'file'], [`${version === 1 ? `${runtimeProfile}/skills` : globalSkills}/fixture-skill`, 'directory']])
   const operations = []
-  const info = type => ({ size: 0, mtimeMs: 1, ctimeMs: 1, ino: 42, mode: 16877, isDirectory: () => type === 'directory', isFile: () => type === 'file', isSymbolicLink: () => type === 'symlink' })
-  let type = 'file'
+  const absent = () => { const error = new Error('synthetic-private-filesystem-error'); error.code = 'ENOENT'; throw error }
   const filesystem = {
-    lstat: async filename => { operations.push(['lstat', filename]); return info(filename === '/workspace' ? 'directory' : type) },
-    readdir: async filename => { operations.push(['readdir', filename]); return filename === '/workspace' ? ['public.txt'] : ['fixture-skill'] },
-    access: async filename => operations.push(['access', filename]),
-    readFile: () => assert.fail('never read file/auth/DB content'),
+    lstat: async filename => {
+      operations.push(['lstat', filename])
+      const type = types.get(filename) ?? (files.has(filename) ? 'file' : roots.has(filename) || [...roots.keys(), ...files.keys()].some(p => p.startsWith(`${filename}/`)) ? 'directory' : undefined)
+      if (!type) return absent()
+      return { size: files.get(filename)?.length ?? 0, mtimeMs: 1, ctimeMs: 1, ino: 42, mode: 16877, isDirectory: () => type === 'directory', isFile: () => type === 'file', isSymbolicLink: () => type === 'symlink' }
+    },
+    readdir: async filename => { operations.push(['readdir', filename]); return roots.get(filename) ?? absent() },
+    access: async filename => { operations.push(['access', filename]); if (!files.has(filename)) absent() },
+    readFile: async filename => { operations.push(['readFile', filename]); assert.ok(files.has(filename), 'only allowlisted nonsecret profile metadata may be read'); return files.get(filename) },
   }
-  const source = workspaceInspection.toString().replace("await import('node:fs/promises')", 'filesystem')
-  const inspect = vm.runInNewContext(`(${source})`, { filesystem, process: { env: { OMW_WORKER_PROFILE_DIR: '/home/node/.config/omw-profile' } } })
-  const result = await inspect()
-  assert.equal(result.ok, true); assert.equal(result.entries[0].path, '/public.txt'); assert.equal(result.contentOwnershipVerified, false)
-  assert.ok(operations.every(v => v[1].startsWith('/workspace') || v[1].startsWith('/home/node/.config/omw-profile')))
-  type = 'symlink'
-  assert.deepEqual(JSON.parse(JSON.stringify(await inspect())), { ok: false })
+  return { roots, files, types, operations, filesystem, config, manifest }
+}
+// 串行替換真正的 external FS；不改 inspection 本體、不讀 live 路徑，finally 還原 builtin 與 env。
+async function withWorkspaceFixture(f, run = workspaceInspection) {
+  const original = Object.fromEntries(['HOME', 'OMW_WORKER_PROFILE_DIR'].map(k => [k, process.env[k]]))
+  const interceptions = Object.entries(f.filesystem).map(([name, method]) => mock.method(fs.promises, name, method))
+  syncBuiltinESMExports()
+  process.env.HOME = '/home/node'; process.env.OMW_WORKER_PROFILE_DIR = runtimeProfile
+  try { return await run() }
+  finally {
+    for (const interception of interceptions) interception.mock.restore()
+    syncBuiltinESMExports()
+    for (const [key, value] of Object.entries(original)) { if (value === undefined) delete process.env[key]; else process.env[key] = value }
+  }
+}
+
+test('workspace probe accepts migrated v2 global skills without old profile root', async () => {
+  const f = workspaceFixture(2)
+  const result = await withWorkspaceFixture(f)
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.profile, { configReadable: true, skills: 1, skillsSource: 'home-agents-v2' })
+  assert.equal(result.entries[0].path, '/public.txt')
+  assert.equal(result.fileContentsRead, false); assert.equal(result.authDatabaseRead, false)
+  assert.equal(result.profileMetadataRead, true); assert.equal(result.contentOwnershipVerified, false)
+  assert.ok(!JSON.stringify(result).includes('synthetic-private'))
+  assert.deepEqual(f.operations.filter(([op]) => op === 'readFile').map(([, p]) => p).sort(), [`${runtimeProfile}/.omw-source-manifest.json`, `${runtimeProfile}/opencode.json`].sort())
+})
+
+test('workspace probe accepts legacy v1 configured profile skills, keeps workspace symlink refusal', async () => {
+  const f = workspaceFixture()
+  const result = await withWorkspaceFixture(f)
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.profile, { configReadable: true, skills: 1, skillsSource: 'profile-v1' })
+  f.types.set('/workspace/public.txt', 'symlink')
+  assert.deepEqual(await withWorkspaceFixture(f), { ok: false })
+})
+
+test('legacy profile root alone is counted; incidental global skills never change its authority', async () => {
+  const f = workspaceFixture()
+  const before = await withWorkspaceFixture(f)
+  f.roots.set(globalSkills, ['other-skill', 'another-skill'])
+  assert.deepEqual(await withWorkspaceFixture(f), before)
+  assert.ok(!f.operations.some(([op, p]) => op === 'readdir' && p === globalSkills))
+})
+
+test('valid global skills cannot hide a duplicate old root or merge its count', async () => {
+  const f = workspaceFixture(2)
+  f.roots.set(globalSkills, ['fixture-skill', 'second-skill'])
+  f.types.set(`${globalSkills}/second-skill`, 'directory')
+  f.roots.set(`${runtimeProfile}/skills`, ['stale-skill'])
+  assert.deepEqual(await withWorkspaceFixture(f), { ok: false })
+  assert.ok(!f.operations.some(([op, p]) => op === 'readdir' && p === `${runtimeProfile}/skills`))
+  f.roots.delete(`${runtimeProfile}/skills`)
+  assert.equal((await withWorkspaceFixture(f)).profile.skills, 2)
+})
+
+for (const [name, mutate] of [
+  ['missing global root despite populated old root', f => { f.roots.delete(globalSkills); f.roots.set(`${runtimeProfile}/skills`, ['legacy-skill']) }],
+  ['missing global root without fallback', f => f.roots.delete(globalSkills)],
+  ['empty global root', f => f.roots.set(globalSkills, [])],
+  ['missing manifest despite populated roots', f => { f.files.delete(`${runtimeProfile}/.omw-source-manifest.json`); f.roots.set(`${runtimeProfile}/skills`, ['legacy-skill']) }],
+  ['malformed manifest', f => f.files.set(`${runtimeProfile}/.omw-source-manifest.json`, '{')],
+  ['unknown manifest version', f => { f.manifest.version = 3 }],
+  ['wrong v2 target marker', f => { f.manifest.skillsTarget = 'profile-skills' }],
+  ['missing v2 target marker', f => { delete f.manifest.skillsTarget }],
+  ['malformed source file map', f => { f.manifest.files = [] }],
+  ['malformed source hash', f => { f.manifest.files['opencode.json'] = 'unknown' }],
+  ['unsafe source relative path', f => { f.manifest.files['../skills/private'] = 'a'.repeat(64) }],
+  ['missing v2 userSkills', f => { delete f.manifest.userSkills }],
+  ['invalid v2 user baseline', f => { f.manifest.userSkills['skills/user/SKILL.md'] = 'unknown' }],
+  ['overlapping user/source ownership', f => { f.manifest.userSkills['skills/fixture-skill/SKILL.md'] = null }],
+  ['non-skills user entry', f => { f.manifest.userSkills['opencode.json'] = null }],
+  ['old config paths', f => { f.config.skills = { paths: [`${runtimeProfile}/skills`] } }],
+  ['duplicate global config scan', f => { f.config.skills = { paths: [globalSkills] } }],
+  ['empty config paths still declared', f => { f.config.skills = { paths: [] } }],
+  ['invalid config skills', f => { f.config.skills = null }],
+  ['malformed config', f => f.files.set(`${runtimeProfile}/opencode.json`, '{')],
+  ['global root symlink', f => f.types.set(globalSkills, 'symlink')],
+  ['global ancestor symlink', f => f.types.set('/home/node/.agents', 'symlink')],
+  ['global root is a file', f => f.types.set(globalSkills, 'file')],
+  ['global skill symlink', f => f.types.set(`${globalSkills}/fixture-skill`, 'symlink')],
+  ['manifest symlink', f => f.types.set(`${runtimeProfile}/.omw-source-manifest.json`, 'symlink')],
+  ['config symlink', f => f.types.set(`${runtimeProfile}/opencode.json`, 'symlink')],
+  ['unreadable global directory', f => { f.filesystem.readdir = async p => { if (p === globalSkills) { const error = new Error('synthetic-private'); error.code = 'EACCES'; throw error }; return f.roots.get(p) } }],
+]) test(`workspace source selection fails closed for ${name}`, async () => {
+  const f = workspaceFixture(2)
+  mutate(f)
+  // 保留手寫 malformed JSON；其餘 mutation 以真實 wire JSON 送入公開 inspection。
+  if (f.files.get(`${runtimeProfile}/opencode.json`) !== '{') f.files.set(`${runtimeProfile}/opencode.json`, JSON.stringify(f.config))
+  if (f.files.has(`${runtimeProfile}/.omw-source-manifest.json`) && f.files.get(`${runtimeProfile}/.omw-source-manifest.json`) !== '{') f.files.set(`${runtimeProfile}/.omw-source-manifest.json`, JSON.stringify(f.manifest))
+  assert.deepEqual(await withWorkspaceFixture(f), { ok: false })
+})
+
+test('legacy config and v1 marker must agree, not merely have a nonempty directory', async () => {
+  for (const configSkills of [undefined, { paths: [globalSkills] }, { paths: [`${runtimeProfile}/skills`, globalSkills] }]) {
+    const f = workspaceFixture()
+    f.config.skills = configSkills; f.files.set(`${runtimeProfile}/opencode.json`, JSON.stringify(f.config))
+    assert.deepEqual(await withWorkspaceFixture(f), { ok: false })
+  }
+  const f = workspaceFixture(); f.manifest.skillsTarget = 'home-agents'
+  f.files.set(`${runtimeProfile}/.omw-source-manifest.json`, JSON.stringify(f.manifest))
+  assert.deepEqual(await withWorkspaceFixture(f), { ok: false })
+})
+
+test('global source requires the existing image HOME contract, never scans an alternate HOME', async () => {
+  const f = workspaceFixture(2)
+  const result = await withWorkspaceFixture(f, async () => { process.env.HOME = '/other/private-home'; return workspaceInspection() })
+  assert.deepEqual(result, { ok: false })
+  assert.ok(!f.operations.some(([, p]) => p.startsWith('/other/')))
+})
+
+function useRealInspection(f, profiles) {
+  const externalRunner = f.runner
+  f.runner = async (exe, args, opts) => {
+    const reply = await externalRunner(exe, args, opts)
+    if (exe !== 'kubectl' || args[5] !== 'exec') return reply
+    const target = args[6].replace(/-pod$/, '')
+    let result
+    if (args[8] === 'execution') {
+      result = await withWorkspaceFixture(typeof profiles[target] === 'function' ? profiles[target]() : profiles[target])
+    } else {
+      const api = managerApiFixture({ manager: { localUrl: 'http://127.0.0.1:4174', publicUrl: null, version: f.data[target].managerVersion } })
+      api.responses['/v1/execution'].epoch = f.data[target].epoch
+      result = await managerInspection(api.boundaries)
+    }
+    return { code: 0, stdout: JSON.stringify(result) }
+  }
+  f.execution.runner = f.runner
+}
+
+for (const alphaVersion of [1, 2]) test(`one image upgrade plan inspects legacy beta and v${alphaVersion} alpha, then verifies both global profiles`, async () => {
+  const f = fixture()
+  f.c.tag = 'v0.10.0'; f.c.expectedManagerVersion = '0.10.0'
+  f.data['omw-beta'].managerVersion = '0.9.0'; f.data['omw-alpha'].managerVersion = alphaVersion === 1 ? '0.9.0' : '0.9.1'
+  useRealInspection(f, Object.fromEntries(['omw-beta', 'omw-alpha'].map(target => [target, () => workspaceFixture(f.deployments[target].metadata.generation > 1 ? 2 : target === 'omw-alpha' ? alphaVersion : 1)])))
+  const plan = await createPlan(f.c, f.runner)
+  assert.equal(plan.data['omw-beta'].profile.skillsSource, 'profile-v1')
+  assert.equal(plan.data['omw-alpha'].profile.skillsSource, alphaVersion === 1 ? 'profile-v1' : 'home-agents-v2')
+  const result = await deploy(plan, { ...f.execution, ackDiscard: plan.digest })
+  assert.equal(result.status, 'complete'); assert.equal(result.businessProof, false)
+  assert.deepEqual(f.calls.filter(c => c.args[5] === 'patch').map(c => c.args[7]), ['omw-beta', 'omw-alpha'])
+  assert.deepEqual(f.records.filter(r => r.status === 'verified').map(r => [r.target, r.health.profile.skillsSource, r.health.managerVersion]), [['omw-beta', 'home-agents-v2', '0.10.0'], ['omw-alpha', 'home-agents-v2', '0.10.0']])
+  assert.ok(!JSON.stringify([plan, f.records]).includes('synthetic-private'))
+})
+
+test('non-location profile metadata changes keep the data and plan digests stable without exposing preferences', async () => {
+  const f = fixture(), profiles = { 'omw-beta': workspaceFixture(2), 'omw-alpha': workspaceFixture(2) }
+  useRealInspection(f, profiles)
+  const before = await createPlan(f.c, f.runner)
+  const profile = profiles['omw-beta']
+  profile.config.model = 'another-synthetic-private-preference'; profile.config.plugin = ['file:///synthetic-private-plugin.mjs']; profile.config.skills = {}
+  profile.manifest.files['opencode.json'] = 'c'.repeat(64)
+  profile.manifest.userSkills['skills/user/SKILL.md'] = null
+  profile.files.set(`${runtimeProfile}/opencode.json`, JSON.stringify(profile.config))
+  profile.files.set(`${runtimeProfile}/.omw-source-manifest.json`, JSON.stringify(profile.manifest, null, 2))
+  const after = await createPlan(f.c, f.runner)
+  assert.equal(hash(after.data), hash(before.data)); assert.equal(after.digest, before.digest)
+  assert.deepEqual(after.data['omw-beta'].profile, { configReadable: true, skills: 1, skillsSource: 'home-agents-v2' })
+  assert.ok(!JSON.stringify(after).includes('synthetic-private'))
+  profile.roots.set(globalSkills, ['fixture-skill', 'added-skill']); profile.types.set(`${globalSkills}/added-skill`, 'directory')
+  await assert.rejects(deploy(after, { ...f.execution, ackDiscard: after.digest }), /DATA_SNAPSHOT_DRIFT_NEW_PLAN_REQUIRED/)
+  assert.equal(f.calls.filter(c => c.args[5] === 'patch').length, 0)
+})
+
+test('skills source changes bind fresh inspection to a new plan even when counts match', async () => {
+  const f = fixture(), profiles = { 'omw-beta': workspaceFixture(), 'omw-alpha': workspaceFixture() }
+  useRealInspection(f, profiles)
+  const plan = await createPlan(f.c, f.runner)
+  profiles['omw-beta'] = workspaceFixture(2)
+  await assert.rejects(deploy(plan, { ...f.execution, ackDiscard: plan.digest }), /DATA_SNAPSHOT_DRIFT_NEW_PLAN_REQUIRED/)
+  assert.equal(f.calls.filter(c => c.args[5] === 'patch').length, 0)
+})
+
+test('broken new post-upgrade profile halts beta before verified receipt or alpha patch', async () => {
+  const f = fixture()
+  useRealInspection(f, {
+    'omw-beta': () => { const p = workspaceFixture(f.deployments['omw-beta'].metadata.generation > 1 ? 2 : 1); if (p.manifest.version === 2) p.roots.delete(globalSkills); return p },
+    'omw-alpha': workspaceFixture(),
+  })
+  const plan = await createPlan(f.c, f.runner)
+  await assert.rejects(deploy(plan, { ...f.execution, ackDiscard: plan.digest }), /FILESYSTEM_METADATA_UNKNOWN/)
+  assert.deepEqual(f.calls.filter(c => c.args[5] === 'patch').map(c => c.args[7]), ['omw-beta'])
+  assert.equal(f.records.filter(r => r.status === 'verified').length, 0)
 })
 
 test('public CLI persists checkpoint-before-patch and reads the same journal in readonly status', async () => {

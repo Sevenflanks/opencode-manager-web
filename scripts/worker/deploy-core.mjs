@@ -342,7 +342,7 @@ export async function managerInspection({ loadConfig = () => import('/opt/omw/ap
   } catch { return { ok: false } }
 }
 
-// 只列 metadata，不開啟檔案、不跟 symlink、不讀 auth/DB；limit/permission error 都是 unknown。
+// workspace 只列 metadata；只讀精選 nonsecret profile config/manifest 判定位置，不讀 skills/auth/DB 內容。
 export async function workspaceInspection() {
   try {
     const fs = await import('node:fs/promises')
@@ -363,10 +363,57 @@ export async function workspaceInspection() {
     if (entries.length > 5000) throw new Error('limit')
     const profile = process.env.OMW_WORKER_PROFILE_DIR
     if (profile !== '/home/node/.config/omw-profile') throw new Error('unknown profile')
+    const metadata = async filename => {
+      try { return await fs.lstat(filename) }
+      catch (error) { if (error.code === 'ENOENT') return null; throw error }
+    }
+    const directory = async filename => {
+      let current = ''
+      for (const part of filename.split('/').filter(Boolean)) {
+        current += `/${part}`
+        const info = await fs.lstat(current)
+        if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('unsafe directory')
+      }
+    }
+    const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+    const readMetadata = async filename => {
+      const info = await fs.lstat(filename)
+      if (!info.isFile() || info.isSymbolicLink() || !Number.isSafeInteger(info.size) || info.size < 0 || info.size > 1024 * 1024) throw new Error('unsafe metadata')
+      const value = JSON.parse(await fs.readFile(filename, 'utf8'))
+      if (!object(value)) throw new Error('unknown metadata')
+      return value
+    }
+    await directory(profile)
     await fs.access(`${profile}/opencode.json`, 4)
-    const skills = await fs.readdir(`${profile}/skills`)
+    const config = await readMetadata(`${profile}/opencode.json`)
+    const manifest = await readMetadata(`${profile}/.omw-source-manifest.json`)
+    const relativeName = name => typeof name === 'string' && name.length > 0 && !name.includes('\\') && !/[\x00-\x1f\x7f]/.test(name)
+      && !name.split('/').some(part => !part || part === '.' || part === '..' || part === 'auth.json')
+      && !['.omw-source-manifest.json', '.omw-skills-migration.json', 'gitconfig', 'gh'].includes(name) && !name.startsWith('gh/')
+    const validHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
+    if (![1, 2].includes(manifest.version) || !object(manifest.files)
+      || Object.entries(manifest.files).some(([name, value]) => !relativeName(name) || !validHash(value))
+      || (config.skills !== undefined && !object(config.skills))) throw new Error('unknown source')
+    let skillsDirectory, skillsSource
+    // 兩代 Worker 會在同次 images-only upgrade 共存；manifest/config 才是 authority，不能靠 directory 存在 fallback。
+    if (manifest.version === 1) {
+      if (manifest.skillsTarget !== undefined || JSON.stringify(config.skills?.paths) !== JSON.stringify([`${profile}/skills`])) throw new Error('unknown legacy source')
+      skillsDirectory = `${profile}/skills`; skillsSource = 'profile-v1'
+    } else {
+      if (manifest.skillsTarget !== 'home-agents' || !object(manifest.userSkills)
+        || Object.entries(manifest.userSkills).some(([name, value]) => !relativeName(name) || !name.startsWith('skills/') || Object.hasOwn(manifest.files, name) || (value !== null && !validHash(value)))
+        || Object.hasOwn(config.skills ?? {}, 'paths') || process.env.HOME !== '/home/node'
+        || await metadata(`${profile}/skills`)) throw new Error('unknown global source')
+      skillsDirectory = `${process.env.HOME}/.agents/skills`; skillsSource = 'home-agents-v2'
+    }
+    await directory(skillsDirectory)
+    const skills = await fs.readdir(skillsDirectory)
     if (skills.length === 0) throw new Error('profile missing')
-    return { ok: true, entries, profile: { configReadable: true, skills: skills.length }, fileContentsRead: false, authDatabaseRead: false, contentOwnershipVerified: false }
+    if (manifest.version === 2) for (const name of skills) {
+      const info = await fs.lstat(`${skillsDirectory}/${name}`)
+      if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) throw new Error('unsafe skills entry')
+    }
+    return { ok: true, entries, profile: { configReadable: true, skills: skills.length, skillsSource }, profileMetadataRead: true, fileContentsRead: false, authDatabaseRead: false, contentOwnershipVerified: false }
   } catch { return { ok: false } }
 }
 function validateInspection(data) {
@@ -380,7 +427,7 @@ async function inspectWorker(c, facts, runner) {
   const before = await inspect('manager', managerInspection)
   validateInspection(before)
   const inventory = await inspect('execution', workspaceInspection)
-  guard(inventory?.ok === true && inventory.fileContentsRead === false && inventory.authDatabaseRead === false && inventory.contentOwnershipVerified === false && inventory.profile?.configReadable === true && Number.isSafeInteger(inventory.profile.skills) && inventory.profile.skills > 0 && Array.isArray(inventory.entries), 'FILESYSTEM_METADATA_UNKNOWN')
+  guard(inventory?.ok === true && inventory.profileMetadataRead === true && inventory.fileContentsRead === false && inventory.authDatabaseRead === false && inventory.contentOwnershipVerified === false && inventory.profile?.configReadable === true && Number.isSafeInteger(inventory.profile.skills) && inventory.profile.skills > 0 && ['profile-v1', 'home-agents-v2'].includes(inventory.profile.skillsSource) && Array.isArray(inventory.entries), 'FILESYSTEM_METADATA_UNKNOWN')
   guard(inventory.entries.length <= 5000 && inventory.entries.every(e => typeof e.path === 'string' && e.path.startsWith('/') && ['file', 'directory'].includes(e.type) && ['size', 'mtimeMs', 'ctimeMs', 'inode', 'mode'].every(k => Number.isFinite(e[k]))), 'FILESYSTEM_METADATA_UNKNOWN')
   const after = await inspect('manager', managerInspection)
   validateInspection(after)
@@ -389,5 +436,5 @@ async function inspectWorker(c, facts, runner) {
   return { managerVersion: after.managerVersion, epoch: after.epoch, execution: after.execution, publicCapacity: after.publicCapacity, namespaceMembers: 0, currentCount: 0, pendingCount: 0,
     historyRevision: after.historyRevision, history: after.history.map(h => ({ id: h.id, state: h.state, projectDirectory: h.projectDirectory, sessionId: h.sessionId, trackingHidden: h.trackingHidden })),
     workspace: inventory.entries.map(e => Object.fromEntries(['path', 'type', 'size', 'mtimeMs', 'ctimeMs', 'inode', 'mode'].map(k => [k, e[k]]))),
-    profile: { configReadable: true, skills: inventory.profile.skills }, contentOwnershipVerified: false }
+    profile: { configReadable: true, skills: inventory.profile.skills, skillsSource: inventory.profile.skillsSource }, contentOwnershipVerified: false }
 }

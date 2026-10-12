@@ -1,10 +1,14 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
+import fs from "node:fs"
+import { syncBuiltinESMExports } from "node:module"
 import { spawn } from "node:child_process"
 import { mkdtemp, mkdir, readFile, writeFile, chmod, stat, readdir, rm, symlink } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
-import test from "node:test"
+import test, { mock } from "node:test"
+import { initializeWorker } from "./bootstrap.mjs"
 
 const cli = fileURLToPath(new URL("./bootstrap.mjs", import.meta.url))
 const synthetic = { openai: { type: "oauth", access: "synthetic-access-not-a-secret", refresh: "synthetic-refresh-not-a-secret", expires: 0, accountId: "synthetic-account" }, other: { type: "api", key: "synthetic-api" } }
@@ -43,6 +47,352 @@ async function success(env) {
   assert.equal(result.code, 0, result.stderr)
   return JSON.parse(result.stdout)
 }
+const sha = bytes => createHash("sha256").update(bytes).digest("hex")
+const globalSkill = (env, name) => path.join(env.HOME, ".agents/skills", name)
+async function save(root, name, content) {
+  await mkdir(path.dirname(path.join(root, name)), { recursive: true, mode: 0o700 })
+  await writeFile(path.join(root, name), content, { mode: 0o600 })
+}
+async function legacyProfile(env, files) {
+  const runtime = env.OMW_WORKER_PROFILE_DIR
+  for (const [name, content] of Object.entries(files)) await save(runtime, name, content)
+  await save(runtime, ".omw-source-manifest.json", JSON.stringify({ version: 1,
+    files: Object.fromEntries(Object.entries(files).map(([name, content]) => [name, sha(content)])) }))
+}
+test("canonical fresh initializeWorker 發布 global skills，舊 profile skills 不存在且 auth 保留", () => fixture(async ({ root, env, seed, auth }) => {
+  const source = path.join(root, "source")
+  await save(source, "opencode.json", "{}")
+  await save(source, "skills/example/SKILL.md", "synthetic fresh skill")
+  // 66 個 synthetic roots 驗證整包路由；真 compiled 62＋Office4 hashes 留給 native overlay。
+  for (let index = 0; index < 65; index++) await save(source, `skills/fixture-${index}/SKILL.md`, `synthetic fixture ${index}`)
+  await success({ ...env, OMW_AUTH_SEED_FILE: seed })
+  await writeFile(auth, "synthetic refreshed auth marker")
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source, OMW_AUTH_SEED_FILE: seed }
+  await initializeWorker(configured)
+  assert.equal(await readFile(globalSkill(env, "example/SKILL.md"), "utf8"), "synthetic fresh skill")
+  assert.equal((await readdir(globalSkill(env, ""))).length, 66)
+  for (let index = 0; index < 65; index++) assert.equal(await readFile(globalSkill(env, `fixture-${index}/SKILL.md`), "utf8"), `synthetic fixture ${index}`)
+  await assert.rejects(stat(path.join(env.OMW_WORKER_PROFILE_DIR, "skills")), { code: "ENOENT" })
+  const manifest = JSON.parse(await readFile(path.join(env.OMW_WORKER_PROFILE_DIR, ".omw-source-manifest.json")))
+  assert.equal(manifest.version, 2)
+  assert.equal(manifest.skillsTarget, "home-agents")
+  assert.equal(await readFile(auth, "utf8"), "synthetic refreshed auth marker")
+  await initializeWorker(configured)
+  assert.equal(await readFile(globalSkill(env, "example/SKILL.md"), "utf8"), "synthetic fresh skill")
+}))
+test("v1 移動 unchanged／modified／added skills，更新 source 並保留 global custom 與修改 command", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "source")
+  const files = { "opencode.json": "{}", "skills/update/SKILL.md": "synthetic old", "skills/edit/SKILL.md": "synthetic original",
+    "commands/task-plan.md": "synthetic old command", "commands/verify.md": "synthetic old verify", "commands/deliver.md": "synthetic old deliver" }
+  await legacyProfile(env, files)
+  await save(env.OMW_WORKER_PROFILE_DIR, "skills/edit/SKILL.md", "synthetic user edit")
+  await save(env.OMW_WORKER_PROFILE_DIR, "skills/added/SKILL.md", "synthetic added")
+  await save(env.OMW_WORKER_PROFILE_DIR, "commands/verify.md", "synthetic user verify")
+  await save(globalSkill(env, ""), "custom/SKILL.md", "synthetic global custom")
+  await save(source, "opencode.json", '{"description":"new"}')
+  await save(source, "skills/update/SKILL.md", "synthetic new")
+  await save(source, "skills/edit/SKILL.md", "synthetic original")
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  await initializeWorker(configured)
+  for (const [name, content] of Object.entries({ update: "synthetic new", edit: "synthetic user edit", added: "synthetic added", custom: "synthetic global custom" }))
+    assert.equal(await readFile(globalSkill(env, `${name}/SKILL.md`), "utf8"), content)
+  await assert.rejects(stat(path.join(env.OMW_WORKER_PROFILE_DIR, "skills")), { code: "ENOENT" })
+  for (const name of ["task-plan", "deliver"]) await assert.rejects(stat(path.join(env.OMW_WORKER_PROFILE_DIR, `commands/${name}.md`)), { code: "ENOENT" })
+  assert.equal(await readFile(path.join(env.OMW_WORKER_PROFILE_DIR, "commands/verify.md"), "utf8"), "synthetic user verify")
+  const manifest = JSON.parse(await readFile(path.join(env.OMW_WORKER_PROFILE_DIR, ".omw-source-manifest.json")))
+  assert.equal(manifest.files["skills/edit/SKILL.md"], undefined, "user modifications are not source-owned")
+  assert.equal(manifest.files["skills/added/SKILL.md"], undefined)
+  await initializeWorker(configured)
+  assert.equal(await readFile(globalSkill(env, "edit/SKILL.md"), "utf8"), "synthetic user edit")
+}))
+test("v1 同 bytes global 可以 dedup；不同 bytes collision 在任何 profile 寫入前停止", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "source")
+  const old = { "opencode.json": "{}", "skills/edit/SKILL.md": "synthetic original" }
+  await legacyProfile(env, old)
+  await save(env.OMW_WORKER_PROFILE_DIR, "skills/edit/SKILL.md", "synthetic user edit")
+  await save(source, "opencode.json", '{"description":"new"}')
+  await save(source, "skills/edit/SKILL.md", "synthetic original")
+  await save(globalSkill(env, ""), "edit/SKILL.md", "synthetic conflicting global")
+  const manifest = path.join(env.OMW_WORKER_PROFILE_DIR, ".omw-source-manifest.json")
+  const before = await readFile(manifest)
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  const conflict = await boot(configured)
+  assert.equal(conflict.code, 1)
+  assert.match(conflict.stderr, /OMW_WORKER_PROFILE_COLLISION.*skills\/edit\/SKILL.md/)
+  assert.doesNotMatch(conflict.stderr, /synthetic-|[a-f0-9]{64}/)
+  assert.equal(await readFile(path.join(env.OMW_WORKER_PROFILE_DIR, "opencode.json"), "utf8"), "{}")
+  assert.deepEqual(await readFile(manifest), before)
+  assert.equal(await readFile(globalSkill(env, "edit/SKILL.md"), "utf8"), "synthetic conflicting global")
+  await save(globalSkill(env, ""), "edit/SKILL.md", "synthetic user edit")
+  await initializeWorker(configured)
+  await assert.rejects(stat(path.join(env.OMW_WORKER_PROFILE_DIR, "skills")), { code: "ENOENT" })
+  assert.equal(await readFile(globalSkill(env, "edit/SKILL.md"), "utf8"), "synthetic user edit")
+}))
+test("v1 source advance 與 old user edit 分歧保兩邊；source rollback 後遷移而不覆 custom", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "source")
+  await legacyProfile(env, { "opencode.json": "{}", "skills/edit/SKILL.md": "synthetic original" })
+  await save(env.OMW_WORKER_PROFILE_DIR, "skills/edit/SKILL.md", "synthetic user edit")
+  await save(source, "opencode.json", '{"description":"new"}')
+  await save(source, "skills/edit/SKILL.md", "synthetic advanced")
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  await assert.rejects(initializeWorker(configured), /OMW_WORKER_PROFILE_COLLISION.*skills\/edit\/SKILL.md/)
+  assert.equal(await readFile(path.join(env.OMW_WORKER_PROFILE_DIR, "opencode.json"), "utf8"), "{}")
+  await assert.rejects(stat(globalSkill(env, "edit/SKILL.md")), { code: "ENOENT" })
+  await save(source, "skills/edit/SKILL.md", "synthetic original")
+  await initializeWorker(configured)
+  await save(source, "skills/edit/SKILL.md", "synthetic advanced")
+  await assert.rejects(initializeWorker(configured), /OMW_WORKER_PROFILE_COLLISION.*skills\/edit\/SKILL.md/)
+  assert.equal(await readFile(globalSkill(env, "edit/SKILL.md"), "utf8"), "synthetic user edit")
+}))
+test("v1 partial retry 接受已移 managed，missing old 不以舊 hash 刪 unrelated global custom", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "source")
+  await legacyProfile(env, { "opencode.json": "{}", "skills/managed/SKILL.md": "synthetic old", "skills/removed/SKILL.md": "synthetic removed" })
+  await save(source, "opencode.json", "{}")
+  await save(source, "skills/managed/SKILL.md", "synthetic new")
+  await save(globalSkill(env, ""), "managed/SKILL.md", "synthetic new")
+  await save(globalSkill(env, ""), "removed/SKILL.md", "synthetic unrelated global")
+  await rm(path.join(env.OMW_WORKER_PROFILE_DIR, "skills/managed/SKILL.md"))
+  await rm(path.join(env.OMW_WORKER_PROFILE_DIR, "skills/removed/SKILL.md"))
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  await initializeWorker(configured)
+  await initializeWorker(configured)
+  assert.equal(await readFile(globalSkill(env, "managed/SKILL.md"), "utf8"), "synthetic new")
+  assert.equal(await readFile(globalSkill(env, "removed/SKILL.md"), "utf8"), "synthetic unrelated global")
+}))
+test("v1 custom 搬移中斷在 old unlink 後可 retry，receipt 不把 user bytes 認為 source-owned", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "source")
+  await legacyProfile(env, { "opencode.json": "{}", "skills/edit/SKILL.md": "synthetic original" })
+  await save(env.OMW_WORKER_PROFILE_DIR, "skills/edit/SKILL.md", "synthetic user edit")
+  await save(env.OMW_WORKER_PROFILE_DIR, "skills/added/SKILL.md", "synthetic user added")
+  await save(source, "opencode.json", '{"description":"new"}')
+  await save(source, "skills/edit/SKILL.md", "synthetic original")
+  const originalUnlink = fs.promises.unlink
+  const blocker = path.join(env.OMW_WORKER_PROFILE_DIR, "skills/added/SKILL.md")
+  const interception = mock.method(fs.promises, "unlink", async filename => {
+    if (filename === blocker) throw new Error("synthetic filesystem interruption")
+    return originalUnlink(filename)
+  })
+  syncBuiltinESMExports()
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  try {
+    await assert.rejects(initializeWorker(configured), /OMW_WORKER_PROFILE_SOURCE/)
+  } finally { interception.mock.restore(); syncBuiltinESMExports() }
+  await assert.rejects(stat(path.join(env.OMW_WORKER_PROFILE_DIR, "skills/edit/SKILL.md")), { code: "ENOENT" })
+  assert.equal(await readFile(globalSkill(env, "edit/SKILL.md"), "utf8"), "synthetic user edit")
+  assert.equal(await readFile(blocker, "utf8"), "synthetic user added")
+  assert.equal(await readFile(path.join(env.OMW_WORKER_PROFILE_DIR, "opencode.json"), "utf8"), "{}")
+  const receipt = path.join(env.OMW_WORKER_PROFILE_DIR, ".omw-skills-migration.json")
+  assert.doesNotMatch(await readFile(receipt, "utf8"), /synthetic user/)
+  await save(source, "opencode.json", '{"description":"advance-during-pending"}')
+  await assert.rejects(initializeWorker(configured), /OMW_WORKER_PROFILE_MIGRATION_RETRY/)
+  assert.equal(await readFile(blocker, "utf8"), "synthetic user added")
+  await save(source, "opencode.json", '{"description":"new"}')
+  await initializeWorker(configured)
+  await initializeWorker(configured)
+  assert.equal(await readFile(globalSkill(env, "edit/SKILL.md"), "utf8"), "synthetic user edit")
+  assert.equal(await readFile(globalSkill(env, "added/SKILL.md"), "utf8"), "synthetic user added")
+  await assert.rejects(stat(receipt), { code: "ENOENT" })
+  await assert.rejects(stat(path.join(env.OMW_WORKER_PROFILE_DIR, "skills")), { code: "ENOENT" })
+}))
+test("v2 manifest 已發布但 receipt cleanup 中斷；下一輪 source advance 不採用 stale receipt", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "source")
+  await legacyProfile(env, { "opencode.json": "{}", "skills/managed/SKILL.md": "synthetic old" })
+  await save(source, "opencode.json", "{}")
+  await save(source, "skills/managed/SKILL.md", "synthetic new")
+  const receipt = path.join(env.OMW_WORKER_PROFILE_DIR, ".omw-skills-migration.json")
+  const originalUnlink = fs.promises.unlink
+  const interception = mock.method(fs.promises, "unlink", async filename => {
+    if (filename === receipt) throw new Error("synthetic receipt cleanup failure")
+    return originalUnlink(filename)
+  })
+  syncBuiltinESMExports()
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  try { await assert.rejects(initializeWorker(configured), /OMW_WORKER_PROFILE_SOURCE/) }
+  finally { interception.mock.restore(); syncBuiltinESMExports() }
+  const manifest = JSON.parse(await readFile(path.join(env.OMW_WORKER_PROFILE_DIR, ".omw-source-manifest.json")))
+  assert.equal(manifest.version, 2)
+  await assert.rejects(stat(path.join(env.OMW_WORKER_PROFILE_DIR, "skills")), { code: "ENOENT" })
+  await save(source, "skills/managed/SKILL.md", "synthetic next source")
+  await initializeWorker(configured)
+  assert.equal(await readFile(globalSkill(env, "managed/SKILL.md"), "utf8"), "synthetic next source")
+  await assert.rejects(stat(receipt), { code: "ENOENT" })
+}))
+test("global custom source collision／rename 拒覆或刪，late old write 導 fatal 並保兩份", () => fixture(async ({ root, env }) => {
+  const source = path.join(root, "source")
+  await save(source, "opencode.json", "{}")
+  await save(source, "skills/new/SKILL.md", "synthetic upstream new")
+  await save(globalSkill(env, ""), "new/SKILL.md", "synthetic global custom")
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  await assert.rejects(initializeWorker(configured), /OMW_WORKER_PROFILE_COLLISION.*skills\/new\/SKILL.md/)
+  await assert.rejects(stat(env.OMW_WORKER_PROFILE_DIR), { code: "ENOENT" })
+  await save(globalSkill(env, ""), "new/SKILL.md", "synthetic upstream new")
+  await initializeWorker(configured)
+  await save(globalSkill(env, ""), "renamed/SKILL.md", "synthetic renamed user")
+  await rm(path.join(source, "skills/new"), { recursive: true })
+  await save(source, "skills/renamed/SKILL.md", "synthetic rename source")
+  await assert.rejects(initializeWorker(configured), /OMW_WORKER_PROFILE_COLLISION.*skills\/renamed\/SKILL.md/)
+  assert.equal(await readFile(globalSkill(env, "new/SKILL.md"), "utf8"), "synthetic upstream new")
+  assert.equal(await readFile(globalSkill(env, "renamed/SKILL.md"), "utf8"), "synthetic renamed user")
+  await rm(source, { recursive: true })
+  await save(source, "opencode.json", "{}")
+  await save(source, "skills/edit/SKILL.md", "synthetic original")
+  await legacyProfile(env, { "opencode.json": "{}", "skills/edit/SKILL.md": "synthetic original" })
+  const old = path.join(env.OMW_WORKER_PROFILE_DIR, "skills/edit/SKILL.md")
+  const originalLink = fs.promises.link
+  const interception = mock.method(fs.promises, "link", async (from, to) => {
+    const result = await originalLink(from, to)
+    if (to === globalSkill(env, "edit/SKILL.md")) await writeFile(old, "synthetic late user write")
+    return result
+  })
+  syncBuiltinESMExports()
+  try { await assert.rejects(initializeWorker(configured), /OMW_WORKER_PROFILE_COLLISION.*skills\/edit\/SKILL.md/) }
+  finally { interception.mock.restore(); syncBuiltinESMExports() }
+  assert.equal(await readFile(old, "utf8"), "synthetic late user write")
+  assert.equal(await readFile(globalSkill(env, "edit/SKILL.md"), "utf8"), "synthetic original")
+}))
+const planningRaces = [
+  { name: "global managed upgrade", skill: true, managed: true, read: 2 },
+  { name: "old migration existing global", skill: true, migration: true, present: true, read: 1 },
+  { name: "old migration absent global", skill: true, migration: true, directory: true },
+  { name: "runtime managed upgrade", managed: true, read: 1 },
+  { name: "source new global file", skill: true, absent: true },
+  { name: "source new runtime file", absent: true },
+]
+async function planningFixture(scenario, run) {
+  return fixture(async ({ root, env }) => {
+    const source = path.join(root, "source")
+    const runtime = env.OMW_WORKER_PROFILE_DIR
+    const name = scenario.skill ? "skills/planning/SKILL.md" : "references/planning.md"
+    const destination = scenario.skill ? globalSkill(env, "planning/SKILL.md") : path.join(runtime, name)
+    const old = scenario.migration ? path.join(runtime, name) : undefined
+    const approved = "synthetic approved A"
+    const incoming = "synthetic incoming B"
+    await save(source, "opencode.json", '{"description":"synthetic next"}')
+    await save(source, name, incoming)
+    await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 })
+    if (scenario.migration) {
+      await legacyProfile(env, { "opencode.json": "{}", [name]: approved })
+      if (scenario.present) await writeFile(destination, approved, { mode: 0o600 })
+    } else {
+      await save(runtime, "opencode.json", "{}")
+      if (scenario.managed) await writeFile(destination, approved, { mode: 0o600 })
+      await save(runtime, ".omw-source-manifest.json", JSON.stringify({ version: 2, skillsTarget: "home-agents",
+        files: { "opencode.json": sha("{}"), ...(scenario.managed ? { [name]: sha(approved) } : {}) }, userSkills: {} }))
+    }
+    const manifest = path.join(runtime, ".omw-source-manifest.json")
+    await run({ env, runtime, source, destination, old, approved, incoming, manifest,
+      configured: { ...env, OMW_WORKER_PROFILE_SOURCE: source } })
+  })
+}
+for (const scenario of planningRaces) test(`planning approved hash 不可重新核准 late U：${scenario.name}`, () => planningFixture(scenario, async ({ env, runtime, destination, old, approved, manifest, configured }) => {
+  const before = await readFile(manifest)
+  const late = "synthetic late user bytes U"
+  const observations = []
+  let injected = false, reads = 0, stats = 0
+  const originalRead = fs.promises.readFile, originalStat = fs.promises.lstat, originalList = fs.promises.readdir
+  const inject = async () => {
+    await writeFile(destination, late, { mode: 0o600 })
+    injected = true
+  }
+  const hooks = [mock.method(fs.promises, "readFile", async (...args) => {
+    const bytes = await originalRead(...args)
+    if (args[0] === destination) {
+      observations.push(bytes.toString("utf8"))
+      // 回傳真實已讀 A，在 caller 比對 ownership 前寫 U；下一個真 read 即 planWrite。
+      if (++reads === scenario.read) await inject()
+    }
+    return bytes
+  }), mock.method(fs.promises, "lstat", async (...args) => {
+    try { return await originalStat(...args) }
+    catch (error) {
+      // fileHash 的第一個 lstat 是 noSymlinks；第二個 metadata ENOENT 才代表核准 absent。
+      if (scenario.absent && args[0] === destination && error.code === "ENOENT" && ++stats === 2) {
+        observations.push("absent")
+        await inject()
+      }
+      throw error
+    }
+  }), mock.method(fs.promises, "readdir", async (...args) => {
+    const entries = await originalList(...args)
+    // Migration caller 的 approved absence 來自 global tree snapshot，不經 fileHash。
+    if (scenario.directory && args[0] === path.dirname(destination)) {
+      observations.push(entries.length === 0 ? "absent" : "unexpected present")
+      await inject()
+    }
+    return entries
+  })]
+  syncBuiltinESMExports()
+  let failure
+  try { await initializeWorker(configured) } catch (error) { failure = error }
+  finally { for (const hook of hooks) hook.mock.restore(); syncBuiltinESMExports() }
+  assert.equal(injected, true, "exercise the precise validated-read → planning-reread window")
+  const expectedReads = scenario.read ? [...Array(scenario.read).fill(approved), late] : ["absent", late]
+  assert.deepEqual(observations.slice(0, expectedReads.length), expectedReads, "real reads establish approved A/null, then planning observes U")
+  assert.equal(await readFile(destination, "utf8"), late, "planning reread 必須保留已觀察到的使用者 U，不能覆寫為 B")
+  assert.match(failure?.message ?? "startup unexpectedly succeeded", /OMW_WORKER_PROFILE_COLLISION.*planning/)
+  assert.deepEqual(await readFile(manifest), before, "collision must not advance manifest")
+  assert.equal(await readFile(path.join(runtime, "opencode.json"), "utf8"), "{}")
+  if (old) assert.equal(await readFile(old, "utf8"), approved, "collision must not remove old migration copy")
+  await assert.rejects(stat(path.join(runtime, ".omw-skills-migration.json")), { code: "ENOENT" })
+  assert.deepEqual((await readdir(runtime)).filter(name => name.startsWith(".omw-bootstrap-")), [])
+  if (scenario.skill) assert.deepEqual((await readdir(path.dirname(destination))).filter(name => name.startsWith(".omw-bootstrap-")), [])
+}))
+test("planning 相同 approved hash 重讀可 upgrade／migration／create，重啟保持成功且無暫存", async () => {
+  for (const scenario of planningRaces) await planningFixture(scenario, async ({ runtime, destination, old, incoming, configured }) => {
+    await initializeWorker(configured)
+    await initializeWorker(configured)
+    assert.equal(await readFile(destination, "utf8"), incoming, scenario.name)
+    if (old) await assert.rejects(stat(old), { code: "ENOENT" })
+    await assert.rejects(stat(path.join(runtime, ".omw-skills-migration.json")), { code: "ENOENT" })
+    assert.deepEqual((await readdir(runtime)).filter(name => name.startsWith(".omw-bootstrap-")), [])
+    assert.deepEqual((await readdir(path.dirname(destination))).filter(name => name.startsWith(".omw-bootstrap-")), [])
+  })
+})
+test("skills roots overlap 與 global junction 在 copy 前拒絕；auth pre-step 仍是既有順序", () => fixture(async ({ root, env, seed, auth }) => {
+  const source = path.join(root, "source")
+  await save(source, "opencode.json", "{}")
+  for (const runtime of [env.HOME, path.join(env.HOME, ".agents"), globalSkill(env, "nested"), path.dirname(auth)]) {
+    await assert.rejects(initializeWorker({ ...env, OMW_WORKER_PROFILE_SOURCE: source, OMW_WORKER_PROFILE_DIR: runtime }), /OMW_WORKER_PROFILE_SOURCE/)
+  }
+  for (const extra of [{ XDG_CONFIG_HOME: globalSkill(env, "") }, { XDG_DATA_HOME: globalSkill(env, "") },
+    { OMW_WORKER_PROFILE_SOURCE: path.join(env.HOME, ".agents") }, { OMW_WORKER_PROFILE_SOURCE: env.HOME }]) {
+    await assert.rejects(initializeWorker({ ...env, OMW_WORKER_PROFILE_SOURCE: source, ...extra }), /OMW_WORKER_PROFILE_SOURCE/)
+  }
+  const outside = path.join(root, "outside")
+  await mkdir(outside)
+  await mkdir(path.join(env.HOME, ".agents"), { mode: 0o700 })
+  await symlink(outside, globalSkill(env, ""), process.platform === "win32" ? "junction" : "dir")
+  await assert.rejects(initializeWorker({ ...env, OMW_WORKER_PROFILE_SOURCE: source, OMW_AUTH_SEED_FILE: seed }), /OMW_WORKER_PROFILE_SOURCE/)
+  assert.deepEqual(await readdir(outside), [])
+  assert.deepEqual(JSON.parse(await readFile(auth)), synthetic, "auth pre-step is not a transaction")
+  await assert.rejects(stat(env.OMW_WORKER_PROFILE_DIR), { code: "ENOENT" })
+}))
+test("skills source／old user child／global removal junction 不跟隨外部 files", () => fixture(async ({ root, env }) => {
+  const outside = path.join(root, "outside")
+  await save(outside, "SKILL.md", "synthetic outside marker")
+  const source = path.join(root, "source")
+  await save(source, "opencode.json", "{}")
+  const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+  for (const kind of ["source", "old", "global"]) {
+    if (kind === "global") await save(env.OMW_WORKER_PROFILE_DIR, ".omw-source-manifest.json", JSON.stringify({ version: 2, skillsTarget: "home-agents",
+      files: { "skills/linked/SKILL.md": sha("synthetic previously managed") }, userSkills: {} }))
+    const base = kind === "source" ? path.join(source, "skills") : kind === "old" ? path.join(env.OMW_WORKER_PROFILE_DIR, "skills") : globalSkill(env, "")
+    await mkdir(base, { recursive: true, mode: 0o700 })
+    await symlink(outside, path.join(base, "linked"), process.platform === "win32" ? "junction" : "dir")
+    const originalReadFile = fs.promises.readFile
+    const attemptedReads = []
+    const interception = mock.method(fs.promises, "readFile", async (...args) => {
+      attemptedReads.push(String(args[0]))
+      return originalReadFile(...args)
+    })
+    syncBuiltinESMExports()
+    try { await assert.rejects(initializeWorker(configured), /OMW_WORKER_PROFILE_SOURCE/) }
+    finally { interception.mock.restore(); syncBuiltinESMExports() }
+    assert.ok(attemptedReads.every(filename => !filename.includes(path.join(base, "linked"))), "rejected links must not cause reads through their target")
+    assert.equal(await readFile(path.join(outside, "SKILL.md"), "utf8"), "synthetic outside marker")
+    await rm(path.join(base, "linked"))
+  }
+}))
 test("沒有選用 seed/profile/PAT 時允許首次人工登入，不建立 auth", () => fixture(async ({ env, auth }) => {
   assert.equal((await success(env)).auth, "absent")
   await assert.rejects(stat(auth), { code: "ENOENT" })
@@ -162,14 +512,14 @@ test("唯讀完整 profile 複製、來源更新、刪除 owned source files、�
   const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
   const first = await success(configured)
   assert.equal(first.environment.opencodeConfig, true)
-  assert.equal(await readFile(path.join(runtime, "skills/example/SKILL.md"), "utf8"), "synthetic v1")
+  assert.equal(await readFile(globalSkill(env, "example/SKILL.md"), "utf8"), "synthetic v1")
   await writeFile(path.join(runtime, "cache.txt"), "synthetic-runtime-cache")
   await writeFile(path.join(source, "skills/example/SKILL.md"), "synthetic v2")
   await success(configured)
-  assert.equal(await readFile(path.join(runtime, "skills/example/SKILL.md"), "utf8"), "synthetic v2")
+  assert.equal(await readFile(globalSkill(env, "example/SKILL.md"), "utf8"), "synthetic v2")
   await rm(path.join(source, "skills"), { recursive: true })
   await success(configured)
-  await assert.rejects(stat(path.join(runtime, "skills/example/SKILL.md")), { code: "ENOENT" })
+  await assert.rejects(stat(globalSkill(env, "example/SKILL.md")), { code: "ENOENT" })
   assert.equal(await readFile(path.join(runtime, "cache.txt"), "utf8"), "synthetic-runtime-cache")
   assert.equal(await readFile(global, "utf8"), "synthetic-user-config")
 }))
@@ -243,7 +593,9 @@ test("profile bundle 後段 dirty collision 須先驗完，不先更新設定或
   await writeFile(skill, "synthetic simplified tdd")
   for (const name of ["task-plan", "verify", "deliver"]) await writeFile(path.join(source, `commands/${name}.md`), `synthetic ${name}`)
   const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
-  await success(configured)
+  // 歷史簡化 bundle 的 v1 fixture 保留 old profile 路徑；本輪只改遷移完成後的契約。
+  await legacyProfile(env, { "opencode.json": '{"description":"synthetic-v1"}', "skills/tdd/SKILL.md": "synthetic simplified tdd",
+    ...Object.fromEntries(["task-plan", "verify", "deliver"].map(name => [`commands/${name}.md`, `synthetic ${name}`])) })
   const runtime = env.OMW_WORKER_PROFILE_DIR
   const manifest = path.join(runtime, ".omw-source-manifest.json")
   const before = await readFile(manifest)
@@ -266,7 +618,7 @@ test("profile bundle 後段 dirty collision 須先驗完，不先更新設定或
   await success(configured)
   await success(configured)
   assert.equal(await readFile(path.join(runtime, "opencode.json"), "utf8"), '{"description":"synthetic-v2"}')
-  assert.equal(await readFile(path.join(runtime, "skills/tdd/tests.md"), "utf8"), "synthetic public seam reference")
+  assert.equal(await readFile(globalSkill(env, "tdd/tests.md"), "utf8"), "synthetic public seam reference")
   for (const name of ["task-plan", "verify", "deliver"]) await assert.rejects(stat(path.join(runtime, `commands/${name}.md`)), { code: "ENOENT" })
 }))
 test("新 curated profile 不預載自訂 commands", () => fixture(async ({ env }) => {
@@ -433,7 +785,8 @@ test("bundle partial publish 未換 manifest 可續行：已刪 command、已更
   await writeFile(path.join(source, "skills/tdd/SKILL.md"), "synthetic simplified tdd")
   for (const name of ["task-plan", "verify", "deliver"]) await writeFile(path.join(source, `commands/${name}.md`), `synthetic ${name}`)
   const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
-  await success(configured)
+  await legacyProfile(env, { "opencode.json": '{"description":"synthetic-v1"}', "skills/tdd/SKILL.md": "synthetic simplified tdd",
+    ...Object.fromEntries(["task-plan", "verify", "deliver"].map(name => [`commands/${name}.md`, `synthetic ${name}`])) })
   const runtime = env.OMW_WORKER_PROFILE_DIR
   const manifest = path.join(runtime, ".omw-source-manifest.json")
   const prior = await readFile(manifest)
@@ -448,10 +801,10 @@ test("bundle partial publish 未換 manifest 可續行：已刪 command、已更
   await success(configured)
   await success(configured)
   assert.equal(await readFile(path.join(runtime, "opencode.json"), "utf8"), '{"description":"synthetic-v2"}')
-  assert.equal(await readFile(path.join(runtime, "skills/tdd/tests.md"), "utf8"), "synthetic reference")
+  assert.equal(await readFile(globalSkill(env, "tdd/tests.md"), "utf8"), "synthetic reference")
   for (const name of ["task-plan", "verify", "deliver"]) await assert.rejects(stat(path.join(runtime, `commands/${name}.md`)), { code: "ENOENT" })
   const updated = JSON.parse(await readFile(manifest, "utf8"))
-  assert.equal(updated.version, 1)
+  assert.equal(updated.version, 2)
   assert.equal(Object.keys(updated.files).some(name => name.startsWith("commands/")), false)
 }))
 test("完整 skill bundle 的新增 reference 未追蹤碰撞先驗 fail closed，明確合併後更新原簡化 skill", () => fixture(async ({ root, env }) => {
@@ -462,7 +815,7 @@ test("完整 skill bundle 的新增 reference 未追蹤碰撞先驗 fail closed�
   await writeFile(path.join(source, "skills/tdd/SKILL.md"), "synthetic simplified tdd")
   await writeFile(path.join(source, "commands/verify.md"), "synthetic managed verify")
   const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
-  await success(configured)
+  await legacyProfile(env, { "opencode.json": "{}", "skills/tdd/SKILL.md": "synthetic simplified tdd", "commands/verify.md": "synthetic managed verify" })
   const runtime = env.OMW_WORKER_PROFILE_DIR
   const reference = path.join(runtime, "skills/tdd/tests.md")
   const manifest = path.join(runtime, ".omw-source-manifest.json")
@@ -481,8 +834,8 @@ test("完整 skill bundle 的新增 reference 未追蹤碰撞先驗 fail closed�
   await writeFile(reference, "synthetic upstream reference")
   await success(configured)
   await success(configured)
-  assert.equal(await readFile(path.join(runtime, "skills/tdd/SKILL.md"), "utf8"), "synthetic full tdd: [reference](tests.md)")
-  assert.equal(await readFile(reference, "utf8"), "synthetic upstream reference")
+  assert.equal(await readFile(globalSkill(env, "tdd/SKILL.md"), "utf8"), "synthetic full tdd: [reference](tests.md)")
+  assert.equal(await readFile(globalSkill(env, "tdd/tests.md"), "utf8"), "synthetic upstream reference")
   await assert.rejects(stat(path.join(runtime, "commands/verify.md")), { code: "ENOENT" })
 }))
 test("profile source 移除後保留 modified runtime，重新引入同名檔案仍保護使用者內容", () => fixture(async ({ root, env }) => {

@@ -4,6 +4,10 @@
 
 #108 bundle 為 **60 指定 + web-design-guidelines + 必要 transitive pr-review-remake = 62 skills**。原 image Office 4 由 image owner 保留，整合 runtime 預期 66。原始 selected tree 488 files；compiled 保留完整目錄並增加一個 Linux collector，共 489 files。references/scripts/templates/tests/evals 都保留，但 prepare 不執行 upstream 程式。
 
+完整 bundle 的 image 唯讀 source 仍是 `/opt/omw/deploy/worker/profile/skills`；compiled lock、source hashes、artifact wrappers 及 assembly 路徑不變。只有 runtime bootstrap 路由改成唯一實體 **`HOME/.agents/skills`（image 為 `/home/node/.agents/skills`）**。OpenCode 1.18.34 與 Command Inject 1.3.1 共同 discovery；profile 省略 `skills.paths`。AGENTS／agents／plugin config 仍在 `~/.config/omw-profile`。
+
+Runtime profile 的單一 `.omw-source-manifest.json` v2 以 `skillsTarget: "home-agents"` 區分 skills／non-skills targets；v1 hashes 不套到新 global root 作刪除。old user-modified／added skills 保留內容並搬至 global，移出 source-owned `files`，另以 `userSkills` source baseline 防止未來覆蓋；global 未受管技能保留。不同 bytes collision 先驗停止，只回報 relative path。hash-only retry receipt 在 runtime profile，永不放 skills root；逐檔 atomic publish、核對 old bytes 後精確移除與 empty-directory cleanup 完成，再發布 config／manifest。詳見 [Skills 工作副本遷移](worker-profile.md#skills-工作副本遷移)。
+
 來源是已選 installed catalog 對應的 pinned upstream revision，**不能宣稱 same-as-local**。主 session 的 SKILL.md 正規化比對回報為 56 相同、6 有差異：ask-matt 的 upstream debug flow／retro、implement 的 explicit skill call、to-tickets 的 native blocking links 模板、handoff 的 TMPDIR 範例、pr-review-remake 的 report format inline instructions、i-have-adhd 的 example edit 取代 jsonwebtoken install。本元件未讀 host 技能；這是主 session 提供的比對摘要，references／scripts 未逐檔比對，仍為 unknown。固定 revision 是本 bundle 的可重建依據，不新增版本確認 gate。排除 agent-process-lifecycle/self-challenge，不自動加入其他技能或 commands。
 
 ## 固定來源

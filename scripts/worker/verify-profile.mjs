@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url"
 import { setTimeout as delay } from "node:timers/promises"
 import { initializeWorker } from "./bootstrap.mjs"
 import { dockerOwner } from "./docker-owner.mjs"
-import { bundleInventory, profileRoles, excludedSkills, permissionAction, bootstrapSummary, anonymousContext7Definitions, context7ToolNames } from "./verify-skills-profile.mjs"
+import { bundleInventory, profileRoles, assertProfileModels, assertAutoPermissionsReviewer, assertSessionPlugins, excludedSkills, permissionAction, bootstrapSummary, anonymousContext7Definitions, context7ToolNames } from "./verify-skills-profile.mjs"
 import { auditCompiled } from "./skills-bundle-audit.mjs"
 
 const repo = fileURLToPath(new URL("../..", import.meta.url))
@@ -128,9 +128,20 @@ async function linuxSmoke(fixtureOnly) {
   const controlToken = "synthetic-profile-control-32-characters"
   const nativeOrigin = "http://127.0.0.1:41966"
   let app, identity
+  const ownedCommandFixtures = []
   const deadline = setTimeout(() => process.exit(124), fixtureOnly ? 75_000 : 120_000)
   const checks = []
   try {
+    if (!fixtureOnly) {
+      // Fresh namespace 的 public discovery input；create-only，絕不執行 scripts／Make targets。
+      for (const [filename, content] of [
+        ["/workspace/package.json", JSON.stringify({ private: true, scripts: { "omw-session-fixture": "echo discovery-only-never-run" } })],
+        ["/workspace/Makefile", "omw-session-fixture: ## Public discovery-only fixture\n\t@echo discovery-only-never-run\n"],
+      ]) {
+        await writeFile(filename, content, { flag: "wx" })
+        ownedCommandFixtures.push(filename)
+      }
+    }
     let executable = "/usr/local/bin/opencode", args
     if (fixtureOnly) {
       executable = process.execPath
@@ -193,9 +204,12 @@ async function linuxSmoke(fixtureOnly) {
       assert.equal(config.username, "public-profile-fixture")
       assert.ok(config.plugin.some(spec => spec === "file:///opt/omw-worker/acp/acp.mjs" || spec[0] === "file:///opt/omw-worker/acp/acp.mjs"))
       assert.ok(config.instructions.includes(`${runtime}/AGENTS.md`))
-      assert.ok(config.skills.paths.includes(`${runtime}/skills`))
+       const skillsRoot = path.join(process.env.HOME, ".agents/skills")
+       assert.equal(config.skills?.paths?.includes(`${runtime}/skills`) ?? false, false, "old profile skill path must not return")
+       assert.equal(config.skills?.paths?.includes(skillsRoot) ?? false, false, "standard global discovery must not be scanned again via paths")
+       await assert.rejects(stat(path.join(runtime, "skills")), { code: "ENOENT" })
       const skills = await get("/skill")
-      const inventory = await bundleInventory("/opt/omw-worker/skills-bundle", runtime)
+       const inventory = await bundleInventory("/opt/omw-worker/skills-bundle", runtime, skillsRoot)
       assert.equal(new Set(skills.map(skill => skill.name)).size, skills.length)
       console.log(JSON.stringify({ nativeSkillNames: skills.map(skill => skill.name) }))
       const builtinSkills = skills.filter(skill => !inventory.profileNames.includes(skill.name)).map(skill => skill.name)
@@ -204,18 +218,37 @@ async function linuxSmoke(fixtureOnly) {
       for (const name of inventory.profileNames) {
         const skill = skills.find(skill => skill.name === name)
         assert.ok(skill?.description, `skill missing: ${name}`)
-        assert.ok(skill.location.startsWith(`${runtime}/skills/`), `absolute skill location: ${name}`)
+         assert.ok(skill.location.startsWith(`${skillsRoot}/`), `canonical skill location: ${name}`)
       }
       for (const name of excludedSkills) assert.ok(!skills.some(skill => skill.name === name))
       const agents = await get("/agent")
+      const models = assertProfileModels(config, agents)
+      const autoPermissions = assertAutoPermissionsReviewer(config, agents)
+      const autoArtifact = JSON.parse(await readFile("/opt/omw-worker/auto-permissions/artifact.json", "utf8"))
+      assert.equal(autoArtifact.version, "0.2.15")
+      assert.equal(autoArtifact.files["dist/v1-server.js"], "6263c4509ea0bb93e715e96e58174d14a615c95ee68cbd5a64c0ba98124adc76")
+      assert.deepEqual(autoArtifact.runtimeDependencies, {})
+      for (const [file, sha256] of Object.entries(autoArtifact.files)) {
+        assert.equal(createHash("sha256").update(await readFile(`/opt/omw-worker/auto-permissions/${file}`)).digest("hex"), sha256)
+        assert.equal((await stat(`/opt/omw-worker/auto-permissions/${file}`)).mode & 0o222, 0)
+      }
       assert.equal(config.subagent_depth, 1)
       for (const name of profileRoles) {
         const agent = agents.find(agent => agent.name === name)
         assert.equal(agent?.mode, "subagent", name)
-        for (const target of [...profileRoles, "unconfigured-role"]) assert.equal(permissionAction(agent.permission, "task", target), "deny", `${name} -> ${target}`)
+        for (const target of ["astra", ...profileRoles, "unconfigured-role"]) assert.equal(permissionAction(agent.permission, "task", target), "deny", `${name} -> ${target}`)
       }
       const plan = agents.find(agent => agent.name === "plan")
       for (const name of ["general", "general-simple", "general-complex"]) assert.equal(permissionAction(plan.permission, "task", name), "deny")
+      assert.equal(permissionAction(plan.permission, "edit", "/workspace/src/public-fixture.ts"), "deny", "plan source edits")
+      for (const name of ["verifier", "explore", "scout", "reference-reader"]) {
+        const rules = agents.find(agent => agent.name === name).permission
+        for (const tool of ["edit", "unknown_plugin", "unrelated_mcp_write"]) assert.equal(permissionAction(rules, tool, "/workspace/src/public-fixture.ts"), "deny", `${name}: ${tool}`)
+        assert.equal(permissionAction(rules, "bash", "node --version"), name === "verifier" ? "ask" : "deny", `${name}: bash`)
+        for (const [pattern, action] of [["/workspace/.env", "ask"], ["/workspace/.env.local", "ask"], ["/workspace/.env.example", "allow"], ["/workspace/src/public-fixture.ts", "allow"]]) {
+          assert.equal(permissionAction(rules, "read", pattern), action, `${name}: ${pattern}`)
+        }
+      }
       const sourceConfig = JSON.parse(await readFile(`${runtime}/opencode.json`, "utf8"))
       assert.equal(config.mcp.context7.enabled, sourceConfig.mcp.context7.enabled)
       assert.equal(config.mcp.context7.enabled, true)
@@ -226,14 +259,27 @@ async function linuxSmoke(fixtureOnly) {
       assert.equal(mcp.context7.status, "connected", `native Context7 unavailable: ${JSON.stringify(mcp.context7)}`)
       const directDefinitions = await anonymousContext7Definitions()
       for (const name of context7ToolNames) {
-        for (const role of ["explore", "scout", "verifier"]) assert.equal(permissionAction(agents.find(agent => agent.name === role).permission, `context7_${name}`, "*"), "ask")
+        for (const role of ["explore", "scout", "verifier", "reference-reader"]) assert.equal(permissionAction(agents.find(agent => agent.name === role).permission, `context7_${name}`, "*"), "ask")
       }
-      const commands = await get("/command")
+       const commands = await get("/command")
+       assert.equal(new Set(commands.map(command => command.name)).size, commands.length, "duplicate native command names")
+       const sessionPlugins = assertSessionPlugins(config, ids, commands)
+       const discoveredCommands = ["npm:omw-session-fixture", "make:omw-session-fixture", ...inventory.profileNames.map(name => `skill:${name}`)]
+       for (const name of discoveredCommands)
+         assert.ok(commands.some(command => command.name === name), `Command Inject native discovery missing: ${name}`)
+       sessionPlugins.nativeDiscoveryCommands = discoveredCommands
+      const sessionArtifact = JSON.parse(await readFile("/opt/omw-worker/session-plugins/artifact.json", "utf8"))
+      assert.equal((await stat("/opt/omw-worker/session-plugins/artifact.json")).mode & 0o222, 0)
+      for (const [file, sha256] of Object.entries(sessionArtifact.files)) {
+        const location = `/opt/omw-worker/session-plugins/${file}`
+        assert.equal(createHash("sha256").update(await readFile(location)).digest("hex"), sha256)
+        assert.equal((await stat(location)).mode & 0o222, 0)
+      }
       assert.ok(commands.some(command => command.name === "acp"), "ACP command missing")
       for (const name of ["task-plan", "verify", "deliver"]) assert.ok(!commands.some(command => command.name === name), `obsolete command: ${name}`)
       checks.push({ name: "native-profile-and-anonymous-context7", version: health.version, compactionAuto: config.compaction.auto,
         acpTools: ids.filter(id => acpTools.includes(id)), skills: inventory.profileNames, builtinSkills, inventory,
-        agents: profileRoles, permissionEvidence: "native-effective-config-and-agent-rules-only; no LLM delegation", subagentDepth: config.subagent_depth,
+        agents: ["astra", ...profileRoles], models, autoPermissions, sessionPlugins, permissionEvidence: "native-effective-config-and-agent-rules-only; no LLM delegation", subagentDepth: config.subagent_depth,
         context7: { enabled: true, oauth: false, status: mcp.context7.status, nativeConnectionVerified: true,
           nativeToolMetadataHTTPAvailable: false, expectedNativeToolIDs: context7ToolNames.map(name => `context7_${name}`),
           limitation: "1.18.34 /experimental/tool/ids 與 /experimental/tool 只列 builtin/plugin，未直接觀察 native MCP cached definitions；不冒稱模型工具已呼叫", directDefinitions },
@@ -266,6 +312,7 @@ async function linuxSmoke(fixtureOnly) {
       assert.equal(stopped.json().stopped, true)
     }
     await app?.close()
+    for (const filename of ownedCommandFixtures) await rm(filename)
     await rm(scratch, { recursive: true, force: true })
     clearTimeout(deadline)
   }

@@ -1,0 +1,9 @@
+{
+  "name": "omw-worker-auto-permissions",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": { "build": "node build.mjs" },
+  "dependencies": { "opencode-auto-permissions": "0.2.15" }
+}
