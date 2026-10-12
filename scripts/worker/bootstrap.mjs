@@ -10,6 +10,11 @@ const text = value => typeof value === "string" && value.length > 0 && !/[\0\r\n
 const digest = value => createHash("sha256").update(value).digest("hex")
 const inside = (parent, filename) => filename === parent || filename.startsWith(parent + path.sep)
 const fail = message => { throw new Error(message) }
+function canonicalJSON(value) {
+  if (Array.isArray(value)) return "[" + value.map(canonicalJSON).join(",") + "]"
+  if (object(value)) return "{" + Object.keys(value).sort().map(key => JSON.stringify(key) + ":" + canonicalJSON(value[key])).join(",") + "}"
+  return JSON.stringify(value)
+}
 function absolute(value) {
   if (!value || !path.isAbsolute(value)) fail("路徑必須是 absolute path。")
   return path.resolve(value)
@@ -213,7 +218,7 @@ async function copyProfile(environment, changes) {
     // manifest 已發布、receipt cleanup 中斷：不把 stale receipt 用於另一輪 source 升級。
     if (prior.version === 2 && receipt.prior !== digest(priorBytes)) receipt = undefined
     else {
-      if (receipt.prior !== digest(priorBytes) || JSON.stringify(receipt.sources) !== JSON.stringify(sourceHashes)) migrationRetry()
+      if (receipt.prior !== digest(priorBytes) || canonicalJSON(receipt.sources) !== canonicalJSON(sourceHashes)) migrationRetry()
       for (const [name, move] of Object.entries(receipt.moves)) {
         relativeName(name)
         if (!isSkill(name) || !object(move) || !validHash(move.oldHash) || !validHash(move.hash)
@@ -290,9 +295,13 @@ async function copyProfile(environment, changes) {
   // 只保留 hashes 的 retry receipt：custom 已移除 old、manifest 尚未發布時仍能辨認 user ownership。
   // 先完成全部 preflight；receipt 不放 skills，也不是第二份 skills 或整批 filesystem transaction。
   if (Object.keys(moves).length) {
-    const bytes = JSON.stringify({ version: 1, prior: digest(priorBytes), sources: sourceHashes, moves }) + "\n"
+    const nextReceipt = { version: 1, prior: digest(priorBytes), sources: sourceHashes, moves }
+    const bytes = JSON.stringify(nextReceipt) + "\n"
     if (receipt) {
-      if (await fileHash(receiptFile) !== digest(bytes)) fail("Migration receipt 併發改變。")
+      // 已移走的 old 檔會改變重建 moves 的插入順序；語意比對只忽略 object key order。
+      // disk authority 仍是初讀 raw hash，不能用 canonical／重建 bytes 核准 await 期間的改動。
+      if (canonicalJSON(receipt) !== canonicalJSON(nextReceipt)) fail("Migration receipt 與重建計畫分歧。")
+      if (await fileHash(receiptFile) !== receiptHash) fail("Migration receipt 併發改變。")
     } else {
       if (await fileHash(receiptFile) !== receiptHash) fail("Migration receipt 併發改變。")
       if (receiptHash !== null) await unlink(receiptFile)

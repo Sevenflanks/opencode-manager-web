@@ -11,7 +11,7 @@ Bootstrap 在 `execution-server.ts` 中以同程序 `await initializeWorker(proc
 | `OMW_WORKER_PROFILE_SOURCE` | 可選、absolute readonly curated tree，例如 `/opt/omw/deploy/worker/profile`。未設定就略過 profile copy。image 須預先安裝 config 引用的 ACP；bootstrap 不下載 plugin。 |
 | `OMW_WORKER_PROFILE_DIR` | 私有可寫 profile，預設 `$HOME/.config/omw-profile`；image 的 HOME 為 `/home/node`。 |
 | `OPENCODE_CONFIG` | 有 profile source 時，bootstrap 設為 `$OMW_WORKER_PROFILE_DIR/opencode.json`；已設定者必須指向同一檔案。 |
-| `OPENCODE_CONFIG_DIR` | 有 profile source 時，bootstrap 設為 runtime profile dir，讓全域 AGENTS、skills、commands 可載入；已設定者必須一致。 |
+| `OPENCODE_CONFIG_DIR` | 有 profile source 時，bootstrap 設為 runtime profile dir，供 agents 與 plugin config discovery；skills 使用 `$HOME/.agents/skills` 標準 discovery。已設定者必須一致。 |
 | `OMW_AUTH_SEED_FILE` | 可選、absolute readonly 外部 seed file。不設定就讓 OpenCode 原生首次人工登入。沒有新的 HTTP export／seed API。 |
 | `HOME`／`XDG_DATA_HOME` | auth destination 與 OpenCode 相同：`$XDG_DATA_HOME/opencode/auth.json`，未設定 XDG 時為 `$HOME/.local/share/opencode/auth.json`。HOME 必須是 absolute path。 |
 | `OMW_GITHUB_TOKEN_FILE` | 可選、absolute readonly PAT file；單行 token，可有一個尾端 newline。讀入記憶體為 `GH_TOKEN`，不寫入 token store。 |
@@ -22,14 +22,14 @@ Bootstrap 在 `execution-server.ts` 中以同程序 `await initializeWorker(proc
 
 ## Profile 升級
 
-Bootstrap 複製完整 curated source tree，包括 `opencode.json`、`AGENTS.md`、skills、commands 等 regular files；來源可唯讀。拒絕 symlink、來源／runtime 重疊及原生全域 `$XDG_CONFIG_HOME/opencode`（預設 `$HOME/.config/opencode`）重疊。
+Bootstrap 從 readonly curated source 複製 regular files：skills 的唯一工作副本在 `$HOME/.agents/skills`，`opencode.json`、`AGENTS.md`、agents 與 plugin config 等其餘檔案仍在 runtime profile。拒絕 symlink、來源／runtime／skills 重疊及原生全域 `$XDG_CONFIG_HOME/opencode`（預設 `$HOME/.config/opencode`）或 auth 範圍重疊。
 
-Runtime 的 `.omw-source-manifest.json` 格式版本為 1，記錄上次完成 reconciliation 的各 curated source file SHA-256。每次 execution startup 重新計算 source hash，依以下規則保留使用者內容，不遞迴刪除 runtime 目錄：
+歷史 v1 `.omw-source-manifest.json` 的所有 entries（包括 `skills/...`）都指向 runtime profile。現在唯一權威 manifest 仍在該目錄，但完成升級後為 v2；skills entries 路由至 `$HOME/.agents/skills`，使用者搬入檔案的 ownership 另以 `userSkills` 保留，不冒充 source-owned files。v1 遷移、v2 target mapping 與 partial-retry receipt 的現行規則見 [Skills 工作副本遷移](worker-profile.md#skills-工作副本遷移)。每次 execution startup 重新計算 source hash；以下「工作副本」依目前 manifest version 的 target mapping 解釋，不遞迴刪除工作目錄：
 
-- Runtime 內容已等於目前 source 時直接接受，包括操作者完全合併或上次 partial upgrade 後 manifest 尚未更新的情況；重試可繼續更新其餘檔案。
-- Runtime 仍等於 manifest 記錄的 prior source 時，可原子更新到新版 source。只有 runtime 修改、source 未改時保留 runtime；兩邊都改且內容不同則 fail closed，不覆寫使用者內容。
-- Manifest 沒有 provenance 的同名 runtime 檔案，若與新增 source 內容不同也 fail closed；cache／自訂新增檔案不因新版 source 出現同名檔案就被覆蓋。
-- Source 移除檔案時，只刪除仍等於 prior source 的 runtime file；已修改者保留，並在成功 reconciliation 後移出 manifest。Source 日後重新加入同名檔案時，仍套用未追蹤檔案的碰撞保護。
+- 工作副本內容已等於目前 source 時直接接受，包括操作者完全合併或上次 partial upgrade 後 manifest 尚未更新的情況；重試可繼續更新其餘檔案。
+- 受管工作副本仍等於 manifest 記錄的 prior source 時，可原子更新到新版 source。只有工作副本修改、source 未改時保留工作副本；兩邊都改且內容不同則 fail closed，不覆寫使用者內容。
+- Manifest 沒有 provenance 的同名工作副本檔案，若與新增 source 內容不同也 fail closed；cache／自訂新增檔案不因新版 source 出現同名檔案就被覆蓋。
+- Source 移除檔案時，只刪除仍等於 prior source 的受管工作副本；已修改者保留，並在成功 reconciliation 後移出 source-owned `files`。Source 日後重新加入同名檔案時，仍套用碰撞保護。
 
 分歧時固定錯誤訊息要求操作者備份並明確合併，不輸出檔案內容、hash 或原始 filesystem 錯誤。先停止 execution、備份自訂修改；需要保留的變更合併回版本化 curated source／image，再讓同名 runtime file 與新版 source 內容一致後重新啟動。每個 file 原子更新，但整個 tree 不是多檔 transaction；失敗前已完成的 file 更新會保留，manifest 只在全部 reconciliation 成功後更新，重試接受已完成的相同內容。
 

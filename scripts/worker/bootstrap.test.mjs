@@ -194,6 +194,98 @@ test("v1 custom 搬移中斷在 old unlink 後可 retry，receipt 不把 user by
   await assert.rejects(stat(receipt), { code: "ENOENT" })
   await assert.rejects(stat(path.join(env.OMW_WORKER_PROFILE_DIR, "skills")), { code: "ENOENT" })
 }))
+async function interruptedUntrackedSkills(run) {
+  return fixture(async ({ root, env }) => {
+    const runtime = env.OMW_WORKER_PROFILE_DIR
+    const source = path.join(root, "source")
+    const names = ["skills/A/SKILL.md", "skills/B/SKILL.md"]
+    const contents = ["synthetic untracked user A", "synthetic untracked user B"]
+    await legacyProfile(env, { "opencode.json": "{}" })
+    for (let index = 0; index < names.length; index++) await save(runtime, names[index], contents[index])
+    await save(source, "opencode.json", '{"description":"synthetic next"}')
+    const configured = { ...env, OMW_WORKER_PROFILE_SOURCE: source }
+    const manifest = path.join(runtime, ".omw-source-manifest.json")
+    const before = await readFile(manifest)
+    const oldA = path.join(runtime, names[0]), oldB = path.join(runtime, names[1])
+    const originalUnlink = fs.promises.unlink
+    const interception = mock.method(fs.promises, "unlink", async filename => {
+      if (filename === oldB) throw new Error("synthetic interruption after old A unlink")
+      return originalUnlink(filename)
+    })
+    syncBuiltinESMExports()
+    try { await assert.rejects(initializeWorker(configured), /OMW_WORKER_PROFILE_SOURCE/) }
+    finally { interception.mock.restore(); syncBuiltinESMExports() }
+    await assert.rejects(stat(oldA), { code: "ENOENT" })
+    assert.equal(await readFile(oldB, "utf8"), contents[1])
+    for (let index = 0; index < names.length; index++) assert.equal(await readFile(globalSkill(env, names[index].slice(7)), "utf8"), contents[index])
+    assert.deepEqual(await readFile(manifest), before)
+    assert.equal(await readFile(path.join(runtime, "opencode.json"), "utf8"), "{}")
+    const receipt = path.join(runtime, ".omw-skills-migration.json")
+    const receiptBytes = await readFile(receipt)
+    assert.deepEqual(Object.keys(JSON.parse(receiptBytes).moves), names, "initial journal is A,B; retry visits remaining old B before receipt A")
+    await run({ env, runtime, names, contents, configured, manifest, before, oldA, oldB, receipt, receiptBytes })
+  })
+}
+test("untracked A/B partial retry 忽略 receipt object key order，保 user skills 並完成 v2／receipt cleanup", () => interruptedUntrackedSkills(async ({ env, runtime, names, contents, configured, manifest, receipt }) => {
+  const result = await initializeWorker(configured)
+  assert.equal(result.profile, "ready")
+  const completed = await readFile(manifest)
+  const value = JSON.parse(completed)
+  assert.equal(value.version, 2)
+  for (let index = 0; index < names.length; index++) {
+    assert.equal(await readFile(globalSkill(env, names[index].slice(7)), "utf8"), contents[index])
+    assert.equal(Object.hasOwn(value.files, names[index]), false, "untracked user bytes must not become source-owned")
+    assert.equal(Object.hasOwn(value.userSkills, names[index]), true)
+    assert.equal(value.userSkills[names[index]], null)
+  }
+  await assert.rejects(stat(path.join(runtime, "skills")), { code: "ENOENT" })
+  await assert.rejects(stat(receipt), { code: "ENOENT" })
+  assert.equal((await initializeWorker(configured)).profile, "ready")
+  assert.deepEqual(await readFile(manifest), completed)
+  for (let index = 0; index < names.length; index++) assert.equal(await readFile(globalSkill(env, names[index].slice(7)), "utf8"), contents[index])
+  assert.deepEqual((await readdir(runtime)).filter(name => name.startsWith(".omw-bootstrap-")), [])
+}))
+test("untracked A/B retry 語意等價仍須拒絕 await 期間 raw receipt 改動，保 old B／global A,B／manifest／receipt", () => interruptedUntrackedSkills(async ({ env, runtime, names, contents, configured, manifest, before, oldB, receipt, receiptBytes }) => {
+  const value = JSON.parse(receiptBytes)
+  const changed = Buffer.from(JSON.stringify({ ...value, moves: { [names[1]]: value.moves[names[1]], [names[0]]: value.moves[names[0]] } }) + "\n")
+  assert.deepEqual(JSON.parse(changed), value, "only JSON key order changes; journal semantics remain identical")
+  assert.notDeepEqual(changed, receiptBytes)
+  const originalRead = fs.promises.readFile
+  const reads = []
+  const interception = mock.method(fs.promises, "readFile", async (...args) => {
+    const bytes = await originalRead(...args)
+    if (args[0] === receipt) {
+      reads.push(bytes)
+      // 第一個真 read 是 raw authority hash，第二個真 read 是 parse；在回傳已讀 bytes 前改 disk。
+      if (reads.length === 2) await writeFile(receipt, changed, { mode: 0o600 })
+    }
+    return bytes
+  })
+  syncBuiltinESMExports()
+  let failure
+  try { await initializeWorker(configured) } catch (error) { failure = error }
+  finally { interception.mock.restore(); syncBuiltinESMExports() }
+  assert.deepEqual(reads.slice(0, 2), [receiptBytes, receiptBytes], "the raw authority and parsed snapshot precede the concurrent write")
+  assert.deepEqual(reads[2], changed, "fresh authority check must observe changed raw bytes even though semantics match")
+  assert.match(failure?.message ?? "startup unexpectedly succeeded", /OMW_WORKER_PROFILE_SOURCE/)
+  assert.deepEqual(await readFile(receipt), changed, "reject without overwriting or deleting changed receipt")
+  assert.deepEqual(await readFile(manifest), before)
+  assert.equal(await readFile(oldB, "utf8"), contents[1])
+  assert.equal(await readFile(path.join(runtime, "opencode.json"), "utf8"), "{}")
+  for (let index = 0; index < names.length; index++) assert.equal(await readFile(globalSkill(env, names[index].slice(7)), "utf8"), contents[index])
+  assert.deepEqual((await readdir(runtime)).filter(name => name.startsWith(".omw-bootstrap-")), [])
+}))
+test("untracked A/B retry 拒絕 receipt ownership baseline 語意分歧，即使 disk raw bytes 不再變動", () => interruptedUntrackedSkills(async ({ env, names, contents, configured, manifest, before, oldB, receipt, receiptBytes }) => {
+  const value = JSON.parse(receiptBytes)
+  value.moves[names[0]].baseline = sha("synthetic invalid ownership baseline")
+  const changed = Buffer.from(JSON.stringify(value) + "\n")
+  await writeFile(receipt, changed, { mode: 0o600 })
+  await assert.rejects(initializeWorker(configured), /OMW_WORKER_PROFILE_SOURCE/)
+  assert.deepEqual(await readFile(receipt), changed)
+  assert.deepEqual(await readFile(manifest), before)
+  assert.equal(await readFile(oldB, "utf8"), contents[1])
+  for (let index = 0; index < names.length; index++) assert.equal(await readFile(globalSkill(env, names[index].slice(7)), "utf8"), contents[index])
+}))
 test("v2 manifest 已發布但 receipt cleanup 中斷；下一輪 source advance 不採用 stale receipt", () => fixture(async ({ root, env }) => {
   const source = path.join(root, "source")
   await legacyProfile(env, { "opencode.json": "{}", "skills/managed/SKILL.md": "synthetic old" })
