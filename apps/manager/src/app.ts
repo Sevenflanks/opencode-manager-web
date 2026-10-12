@@ -9,6 +9,7 @@ import { ManagerError } from "./errors.js"
 import type { ManagerService } from "./service.js"
 import type { RemoteAccessController } from "./remote-access.js"
 import { installHttpRepresentations } from "./http-representation.js"
+import { workerProof, type WorkerIdentity } from "./coordinator/identity.js"
 
 const objectBody = {
   type: "object",
@@ -34,7 +35,7 @@ export function buildApp(options: {
   managerVersion?: string
   connectivity?: { get(): Promise<ConnectivityInfo>; register(trigger: "manual"): Promise<ConnectivityInfo> }
   webRoot?: string
-  worker?: { nativeOrigin: string }
+  worker?: { nativeOrigin: string; identity?: WorkerIdentity }
 }): FastifyInstance {
   const app = Fastify({
     logger: false,
@@ -150,6 +151,17 @@ export function buildApp(options: {
     reply.header("cache-control", "no-store")
     return await options.service.workerCapacity()
   })
+
+  if (options.worker?.identity) {
+    const identity = options.worker.identity
+    // 僅 opt-in Worker 固定 id／PodUID，沿既有 browser Basic；proof 不透露 Worker key。
+    app.get<{ Querystring: { nonce?: string } }>("/api/v1/worker/identity", async (request, reply) => {
+      if (!request.query.nonce || !/^[A-Za-z0-9_-]{1,128}$/.test(request.query.nonce)) throw new ManagerError("WORKER_NONCE_INVALID", "nonce 格式不正確。", 400)
+      reply.header("cache-control", "no-store")
+      return { id: identity.id, generation: identity.generation, nonce: request.query.nonce,
+        proof: workerProof(identity.key, request.query.nonce, identity.id, identity.generation) }
+    })
+  }
 
   app.post("/api/v1/connectivity/register", async () => {
     if (!options.connectivity) throw new ManagerError("REMOTE_REGISTRATION_UNAVAILABLE", "目前無法自動註冊 Tailscale。", 503)
@@ -387,7 +399,7 @@ function trustedOriginSet(expectedAuthority: string, configured: Set<string>, pu
   return trusted
 }
 
-function registerWeb(app: FastifyInstance, webRoot: string): void {
+export function registerWeb(app: FastifyInstance, webRoot: string): void {
   const canonicalRoot = path.resolve(webRoot)
   app.get("/*", async (request, reply) => {
     const requested = request.url.split("?", 1)[0] ?? "/"

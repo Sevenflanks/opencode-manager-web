@@ -10,6 +10,7 @@ import type {
   SessionRootsResponse,
   PrimaryTodosResponse,
   HistoryResponse,
+  CoordinatorOverview,
 } from "@omw/contracts"
 import { createOverviewTransport } from "./overview-transport"
 
@@ -21,7 +22,7 @@ export class ApiError extends Error {
 
 export interface WorkerCapacity {
   state: "available" | "occupied" | "unknown"
-  maxInstances: 1
+  maxInstances: number
 }
 
 // 啟用後同一頁面的 polling 立即需要 Basic；只保留於記憶體，reload 後交回瀏覽器登入。
@@ -31,14 +32,14 @@ function basicAuthorization(username: string, password: string): string {
   return `Basic ${btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""))}`
 }
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
+async function sendRequest<T>(url: string, init?: RequestInit, desktop = true): Promise<T> {
   const mutation = init?.method && init.method !== "GET"
   const response = await fetch(url, {
     ...init,
     redirect: "error",
     headers: {
       accept: "application/json",
-      ...(transientAuthorization ? { authorization: transientAuthorization } : {}),
+      ...(desktop && transientAuthorization ? { authorization: transientAuthorization } : {}),
       ...(mutation ? { "x-omw-csrf": "1", ...(init?.body ? { "content-type": "application/json" } : {}) } : {}),
       ...init?.headers,
     },
@@ -51,14 +52,33 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return await response.json() as T
 }
 
-const overviewTransport = createOverviewTransport((url, signal) => request<OverviewResponse>(url, { signal }))
+export function createManagerApi(prefix = "", canMutate: () => boolean = () => true) {
+  let disposed = false
+  const controllers = new Set<AbortController>()
+  async function request<T>(url: string, init?: RequestInit): Promise<T> {
+    if (disposed) throw new DOMException("Aborted", "AbortError")
+    // 每個 client 固定對應一次 execution；human Basic 不得跟進 Worker proxy。
+    if (prefix && init?.method && init.method !== "GET" && !canMutate()) {
+      throw new ApiError("COORDINATOR_WORKER_UNAVAILABLE", "COORDINATOR_WORKER_UNAVAILABLE", 409)
+    }
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    init?.signal?.addEventListener("abort", abort, { once: true })
+    if (init?.signal?.aborted) controller.abort()
+    controllers.add(controller)
+    try { return await sendRequest<T>(`${prefix}${url}`, { ...init, signal: controller.signal }, !prefix) }
+    finally { controllers.delete(controller); init?.signal?.removeEventListener("abort", abort) }
+  }
+  const overviewTransport = createOverviewTransport((url, signal) => request<OverviewResponse>(url, { signal }))
 
-export const managerApi = {
+  return {
+  dispose() { disposed = true; for (const controller of controllers) controller.abort(); controllers.clear() },
   async updateCredentials(payload: { currentPassword: string; username: string; password: string }) {
     await request<void>("/api/v1/settings/credentials", { method: "PATCH", body: JSON.stringify(payload) })
-    if (transientAuthorization) transientAuthorization = basicAuthorization(payload.username, payload.password)
+    if (!prefix && transientAuthorization) transientAuthorization = basicAuthorization(payload.username, payload.password)
   },
   async enableRemoteAccess(username: string, password: string) {
+    if (prefix) throw new ApiError("COORDINATOR_WORKER_UNAVAILABLE", "COORDINATOR_WORKER_UNAVAILABLE", 409)
     transientAuthorization = basicAuthorization(username, password)
     try {
       return await request<ConnectivityInfo>("/api/v1/connectivity/enable", { method: "POST", body: JSON.stringify({ confirmed: true }) })
@@ -70,13 +90,13 @@ export const managerApi = {
   shutdown() {
     return request<{ stopping: true }>("/api/v1/manager/shutdown", { method: "POST", body: "{}" })
   },
-  connectivity() {
-    return request<ConnectivityInfo>("/api/v1/connectivity")
+  connectivity(signal?: AbortSignal) {
+    return request<ConnectivityInfo>("/api/v1/connectivity", { signal: signal ?? null })
   },
   async workerCapacity(signal?: AbortSignal): Promise<WorkerCapacity> {
     const capacity = await request<WorkerCapacity>("/api/v1/worker/capacity", { cache: "no-store", ...(signal ? { signal } : {}) })
     // 舊 Manager 或缺欄位的回應不可被當成空閒；只接受目前 execution 的完整 capacity 契約。
-    if (capacity?.maxInstances !== 1 || !["available", "occupied", "unknown"].includes(capacity.state)) {
+    if ((prefix ? !Number.isInteger(capacity?.maxInstances) || capacity.maxInstances < 1 : capacity?.maxInstances !== 1) || !["available", "occupied", "unknown"].includes(capacity.state)) {
       throw new ApiError("WORKER_CAPACITY_UNAVAILABLE", "WORKER_CAPACITY_UNAVAILABLE", 503)
     }
     return capacity
@@ -157,5 +177,17 @@ export const managerApi = {
       method: "POST",
       body: JSON.stringify(sessionId ? { sessionId } : {}),
     })
+  },
+}
+}
+
+export type ManagerApi = ReturnType<typeof createManagerApi>
+export const managerApi = createManagerApi()
+export const coordinatorApi = {
+  overview(signal?: AbortSignal) {
+    return sendRequest<CoordinatorOverview>("/api/v1/coordinator/overview", { signal: signal ?? null, cache: "no-store" }, false)
+  },
+  check(id: string, generation: string, signal?: AbortSignal) {
+    return sendRequest<CoordinatorOverview>(`/api/v1/coordinator/workers/${encodeURIComponent(id)}/${encodeURIComponent(generation)}/check`, { method: "POST", signal: signal ?? null }, false)
   },
 }

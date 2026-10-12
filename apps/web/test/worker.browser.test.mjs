@@ -256,11 +256,13 @@ test("Worker mobile components preserve supported workflows", { skip: !enabled, 
       let release
       connectivityHold = new Promise(resolve => { release = resolve })
       await page.goto(origin)
-      await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
-      const panel = page.getByRole("dialog", { name: "啟動 Instance" })
+      await page.getByText("正在確認運作模式…", { exact: true }).waitFor()
+      assert.equal(await page.getByRole("button", { name: "啟動 Instance", exact: true }).count(), 0, "unknown root mode must not expose a desktop Start action")
       assert.deepEqual(directoryRequests, [])
       connectivityHold = null
       release()
+      await page.getByRole("button", { name: "啟動 Instance", exact: true }).first().click()
+      const panel = page.getByRole("dialog", { name: "啟動 Instance" })
       await panel.locator(".current-directory code").getByText("/workspace", { exact: true }).waitFor()
       assert.deepEqual(directoryRequests, ["/workspace"])
       assert.equal(await panel.getByRole("textbox", { name: "目錄捷徑名稱" }).count(), 0)

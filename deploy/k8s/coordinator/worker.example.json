@@ -1,0 +1,10 @@
+{
+  "id": "example-a",
+  "kind": "task",
+  "name": "範例任務 Worker",
+  "secretName": "omw-job-example-a-auth-v1",
+  "keySecretName": "omw-job-example-a-key-v1",
+  "browserUsername": "omw-example-a",
+  "nativeHost": "omw-job-example-a-code.example.test",
+  "ttlSecondsAfterFinished": 600
+}

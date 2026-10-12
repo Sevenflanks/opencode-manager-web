@@ -1,3 +1,5 @@
+export type { CoordinatorWorkerKind, CoordinatorWorkerHealth, CoordinatorDataFreshness, CoordinatorWorker, CoordinatorInstance, CoordinatorOverview } from "./coordinator.js"
+
 export type InstanceState = "starting" | "ready" | "failed" | "unreachable" | "stopped"
 export type InstanceKind = "headless" | "local-tui"
 export type OverviewFilter = "all" | "active" | "attention" | "unreachable"
@@ -156,7 +158,7 @@ export interface LauncherRegistrationResponse {
 export interface ConnectivityInfo {
   remoteAccess?: "available" | "enabled" | "disabled"
   checkedAt: string
-  mode: "loopback" | "tailnet" | "worker"
+  mode: "loopback" | "tailnet" | "worker" | "coordinator"
   capabilities?: { launcher: boolean; tailscale: boolean; credentialUpdate: boolean; managerShutdown: boolean; maxInstances: number; nativeWeb: boolean }
   nativeWebOrigin?: string
   manager: { localUrl: string; publicUrl: string | null; version?: string }

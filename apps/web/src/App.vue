@@ -30,7 +30,7 @@ import {
   XIcon,
 } from "lucide-vue-next"
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
-import { ApiError, managerApi, type WorkerCapacity } from "@/api"
+import { ApiError, managerApi as defaultManagerApi, type ManagerApi, type WorkerCapacity } from "@/api"
 import { createNotificationPreference, createPendingTracker } from "@/browser-notifications"
 import { createOverviewRefresh } from "@/overview-refresh"
 import { createStoppedHistory } from "@/stopped-history"
@@ -46,6 +46,16 @@ import { LocalError, presentError, presentRegistrationError, presentStatusError,
 import { useMessages, type MessageKey } from "@/i18n"
 
 const { t, date: formatDate, number } = useMessages()
+const props = withDefaults(defineProps<{
+  api?: ManagerApi
+  embedded?: boolean
+  initialInstanceId?: string
+  workerContext?: { name: string; id: string; generation: string; nativeOrigin: string }
+  mutationAllowed?: boolean
+  startAllowed?: boolean
+}>(), { embedded: false, initialInstanceId: "", mutationAllowed: true, startAllowed: true })
+// Client / execution 不在同一 App 內切換；Coordinator 以 id+generation key 重建。
+const managerApi = props.api ?? defaultManagerApi
 const filters = computed<Array<{ value: OverviewFilter; label: string }>>(() => [
   { value: "all", label: t("filter.all") },
   { value: "active", label: t("filter.active") },
@@ -300,7 +310,7 @@ const refresh = createOverviewRefresh({
       selectedId.value = ""
       resetSelectedScope()
     }
-    if (!selectedId.value && !isMobileViewport()) {
+    if (!selectedId.value && !isMobileViewport() && !props.initialInstanceId) {
       selectedId.value = next.instances[0]?.id ?? ""
       lifecycleError.value = ""
       if (selectedId.value) await loadSessions()
@@ -399,11 +409,12 @@ const nativeWebRoot = computed(() => {
   const value = safeManagerUrl(connectivity.value.nativeWebOrigin)
   if (!value) return null
   const parsed = new URL(value)
+  if (props.workerContext && parsed.origin !== new URL(props.workerContext.nativeOrigin).origin) return null
   return parsed.pathname === "/" ? `${parsed.origin}/` : null
 })
-const nativeWebAvailable = computed(() => nativeWebRoot.value && selected.value?.state === "ready" && !overviewStale.value)
+const nativeWebAvailable = computed(() => nativeWebRoot.value && selected.value?.state === "ready" && !overviewStale.value && props.mutationAllowed)
 const workerCapacityState = computed(() => connectivityStale.value || overviewStale.value ? "unknown" : workerCapacity.value)
-const instanceCapacityBlocked = computed(() => workerMode.value && workerCapacityState.value !== "available")
+const instanceCapacityBlocked = computed(() => (props.embedded && !props.startAllowed) || (workerMode.value && workerCapacityState.value !== "available"))
 const workerCapacityMessage = computed<MessageKey>(() => ({
   available: "worker.capacityAvailable", occupied: "worker.capacityFull", unknown: "worker.capacityUnknown",
 } as const)[workerCapacityState.value])
@@ -488,7 +499,7 @@ const recoveryMetadataValid = computed(() => {
     && Object.values(recoveryActionKeys).every((key) => typeof recovery[key] === "boolean")
 })
 const recoveryDiagnostic = computed(() => selected.value && !recoveryMetadataValid.value ? t("error.unknown") : "")
-const overviewMutationsBlocked = computed(() => overviewStale.value)
+const overviewMutationsBlocked = computed(() => overviewStale.value || !props.mutationAllowed)
 const overviewFreshnessState = computed<"initial" | "unavailable" | "refreshing" | "changed" | "failed" | "fresh">(() => {
   if (!overviewLastSucceededAt.value) return overviewError.value ? "unavailable" : "initial"
   if (overviewRefreshing.value) return "refreshing"
@@ -522,10 +533,14 @@ onMounted(async () => {
   if (isMobileViewport() && !mobileHistoryView()) replaceMobileHistory("list")
   if (isMobileViewport()) applyMobileHistoryContext()
   window.addEventListener("hashchange", handleNotificationHash)
-  if (notificationPreference.enabled()) void startNotifications()
+  if (!props.embedded && notificationPreference.enabled()) void startNotifications()
   void loadConnectivity("background")
   const overviewLoaded = await loadOverview(true, "background")
   if (appDisposed) return
+  if (overviewLoaded && props.initialInstanceId) {
+    const target = overview.value.instances.find(item => item.id === props.initialInstanceId)
+    if (target) await choose(target)
+  }
   if (overviewLoaded && isMobileViewport() && mobileHistoryView() === "list") await restoreMobileListScroll()
   if (appDisposed) return
   document.addEventListener("visibilitychange", handleForegroundRefresh)
@@ -541,7 +556,7 @@ onMounted(async () => {
       if (notificationReady) void pollNotifications()
       else if (!notificationBusy.value) void startNotifications()
     }
-  }, 5_000)
+  }, props.embedded ? 10_000 : 5_000)
 })
 onBeforeUnmount(() => {
   appDisposed = true
@@ -573,6 +588,7 @@ onBeforeUnmount(() => {
   connectivityReadGeneration++
   connectivityMutationGeneration++
   sessionsGeneration++
+  if (props.api) managerApi.dispose()
 })
 
 async function loadConnectivity(source: "user" | "background" = "user", freshCapacity = false): Promise<void> {
@@ -776,6 +792,7 @@ async function returnToList(): Promise<void> {
 }
 
 function mobileHistoryView(): "list" | "detail" | null {
+  if (props.embedded) return null
   const state = window.history.state
   if (typeof state !== "object" || state === null) return null
   const value = Reflect.get(state, "omwMobileView")
@@ -809,6 +826,7 @@ function mobileHistoryState(view: "list" | "detail", instanceId = ""): Record<st
 }
 
 function replaceMobileHistory(view: "list" | "detail", instanceId = ""): void {
+  if (props.embedded) return
   window.history.replaceState(mobileHistoryState(view, instanceId), "")
 }
 
@@ -824,6 +842,7 @@ function handleMobileListScroll(): void {
 }
 
 function pushMobileHistory(instanceId: string): void {
+  if (props.embedded) return
   if (mobileHistoryView() === "detail") replaceMobileHistory("detail", instanceId)
   else {
     replaceMobileHistory("list")
@@ -832,6 +851,7 @@ function pushMobileHistory(instanceId: string): void {
 }
 
 function applyMobileHistoryContext(): boolean {
+  if (props.embedded) return false
   const state = window.history.state
   if (typeof state !== "object" || state === null) return false
   const historyOverviewQuery = Reflect.get(state, "omwQuery")
@@ -914,6 +934,7 @@ function suspendNotifications(): void {
 }
 
 async function startNotifications(): Promise<void> {
+  if (props.embedded) return
   const generation = ++notificationGeneration
   notificationReady = false
   notificationBusy.value = true
@@ -1032,6 +1053,7 @@ async function pollNotifications(): Promise<void> {
 function handleNotificationHash(): void { void revealNotificationTarget(overview.value.instances) }
 
 async function revealNotificationTarget(instances: ManagedInstance[]): Promise<void> {
+  if (props.embedded) return
   const id = new URLSearchParams(window.location.hash.slice(1)).get("instance")
   if (!id || !overviewLastSucceededAt.value) return
   const target = instances.find((item) => item.id === id)
@@ -1197,7 +1219,11 @@ function toggleShortcutForm(): void {
   if (shortcutFormOpen.value) void nextTick(() => startPanel.value?.querySelector<HTMLElement>(".shortcut-form input")?.focus())
 }
 
-async function saveShortcut(): Promise<void> {
+async function saveShortcut(confirmed = false): Promise<void> {
+  if (props.embedded && !confirmed) {
+    requestConfirmation({ titleKey: "ui.instanceActions", descriptionKey: "coordinator.shortcutDescription", confirmLabelKey: "coordinator.saveShortcut", tone: "caution", accept: () => saveShortcut(true) })
+    return
+  }
   await mutate(async () => {
     const payload = { name: shortcutName.value, directory: shortcutDirectory.value }
     if (shortcutId.value) await managerApi.updateShortcut(shortcutId.value, payload)
@@ -1256,7 +1282,12 @@ function updateBrowserPath(value: string): void {
   }
 }
 
-async function start(directory: string): Promise<void> {
+async function start(directory: string, confirmed = false): Promise<void> {
+  if (props.embedded && !confirmed) {
+    requestConfirmation({ titleKey: "confirm.startTitle", descriptionKey: "coordinator.startDescription", descriptionParams: { directory }, confirmLabelKey: "confirm.startAction", tone: "positive", requiresFreshOverview: true, accept: () => start(directory, true) })
+    return
+  }
+  if (props.embedded && !props.startAllowed) return
   if (browsingPath.value || !listing.value || browserPath.value !== listing.value.current || directory !== listing.value.current) return
   await mutate(async () => {
     if (!await ensureInstanceCapacity(workerMode.value ? "start" : "action")) return
@@ -1330,7 +1361,11 @@ async function performFreshStart(instance: ManagedInstance): Promise<void> {
   })
 }
 
-async function recheckInstance(instance: ManagedInstance): Promise<void> {
+async function recheckInstance(instance: ManagedInstance, confirmed = false): Promise<void> {
+  if (props.embedded && !confirmed) {
+    requestConfirmation({ titleKey: "coordinator.recheckInstance", descriptionKey: "coordinator.recheckDescription", confirmLabelKey: "ui.recheck", tone: "caution", requiresFreshOverview: true, accept: () => recheckInstance(instance, true) })
+    return
+  }
   await lifecycleMutation("recheck", async () => {
     replaceInstance(await managerApi.recheck(instance.id))
     showNotice("notice.rechecked")
@@ -1366,7 +1401,11 @@ async function performResumeInstance(instance: ManagedInstance): Promise<void> {
   })
 }
 
-async function setInstanceTracking(instance: ManagedInstance, hidden: boolean): Promise<void> {
+async function setInstanceTracking(instance: ManagedInstance, hidden: boolean, confirmed = false): Promise<void> {
+  if (props.embedded && !confirmed) {
+    requestConfirmation({ titleKey: "ui.instanceActions", descriptionKey: "coordinator.trackingDescription", confirmLabelKey: hidden ? "ui.trackStop" : "ui.trackResume", tone: "caution", requiresFreshOverview: true, accept: () => setInstanceTracking(instance, hidden, true) })
+    return
+  }
   await lifecycleMutation("tracking", async () => {
     replaceInstance(await managerApi.setTracking(instance.id, hidden))
     showNotice(hidden ? "notice.hidden" : "notice.restored")
@@ -1483,6 +1522,8 @@ async function openWithPopup(
     if ((destination.protocol !== "http:" && destination.protocol !== "https:") || destination.username || destination.password) {
       throw new LocalError("popup.unsafe")
     }
+    if (props.workerContext && destination.origin !== new URL(props.workerContext.nativeOrigin).origin) throw new LocalError("popup.unsafe")
+    if (appDisposed) throw new DOMException("Aborted", "AbortError")
     popup.location.replace(destination.href)
     // New Session 建立並開啟的頁也能由進入主 Session 重用；只有通過回應驗證的頁才登記。
     sessionTabs.set(JSON.stringify([instanceId, response.sessionId]), popup)
@@ -1694,6 +1735,7 @@ function confirmationFallbackFocus(): HTMLElement | null {
 }
 
 async function mutate(operation: () => Promise<void>, area: "action" | "start" = "action"): Promise<void> {
+  if (props.embedded && !props.mutationAllowed) return
   beginUserAction()
   if (area === "start") {
     startError.value = ""
@@ -1842,6 +1884,7 @@ watch([startPanelOpen, connectivityMode], ([open, mode]) => {
 }, { flush: "post" })
 
 function openStartPanel(): void {
+  if (props.embedded && (!props.startAllowed || overviewMutationsBlocked.value)) return
   cancelSwipe()
   beginUserAction()
   startError.value = ""
@@ -2207,7 +2250,7 @@ function displayedError(area: ErrorArea, current: string): string {
 <template>
   <div class="app-root" :data-mobile-view="mobileDetailOpen ? 'detail' : 'list'">
   <div class="shell" :inert="startPanelBlocking || managerSettingsOpen || undefined">
-    <header class="topbar">
+    <header v-if="!embedded" class="topbar">
       <div class="topbar-brand">
         <p class="eyebrow">{{ workerMode ? t('worker.brandEyebrow') : t('ui.eyebrow') }}</p>
         <div class="topbar-title">
@@ -2229,7 +2272,11 @@ function displayedError(area: ErrorArea, current: string): string {
       <div><strong>{{ t('ui.managerStopped') }}</strong><p>{{ t('ui.managerStoppedDescription') }}</p></div>
     </section>
 
-    <section class="connectivity" :data-tone="connectivityTone" :data-mode="connectivityMode" aria-labelledby="connectivity-title" :aria-busy="connectivityLoading">
+    <div v-if="embedded" class="detail-actions">
+      <p v-if="!mutationAllowed" role="status">{{ t('coordinator.readOnly') }}</p>
+      <Button v-if="startAllowed && mutationAllowed" variant="success" :disabled="overviewMutationsBlocked" @click="openStartPanel"><PlusIcon />{{ t('ui.startInstance') }}</Button>
+    </div>
+    <section v-if="!embedded" class="connectivity" :data-tone="connectivityTone" :data-mode="connectivityMode" aria-labelledby="connectivity-title" :aria-busy="connectivityLoading">
       <div class="connectivity-status">
         <span class="connectivity-signal" aria-hidden="true"><ServerIcon v-if="workerMode" /><WifiIcon v-else /></span>
         <div class="connectivity-status-copy">
@@ -2399,7 +2446,7 @@ function displayedError(area: ErrorArea, current: string): string {
           <template v-else>
             <p>{{ overview.history?.total ? t('history.noCurrent') : t('ui.noInstances') }}</p>
             <p v-if="overview.history?.total">{{ t('history.separateSearch') }}</p>
-            <Button variant="success" @click="openStartPanel"><PlusIcon />{{ t('ui.startInstance') }}</Button>
+            <Button v-if="!embedded || (startAllowed && mutationAllowed)" variant="success" @click="openStartPanel"><PlusIcon />{{ t('ui.startInstance') }}</Button>
           </template>
         </div>
       </aside>
@@ -2488,7 +2535,7 @@ function displayedError(area: ErrorArea, current: string): string {
             </template>
             <template v-else>
               <a v-if="nativeWebAvailable" class="native-web-link" :href="nativeWebRoot!" target="_blank" rel="noopener noreferrer">{{ t('worker.openNative') }}<ExternalLinkIcon /></a>
-              <Button :disabled="opening || selected.state !== 'ready' || !selected.primarySession" @click="openPrimarySession(selected)"><ExternalLinkIcon />{{ opening ? t('ui.connecting') : t('session.openPrimary') }}</Button>
+              <Button :disabled="(embedded && overviewMutationsBlocked) || opening || selected.state !== 'ready' || !selected.primarySession" @click="openPrimarySession(selected)"><ExternalLinkIcon />{{ opening ? t('ui.connecting') : t('session.openPrimary') }}</Button>
               <Button variant="outline" class="new-session-button" :disabled="overviewMutationsBlocked || opening || selected.state !== 'ready'" @click="openNewSession(selected)"><PlusIcon />{{ opening ? t('ui.connecting') : t('terms.newSession') }}</Button>
             </template>
           </div>
@@ -2552,11 +2599,12 @@ function displayedError(area: ErrorArea, current: string): string {
               <p class="scope-note">{{ t('session.sharedMetadata') }}</p>
               <ul class="session-list main-session-list">
                 <SessionTreeNode
+                  :api="managerApi"
                   v-for="session in visibleSessionRoots"
                   :key="`${selected.id}:${session.id}`"
                   :instance-id="selected.id"
                   :session="session"
-                  :open-disabled="selected.state !== 'ready' || opening"
+                  :open-disabled="(embedded && overviewMutationsBlocked) || selected.state !== 'ready' || opening"
                   :switch-disabled="overviewMutationsBlocked || opening || Boolean(switchingSessionId) || selected.state !== 'ready'"
                   allow-switch
                   @open="openWeb(selected, $event)"
@@ -2573,7 +2621,7 @@ function displayedError(area: ErrorArea, current: string): string {
               <div v-if="sessions.unknownParent.length" class="unknown-parent">
                 <h4><AlertTriangleIcon />{{ t('session.parentMissing') }}</h4>
                 <ul class="session-list">
-                  <SessionTreeNode v-for="session in sessions.unknownParent" :key="`${selected.id}:${session.id}`" :instance-id="selected.id" :session="session" :open-disabled="selected.state !== 'ready' || opening" @open="openWeb(selected, $event)" />
+                  <SessionTreeNode v-for="session in sessions.unknownParent" :key="`${selected.id}:${session.id}`" :api="managerApi" :instance-id="selected.id" :session="session" :open-disabled="(embedded && overviewMutationsBlocked) || selected.state !== 'ready' || opening" @open="openWeb(selected, $event)" />
                 </ul>
               </div>
             </section>
@@ -2638,7 +2686,7 @@ function displayedError(area: ErrorArea, current: string): string {
             <p v-if="overview.shortcuts.length === 0 && !showDefaultWorkspaceShortcut" class="empty-copy">{{ t('ui.shortcutEmpty') }}</p>
           </div>
           <Button v-if="workerMode" variant="outline" class="shortcut-form-toggle" :aria-expanded="shortcutFormOpen" aria-controls="shortcut-form" @click="toggleShortcutForm"><FolderPlusIcon />{{ t('worker.addShortcut') }}</Button>
-          <form id="shortcut-form" v-show="!workerMode || shortcutFormOpen" class="shortcut-form" @submit.prevent="saveShortcut">
+          <form id="shortcut-form" v-show="!workerMode || shortcutFormOpen" class="shortcut-form" @submit.prevent="saveShortcut()">
             <Input v-model="shortcutName" :placeholder="t('ui.shortcutName')" :aria-label="t('aria.shortcutName')" />
             <Input v-model="shortcutDirectory" :placeholder="t('ui.shortcutPath')" :aria-label="t('aria.shortcutDirectory')" />
             <Button type="submit" :disabled="mutating" :aria-label="shortcutId ? t('ui.shortcutUpdate') : t('ui.shortcutAdd')"><FolderPlusIcon /><span class="button-label">{{ shortcutId ? t('ui.shortcutUpdate') : t('ui.shortcutAdd') }}</span></Button>
@@ -2720,7 +2768,7 @@ function displayedError(area: ErrorArea, current: string): string {
   <ConfirmationDialog
     :open="Boolean(confirmation)"
      :title="confirmationDisplay ? t(confirmationDisplay.titleKey) : ''"
-     :description="confirmationDisplay ? t(confirmationDisplay.descriptionKey, confirmationDisplay.descriptionParams) : ''"
+     :description="confirmationDisplay ? (workerContext ? t('coordinator.confirmContext', { name: workerContext.name, id: workerContext.id, generation: workerContext.generation, description: t(confirmationDisplay.descriptionKey, confirmationDisplay.descriptionParams) }) : t(confirmationDisplay.descriptionKey, confirmationDisplay.descriptionParams)) : ''"
      :confirm-label="confirmationDisplay ? t(confirmationDisplay.confirmLabelKey) : ''"
     :tone="confirmationDisplay?.tone ?? 'positive'"
     :busy="confirmationAccepting"
