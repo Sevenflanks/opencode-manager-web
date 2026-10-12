@@ -25,6 +25,16 @@ COPY deploy/worker/acp ./
 RUN npm ci --no-audit --no-fund && npm run build \
     && npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
+FROM node:24.14.0-bookworm-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8 AS auto-permissions
+WORKDIR /build/auto-permissions
+COPY deploy/worker/auto-permissions/package.json deploy/worker/auto-permissions/package-lock.json deploy/worker/auto-permissions/build.mjs ./
+RUN npm ci --ignore-scripts --no-audit --no-fund && npm run build
+
+FROM node:24.14.0-bookworm-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8 AS session-plugins
+WORKDIR /build/session-plugins
+COPY deploy/worker/session-plugins/ ./
+RUN npm ci --ignore-scripts --no-audit --no-fund && npm run build
+
 # 可獨立 build/test 的 tools dependency layer；skills source bundle 後續獨立 COPY，不耦合此 layer。
 FROM node:24.14.0-bookworm-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8 AS workflow-tools
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/omw-worker/browsers \
@@ -76,9 +86,13 @@ COPY --from=skills-profile /opt/omw-worker/skills-bundle/ /opt/omw-worker/skills
 COPY --from=acp /build/acp/dist/ /opt/omw-worker/acp/
 COPY --from=acp /build/acp/package.json /build/acp/package-lock.json /opt/omw-worker/acp/
 COPY --from=acp /build/acp/node_modules/ /opt/omw-worker/acp/node_modules/
+COPY --from=auto-permissions /build/auto-permissions/dist/ /opt/omw-worker/auto-permissions/
+COPY --from=session-plugins /build/session-plugins/dist/ /opt/omw-worker/session-plugins/
 USER root
 RUN chmod -R a+rX /opt/omw/deploy/worker/profile /opt/omw-worker/skills-bundle \
-    && chmod -R a-w /opt/omw-worker/acp /opt/omw/deploy/worker/profile /opt/omw-worker/skills-bundle
+    && chmod -R a+rX /opt/omw-worker/auto-permissions \
+    && chmod -R a+rX /opt/omw-worker/session-plugins \
+    && chmod -R a-w /opt/omw-worker/acp /opt/omw-worker/auto-permissions /opt/omw-worker/session-plugins /opt/omw/deploy/worker/profile /opt/omw-worker/skills-bundle
 USER node
 ENV OMW_WEB_ROOT=/opt/omw/apps/web/dist \
     OMW_WORKER_PROFILE_SOURCE=/opt/omw/deploy/worker/profile \

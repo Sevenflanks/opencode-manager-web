@@ -10,10 +10,80 @@ import { auditCompiled } from "./skills-bundle-audit.mjs"
 
 export const officeSkills = ["officecli", "officecli-docx", "officecli-xlsx", "officecli-pptx"]
 export const excludedSkills = ["agent-process-lifecycle", "self-challenge", "development-test", "git-github-workflow", "linux-process-lifecycle"]
-export const profileRoles = ["general", "general-simple", "general-complex", "verifier", "explore", "scout"]
+export const profileRoles = ["general", "general-simple", "general-complex", "verifier", "explore", "scout", "reference-reader"]
+export const goalToolNames = ["get_goal", "get_goal_history", "list_all_goals", "create_goal", "set_goal",
+  "update_goal_objective", "update_goal_status", "update_goal", "stop_goal", "replace_goal", "update_goal_plan", "clear_goal"]
+
+export function assertSessionPlugins(config, ids, commands) {
+  for (const entry of ["goal", "command-inject"]) {
+    assert.ok(config.plugin.some(spec => (Array.isArray(spec) ? spec[0] : spec) ===
+      `file:///opt/omw-worker/session-plugins/${entry}.mjs`), `${entry}: native plugin entry missing`)
+  }
+  for (const id of goalToolNames) assert.ok(ids.includes(id), `Goal tool missing: ${id}`)
+  for (const name of ["goal", "pause_goal", "resume_goal"])
+    assert.ok(commands.some(command => command.name === name), `Goal command missing: ${name}`)
+  return { goalVersion: "0.1.60", commandInjectVersion: "1.3.1", goalTools: goalToolNames,
+    goalCommands: ["goal", "pause_goal", "resume_goal"], dynamicCommandSources: "project-dependent; not a fixed total" }
+}
+// 只投影已確認的 OpenAI model／variant；權限與 prompts 仍是 Worker 本地契約。
+export const profileModelPolicy = {
+  astra: { model: "openai/gpt-6.1-sol-fast", variant: "high" },
+  plan: { model: "openai/gpt-6.1-sol-fast", variant: "high" },
+  build: { model: "openai/gpt-6.1-sol-fast", variant: "high" },
+  general: { model: "openai/gpt-6.1-sol-fast", variant: "high" },
+  "general-simple": { model: "openai/gpt-6-luna-fast", variant: "high" },
+  "general-complex": { model: "openai/gpt-6.1-sol-fast", variant: "high" },
+  verifier: { model: "openai/gpt-6.1-sol-fast", variant: "high" },
+  explore: { model: "openai/gpt-6-luna-fast", variant: "medium" },
+  scout: { model: "openai/gpt-6-luna-fast", variant: "medium" },
+  "reference-reader": { model: "openai/gpt-6-luna-fast", variant: "medium" },
+  title: { model: "openai/gpt-6-luna-fast", variant: "medium" },
+}
+
+export function assertProfileModels(config, agents) {
+  assert.equal(config.model, "openai/gpt-6.1-sol-fast")
+  assert.equal(config.small_model, "openai/gpt-6-luna-fast")
+  assert.equal(config.default_agent, "astra")
+  for (const [name, expected] of Object.entries(profileModelPolicy)) {
+    assert.equal(config.agent?.[name]?.model, expected.model, `${name}: effective config model`)
+    assert.equal(config.agent?.[name]?.variant, expected.variant, `${name}: effective config variant`)
+    const agent = agents.find(agent => agent.name === name)
+    const [providerID, modelID] = expected.model.split("/")
+    assert.deepEqual(agent?.model, { providerID, modelID }, `${name}: native model`)
+    assert.equal(agent?.variant, expected.variant, `${name}: native variant`)
+  }
+  const astra = agents.find(agent => agent.name === "astra")
+  assert.equal(astra.mode, "primary")
+  assert.ok(!astra.hidden, "default_agent astra must not be hidden")
+  assert.equal(agents.find(agent => agent.name === "title").hidden, true, "keep builtin title hidden")
+  for (const [permission, pattern, expected] of [
+    ["bash", "node --version", "ask"], ["external_directory", "/outside/workspace", "ask"],
+    ["doom_loop", "*", "ask"], ["context7_unknown", "*", "deny"],
+    ["context7_resolve-library-id", "*", "allow"], ["context7_query-docs", "*", "allow"],
+  ]) assert.equal(permissionAction(astra.permission, permission, pattern), expected, `astra: ${permission}`)
+  return { model: config.model, smallModel: config.small_model, defaultAgent: config.default_agent, roles: profileModelPolicy }
+}
 const digest = bytes => createHash("sha256").update(bytes).digest("hex")
 
-export async function bundleInventory(bundle, profile) {
+export function assertAutoPermissionsReviewer(config, agents) {
+  assert.deepEqual(config.plugin.find(spec => Array.isArray(spec) && spec[0] === "file:///opt/omw-worker/auto-permissions/dist/v1-server.js"),
+    ["file:///opt/omw-worker/auto-permissions/dist/v1-server.js", {
+      model: "openai/gpt-6-luna", variant: "low", sessionApprovals: true,
+      timeoutMs: 30000, userMessageCount: 8, runtime: "auto", debug: false,
+    }])
+  const name = "auto-permissions-reviewer"
+  const agent = agents.find(agent => agent.name === name)
+  assert.equal(agent?.hidden, true, "auto permissions reviewer must be hidden")
+  assert.equal(agent?.mode, "subagent")
+  assert.deepEqual(agent?.model, { providerID: "openai", modelID: "gpt-6-luna" })
+  assert.equal(agent?.variant, "low")
+  for (const tool of ["bash", "edit", "read", "task", "unknown_plugin"])
+    assert.equal(permissionAction(agent.permission, tool, "*"), "deny", `reviewer: ${tool}`)
+  return { version: "0.2.15", entry: config.plugin.find(spec => Array.isArray(spec) && spec[0].includes("auto-permissions")),
+    reviewer: name, hidden: true, noToolPermissions: true, modelCalls: 0 }
+}
+
+export async function bundleInventory(bundle, profile, skillsRoot = path.join(profile, "skills")) {
   const trustedAudit = await auditCompiled(bundle)
   const bytes = await readFile(path.join(bundle, "manifest.json"))
   const manifest = JSON.parse(bytes)
@@ -23,13 +93,13 @@ export async function bundleInventory(bundle, profile) {
   assert.ok(!names.some(name => [...officeSkills, ...excludedSkills].includes(name)))
   let compiledFiles = 0
   for (const skill of manifest.skills) for (const [file, hash] of Object.entries(skill.compiledFiles)) {
-    assert.equal(digest(await readFile(path.join(profile, "skills", skill.name, file))), hash, `profile hash mismatch: ${skill.name}/${file}`)
+    assert.equal(digest(await readFile(path.join(skillsRoot, skill.name, file))), hash, `profile hash mismatch: ${skill.name}/${file}`)
     compiledFiles++
   }
-  for (const name of officeSkills) assert.ok((await stat(path.join(profile, "skills", name, "SKILL.md"))).size > 0)
+  for (const name of officeSkills) assert.ok((await stat(path.join(skillsRoot, name, "SKILL.md"))).size > 0)
   const discovered = []
-  for (const name of await readdir(path.join(profile, "skills"))) {
-    if (await stat(path.join(profile, "skills", name, "SKILL.md")).catch(() => null)) discovered.push(name)
+  for (const name of await readdir(skillsRoot)) {
+    if (await stat(path.join(skillsRoot, name, "SKILL.md")).catch(() => null)) discovered.push(name)
   }
   assert.deepEqual(discovered.sort(), [...names, ...officeSkills].sort())
   return { ...trustedAudit, upstream: names, office: officeSkills, profileNames: discovered, compiledFiles,
