@@ -14,11 +14,14 @@ import { OpenCodeRuntime } from "./runtime.js"
 import { ManagerService } from "./service.js"
 import { createLifecycleDiagnostics } from "./lifecycle-diagnostics.js"
 import { startWorker } from "./worker/server.js"
+import { startCoordinator } from "./coordinator/server.js"
 
 const host = "127.0.0.1"
-if (process.env.OMW_MODE !== undefined && !["desktop", "worker"].includes(process.env.OMW_MODE)) throw new Error("OMW_MODE 必須是 desktop 或 worker。")
+if (process.env.OMW_MODE !== undefined && !["desktop", "worker", "coordinator"].includes(process.env.OMW_MODE)) throw new Error("OMW_MODE 必須是 desktop、worker 或 coordinator。")
 if (process.env.OMW_MODE === "worker") {
   await startWorker(process.env, await readManagerPackageVersion(), path.resolve(process.env.OMW_WEB_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist")))
+} else if (process.env.OMW_MODE === "coordinator") {
+  await startCoordinator(process.env, await readManagerPackageVersion(), path.resolve(process.env.OMW_WEB_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web/dist")))
 } else {
 const dataDirectory = readDataDirectory(process.env)
 const diagnostics = createLifecycleDiagnostics(dataDirectory)

@@ -2,7 +2,7 @@
 import type { SessionMetadata } from "@omw/contracts"
 import { ChevronRightIcon, ExternalLinkIcon, LoaderCircleIcon } from "lucide-vue-next"
 import { ref, watch } from "vue"
-import { managerApi } from "@/api"
+import { managerApi, type ManagerApi } from "@/api"
 import { Button } from "@/components/ui/button"
 import ErrorDetails from "@/components/ErrorDetails.vue"
 import { presentError, type PresentedError } from "@/error-presentation"
@@ -10,6 +10,7 @@ import { useMessages } from "@/i18n"
 
 const props = withDefaults(defineProps<{
   instanceId: string
+  api?: ManagerApi
   session: SessionMetadata
   depth?: number
   openDisabled?: boolean
@@ -50,7 +51,7 @@ async function toggle(): Promise<void> {
   loading.value = true
   diagnostic.value = null
   try {
-    const response = await managerApi.children(instanceId, sessionId)
+    const response = await (props.api ?? managerApi).children(instanceId, sessionId)
     if (requestedScope !== scopeVersion || instanceId !== props.instanceId || sessionId !== props.session.id) return
     children.value = response.children
     loaded.value = true
@@ -94,6 +95,7 @@ async function toggle(): Promise<void> {
         v-for="child in children"
         :key="`${instanceId}:${child.id}`"
         :instance-id="instanceId"
+        :api="api ?? managerApi"
         :session="child"
         :depth="(depth ?? 0) + 1"
         :open-disabled="openDisabled"

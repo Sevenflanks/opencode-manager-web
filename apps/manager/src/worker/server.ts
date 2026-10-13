@@ -9,6 +9,7 @@ import { WorkerRuntime } from "./runtime.js"
 import { workerBrowserCredentials, workerOrigin, workerPort, workerSecret } from "./config.js"
 import { startHealthServer } from "./health.js"
 import { installWorkerShutdown } from "./shutdown.js"
+import { WorkerRegistrar, workerCoordinatorRegistration } from "./registration.js"
 
 export async function startWorker(environment: NodeJS.ProcessEnv, managerVersion: string, webRoot: string) {
   const directory = environment.OMW_DATA_DIR
@@ -24,6 +25,7 @@ export async function startWorker(environment: NodeJS.ProcessEnv, managerVersion
   let app: ReturnType<typeof buildApp> | undefined
   let repository: ManagerRepository | undefined
   let service: ManagerService | undefined
+  let registrar: WorkerRegistrar | undefined
   const removeSignals = installWorkerShutdown(async () => {
     health?.drain()
     try { await app?.close() } finally { await health?.close() }
@@ -32,15 +34,16 @@ export async function startWorker(environment: NodeJS.ProcessEnv, managerVersion
     health = await startHealthServer(healthPort)
     const token = await workerSecret(environment, "OMW_EXECUTION_TOKEN_FILE", 32)
     const credentials = await workerBrowserCredentials(environment)
+    const registration = await workerCoordinatorRegistration(environment, publicOrigin, nativeOrigin, credentials)
     const runtimePort = workerPort(environment.OMW_RUNTIME_PORT, 4096)
     await mkdir(directory, { recursive: true, mode: 0o700 })
     repository = new ManagerRepository(path.join(directory, "omw.sqlite"))
     service = new ManagerService(repository, new WorkerRuntime({ controlOrigin, token, nativeOrigin }), { min: runtimePort, max: runtimePort })
     app = buildApp({ service, authority: { hostname: "127.0.0.1", port }, publicOrigin,
-      allowedOrigins: new Set([publicOrigin]), worker: { nativeOrigin }, managerVersion, webRoot,
+      allowedOrigins: new Set([publicOrigin]), worker: { nativeOrigin, ...(registration ? { identity: registration.identity } : {}) }, managerVersion, webRoot,
       authenticator: new SeparateRequestAuthenticator({ manager: credentials, launcherToken: randomUUID() }),
     })
-    app.addHook("preClose", async () => { health?.drain(); await health?.close() })
+    app.addHook("preClose", async () => { health?.drain(); await registrar?.close(); await health?.close() })
     app.addHook("onClose", async () => {
       // Worker 關閉只清理觀察者和 DB，execution supervisor 仍持有執行中的工作。
       try { await service!.shutdown() }
@@ -49,6 +52,7 @@ export async function startWorker(environment: NodeJS.ProcessEnv, managerVersion
     await service.reconcile()
     await app.listen({ host: "0.0.0.0", port })
     health?.ready()
+    if (registration) { registrar = new WorkerRegistrar(registration); registrar.start() }
     return app
   } catch (error) {
     try {
