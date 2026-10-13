@@ -9,6 +9,7 @@ import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { owner, label } from './owner.mjs'
+import { selectSourceFiles, selectSourceRecords } from './source-selection.mjs'
 const repo = fileURLToPath(new URL('../../', import.meta.url))
 let args
 try { args = parseArgs({ options: { 'skills-context': { type: 'string' }, help: { type: 'boolean', short: 'h' } }, allowPositionals: true, strict: true }) }
@@ -23,22 +24,23 @@ const bundle = path.resolve(skillsContext)
 try { assert.ok((await lstat(bundle)).isDirectory(), 'SKILLS_CONTEXT_NOT_DIRECTORY') }
 catch { throw Error('SKILLS_CONTEXT_UNAVAILABLE') }
 const prior = JSON.parse(await readFile(path.join(priorDirectory, 'evidence.json'), 'utf8'))
-const expected = prior.sourceBefore.filter(f => !f.file.startsWith('scripts/coordinator/'))
+const priorSourceBefore = selectSourceRecords(prior.sourceBefore)
+const expected = priorSourceBefore.filter(f => !f.file.startsWith('scripts/coordinator/'))
 const sha = v => createHash('sha256').update(v).digest('hex')
 async function records(root, files) {
   const result = []
   for (const file of files) { const bytes = await readFile(path.join(root, file)); result.push({ file, bytes: bytes.length, raw: sha(bytes), canonical: sha(bytes.toString('utf8').replaceAll('\r\n', '\n')) }) }
   return result
 }
-const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: repo, encoding: 'utf8', timeout: 10000 }).split('\0').filter(Boolean).sort()
+const files = selectSourceFiles(execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: repo, encoding: 'utf8', timeout: 10000 }).split('\0').filter(Boolean).sort())
 const before = await records(repo, files), products = before.filter(f => !f.file.startsWith('scripts/coordinator/'))
 assert.deepEqual(products, expected, 'FROZEN_PRODUCT_SOURCE_MISMATCH')
 const productHash = sha(JSON.stringify(products))
 assert.equal(productHash, 'f22ccd3231c28a2c7911ad63d665019856f08b78331deb68f4abe8a85cfc096c', 'CANDIDATE_CONTENT_BINDING')
 const snapshot = path.join(priorDirectory, 'source')
 assert.deepEqual(await records(snapshot, expected.map(f => f.file)), expected, 'SNAPSHOT_PRODUCT_CONTENT_MISMATCH')
-const snapshotRecords = await records(snapshot, prior.sourceBefore.map(f => f.file))
-assert.deepEqual(snapshotRecords, prior.sourceBefore, 'ORIGINAL_SNAPSHOT_CHANGED')
+const snapshotRecords = await records(snapshot, priorSourceBefore.map(f => f.file))
+assert.deepEqual(snapshotRecords, priorSourceBefore, 'ORIGINAL_SNAPSHOT_CHANGED')
 const temp = path.join(tmpdir(), 'opencode')
 await mkdir(temp, { recursive: true })
 const directory = await mkdtemp(path.join(temp, 'omw118-preflight-'))
@@ -126,7 +128,7 @@ try {
   evidence.cleanup = await o.cleanup()
   if (watchdog?.connected) watchdog.send('finalize')
   if (watchdogExit) evidence.watchdogExit = await Promise.race([watchdogExit, delay(30000).then(() => 'deadline')])
-  const afterFiles = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: repo, encoding: 'utf8', timeout: 10000 }).split('\0').filter(Boolean).sort()
+  const afterFiles = selectSourceFiles(execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: repo, encoding: 'utf8', timeout: 10000 }).split('\0').filter(Boolean).sort())
   const after = await records(repo, afterFiles)
   evidence.sourceAfter = after.filter(f => !f.file.startsWith('scripts/coordinator/'))
   evidence.harnessAfter = after.filter(f => f.file.startsWith('scripts/coordinator/'))

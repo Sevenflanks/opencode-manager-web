@@ -51,9 +51,10 @@ const props = withDefaults(defineProps<{
   embedded?: boolean
   initialInstanceId?: string
   workerContext?: { name: string; id: string; generation: string; nativeOrigin: string }
+  nativeEntryAllowed?: boolean
   mutationAllowed?: boolean
   startAllowed?: boolean
-}>(), { embedded: false, initialInstanceId: "", mutationAllowed: true, startAllowed: true })
+}>(), { embedded: false, initialInstanceId: "", nativeEntryAllowed: false, mutationAllowed: true, startAllowed: true })
 // Client / execution 不在同一 App 內切換；Coordinator 以 id+generation key 重建。
 const managerApi = props.api ?? defaultManagerApi
 const filters = computed<Array<{ value: OverviewFilter; label: string }>>(() => [
@@ -405,14 +406,19 @@ const tailscaleSupported = computed(() => Boolean(connectivity.value) && !worker
 const credentialUpdateSupported = computed(() => Boolean(connectivity.value) && !workerMode.value && connectivity.value?.capabilities?.credentialUpdate !== false)
 const managerShutdownSupported = computed(() => Boolean(connectivity.value) && !workerMode.value && connectivity.value?.capabilities?.managerShutdown !== false)
 const nativeWebRoot = computed(() => {
+  if (props.embedded && (!props.nativeEntryAllowed || !props.workerContext)) return null
   if (!workerMode.value || connectivityStale.value || connectivity.value?.capabilities?.nativeWeb !== true) return null
   const value = safeManagerUrl(connectivity.value.nativeWebOrigin)
   if (!value) return null
   const parsed = new URL(value)
-  if (props.workerContext && parsed.origin !== new URL(props.workerContext.nativeOrigin).origin) return null
+  if (props.workerContext) {
+    const expected = safeManagerUrl(props.workerContext.nativeOrigin)
+    if (!expected || new URL(expected).pathname !== "/" || parsed.origin !== new URL(expected).origin) return null
+  }
   return parsed.pathname === "/" ? `${parsed.origin}/` : null
 })
-const nativeWebAvailable = computed(() => nativeWebRoot.value && selected.value?.state === "ready" && !overviewStale.value && props.mutationAllowed)
+// 人工處理 Q／permission 的入口依 fresh scoped reads 驗證；不把收集端 metadata stale 當作 mutation 授權。
+const nativeWebAvailable = computed(() => nativeWebRoot.value && selected.value?.state === "ready" && !overviewStale.value && (!props.embedded || props.nativeEntryAllowed))
 const workerCapacityState = computed(() => connectivityStale.value || overviewStale.value ? "unknown" : workerCapacity.value)
 const instanceCapacityBlocked = computed(() => (props.embedded && !props.startAllowed) || (workerMode.value && workerCapacityState.value !== "available"))
 const workerCapacityMessage = computed<MessageKey>(() => ({
@@ -1522,7 +1528,10 @@ async function openWithPopup(
     if ((destination.protocol !== "http:" && destination.protocol !== "https:") || destination.username || destination.password) {
       throw new LocalError("popup.unsafe")
     }
-    if (props.workerContext && destination.origin !== new URL(props.workerContext.nativeOrigin).origin) throw new LocalError("popup.unsafe")
+    if (props.workerContext) {
+      const expected = safeManagerUrl(props.workerContext.nativeOrigin)
+      if (!expected || destination.origin !== new URL(expected).origin) throw new LocalError("popup.unsafe")
+    }
     if (appDisposed) throw new DOMException("Aborted", "AbortError")
     popup.location.replace(destination.href)
     // New Session 建立並開啟的頁也能由進入主 Session 重用；只有通過回應驗證的頁才登記。
@@ -1537,15 +1546,22 @@ async function openWithPopup(
 }
 
 async function openWeb(instance: ManagedInstance, sessionId: string): Promise<void> {
+  if (props.embedded && !nativeWebAvailable.value) return
   beginUserAction()
   try {
-    await openWithPopup(instance, () => managerApi.openUrl(instance.id, sessionId), sessionId)
+    await openWithPopup(instance, async () => {
+      const response = await managerApi.openUrl(instance.id, sessionId)
+      // 等待解析時 health 或 scoped reads 可能失效；不可讓 late response 導航舊入口。
+      if (props.embedded && !nativeWebAvailable.value) throw new LocalError("popup.unsafe")
+      return response
+    }, sessionId)
   } catch (cause) {
     actionError.value = message(cause, "action")
   }
 }
 
 async function openPrimarySession(instance: ManagedInstance): Promise<void> {
+  if (props.embedded && !nativeWebAvailable.value) return
   if (!instance.primarySession) return
   const sessionId = instance.primarySession.sessionId
   // Session metadata 可跨 Instance 共用，分頁只能依實際綁定的 Instance + Session 重用。
@@ -2535,7 +2551,7 @@ function displayedError(area: ErrorArea, current: string): string {
             </template>
             <template v-else>
               <a v-if="nativeWebAvailable" class="native-web-link" :href="nativeWebRoot!" target="_blank" rel="noopener noreferrer">{{ t('worker.openNative') }}<ExternalLinkIcon /></a>
-              <Button :disabled="(embedded && overviewMutationsBlocked) || opening || selected.state !== 'ready' || !selected.primarySession" @click="openPrimarySession(selected)"><ExternalLinkIcon />{{ opening ? t('ui.connecting') : t('session.openPrimary') }}</Button>
+              <Button :disabled="(embedded && !nativeWebAvailable) || opening || selected.state !== 'ready' || !selected.primarySession" @click="openPrimarySession(selected)"><ExternalLinkIcon />{{ opening ? t('ui.connecting') : t('session.openPrimary') }}</Button>
               <Button variant="outline" class="new-session-button" :disabled="overviewMutationsBlocked || opening || selected.state !== 'ready'" @click="openNewSession(selected)"><PlusIcon />{{ opening ? t('ui.connecting') : t('terms.newSession') }}</Button>
             </template>
           </div>
@@ -2604,7 +2620,7 @@ function displayedError(area: ErrorArea, current: string): string {
                   :key="`${selected.id}:${session.id}`"
                   :instance-id="selected.id"
                   :session="session"
-                  :open-disabled="(embedded && overviewMutationsBlocked) || selected.state !== 'ready' || opening"
+                  :open-disabled="(embedded && !nativeWebAvailable) || selected.state !== 'ready' || opening"
                   :switch-disabled="overviewMutationsBlocked || opening || Boolean(switchingSessionId) || selected.state !== 'ready'"
                   allow-switch
                   @open="openWeb(selected, $event)"
@@ -2621,7 +2637,7 @@ function displayedError(area: ErrorArea, current: string): string {
               <div v-if="sessions.unknownParent.length" class="unknown-parent">
                 <h4><AlertTriangleIcon />{{ t('session.parentMissing') }}</h4>
                 <ul class="session-list">
-                  <SessionTreeNode v-for="session in sessions.unknownParent" :key="`${selected.id}:${session.id}`" :api="managerApi" :instance-id="selected.id" :session="session" :open-disabled="(embedded && overviewMutationsBlocked) || selected.state !== 'ready' || opening" @open="openWeb(selected, $event)" />
+                  <SessionTreeNode v-for="session in sessions.unknownParent" :key="`${selected.id}:${session.id}`" :api="managerApi" :instance-id="selected.id" :session="session" :open-disabled="(embedded && !nativeWebAvailable) || selected.state !== 'ready' || opening" @open="openWeb(selected, $event)" />
                 </ul>
               </div>
             </section>

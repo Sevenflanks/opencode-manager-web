@@ -52,13 +52,14 @@ async function sendRequest<T>(url: string, init?: RequestInit, desktop = true): 
   return await response.json() as T
 }
 
-export function createManagerApi(prefix = "", canMutate: () => boolean = () => true) {
+export function createManagerApi(prefix = "", canMutate: () => boolean = () => true, canOpenUrl: () => boolean = canMutate) {
   let disposed = false
   const controllers = new Set<AbortController>()
-  async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  async function request<T>(url: string, init?: RequestInit, resolveNativeEntry = false): Promise<T> {
     if (disposed) throw new DOMException("Aborted", "AbortError")
     // 每個 client 固定對應一次 execution；human Basic 不得跟進 Worker proxy。
-    if (prefix && init?.method && init.method !== "GET" && !canMutate()) {
+    // open-url 的 POST 只解析既有 Session 入口；建立／綁定與其他 mutation 不可借用這個 gate。
+    if (prefix && init?.method && init.method !== "GET" && !(resolveNativeEntry ? canOpenUrl() : canMutate())) {
       throw new ApiError("COORDINATOR_WORKER_UNAVAILABLE", "COORDINATOR_WORKER_UNAVAILABLE", 409)
     }
     const controller = new AbortController()
@@ -176,7 +177,7 @@ export function createManagerApi(prefix = "", canMutate: () => boolean = () => t
     return request<OpenUrlResponse>(`/api/v1/instances/${encodeURIComponent(id)}/open-url`, {
       method: "POST",
       body: JSON.stringify(sessionId ? { sessionId } : {}),
-    })
+    }, true)
   },
 }
 }

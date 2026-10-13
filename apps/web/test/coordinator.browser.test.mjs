@@ -10,7 +10,7 @@ import { createServer } from "vite"
 
 const enabled = process.env.OMW_BROWSER_TEST === "1"
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const observed = "2026-10-02T00:00:00Z"
+const observed = "2026-10-13T00:00:00Z"
 function connectivity(mode = "worker") {
   return {
     checkedAt: observed, mode,
@@ -63,6 +63,7 @@ test("Coordinator real Vue UI fences Worker executions and retains truthful coll
     browser = await chromium.launch({ executablePath: process.env.OMW_BROWSER_EXECUTABLE, headless: true, env: { ...env,
       HOME: profile, USERPROFILE: profile, APPDATA: path.join(profile, "AppData/Roaming"), LOCALAPPDATA: path.join(profile, "AppData/Local"), TEMP: path.join(profile, "Temp"), TMP: path.join(profile, "Temp") } })
     let snapshot, rootMode, modeFailure, overviewFailure, sessionHold, overviewHold, wrongNative
+    let scopedNativeOrigin, scopedConnectivityFailure, scopedOverviewFailure, scopedUnbound, openUrlFailure, openUrlHold
     const mutations = [], reads = [], checks = [], errors = []
     function hold() { let release; const promise = new Promise(resolve => { release = resolve }); holds.push(release); return { promise, release } }
     async function routeApi(route) {
@@ -89,15 +90,24 @@ test("Coordinator real Vue UI fences Worker executions and retains truthful coll
       if (request.method() !== "GET") mutations.push({ id, generation, path: apiPath, body: request.postData(), authorization: request.headers().authorization })
       else reads.push({ id, generation, path: apiPath })
       let payload
-      if (apiPath === "/api/v1/connectivity") payload = { ...connectivity(), nativeWebOrigin: `https://${id.toLowerCase()}.native.example.test` }
+      if ((apiPath === "/api/v1/connectivity" && scopedConnectivityFailure) || (apiPath === "/api/v1/overview" && scopedOverviewFailure)) {
+        return route.fulfill({ status: 503, json: { error: { code: "HTTP_ERROR", message: "secret must not render" } } })
+      }
+      if (apiPath === "/api/v1/connectivity") payload = { ...connectivity(), nativeWebOrigin: scopedNativeOrigin ?? `https://${id.toLowerCase()}.native.example.test` }
       else if (apiPath === "/api/v1/worker/capacity") payload = { state: "available", maxInstances: 2 }
-      else if (apiPath === "/api/v1/overview") payload = { shortcuts: [], instances: [instance(id, "other-id"), instance(id)], history: { total: 0, revision: "0" } }
+      else if (apiPath === "/api/v1/overview") payload = { shortcuts: [], instances: [instance(id, "other-id"), {
+        ...instance(id), ...(scopedUnbound ? { primarySession: null, primarySummary: { scope: "unbound", activity: "none-reported", busySessions: 0, retrySessions: 0, pendingQuestions: 0, pendingPermissions: 0, error: null } } : {}),
+      }], history: { total: 0, revision: "0" } }
       else if (apiPath === "/api/v1/instances/history") payload = { instances: [], total: 0, nextOffset: null, revision: "0" }
       else if (apiPath.endsWith("/primary-todos")) payload = { instanceId: apiPath.split("/").at(-2), sessionId: "ses-root", todos: [{ content: `Verify ${id}`, status: "pending", priority: "high" }] }
       else if (apiPath.endsWith("/sessions")) {
         if (sessionHold && id === "A") { const pending = sessionHold; sessionHold = null; await pending.promise }
         payload = { roots: [{ id: "ses-root", title: `Session ${id}` }], unknownParent: [] }
-      } else if (apiPath.endsWith("/open-url")) payload = { instanceId: "same-id", sessionId: "ses-root", url: `https://${wrongNative ? "a" : id.toLowerCase()}.native.example.test/project/session/ses-root` }
+      } else if (apiPath.endsWith("/open-url")) {
+        if (openUrlHold) { const pending = openUrlHold; openUrlHold = null; await pending.promise }
+        if (openUrlFailure) return route.fulfill({ status: openUrlFailure === "WORKER_OFFLINE" ? 503 : 409, json: { error: { code: openUrlFailure, message: "secret must not render" } } }).catch(() => {})
+        payload = { instanceId: "same-id", sessionId: "ses-root", url: `https://${wrongNative ? "a" : id.toLowerCase()}.native.example.test/${Buffer.from(`/projects/${id}`).toString("base64url")}/session/ses-root` }
+      }
       else if (apiPath.endsWith("/stop")) payload = { ...instance(id), state: "stopped", stopAllowed: false }
       else if (apiPath.endsWith("/directories")) payload = { current: url.searchParams.get("path"), parent: null, children: [], errors: [] }
       else if (apiPath === "/api/v1/instances" && request.method() === "POST") payload = instance(id, "started")
@@ -117,6 +127,7 @@ test("Coordinator real Vue UI fences Worker executions and retains truthful coll
       for (const release of holds.splice(0)) release()
       await page?.context().close()
       snapshot = overview(); rootMode = "coordinator"; modeFailure = false; overviewFailure = false; sessionHold = null; overviewHold = null; wrongNative = false
+      scopedNativeOrigin = null; scopedConnectivityFailure = false; scopedOverviewFailure = false; scopedUnbound = false; openUrlFailure = null; openUrlHold = null
       mutations.length = 0; reads.length = 0; checks.length = 0; errors.length = 0
       page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
       page.setDefaultTimeout(5_000)
@@ -144,7 +155,7 @@ test("Coordinator real Vue UI fences Worker executions and retains truthful coll
       await workerCard("task").getByText("Ended · Result unknown", { exact: true }).waitFor()
       await workerCard("initial").getByText("Instance count: Unknown", { exact: true }).waitFor()
       assert.deepEqual(await page.locator(".coordinator-counts dt").allTextContents(), ["Online", "Unstable", "Offline", "Checking connection"])
-      assert.match(await workerCard("A").textContent(), /Last successful check: Oct 2, 2026/)
+      assert.match(await workerCard("A").textContent(), /Last successful check: Oct 13, 2026/)
       assert.deepEqual(mutations, [])
       assert.deepEqual(errors, [])
     })
@@ -201,8 +212,153 @@ test("Coordinator real Vue UI fences Worker executions and retains truthful coll
       const popupPromise = page.waitForEvent("popup")
       await workspace.getByRole("button", { name: "進入入口 Session", exact: true }).click()
       const popup = await popupPromise
-      await popup.waitForURL("https://b.native.example.test/project/session/ses-root")
+      await popup.waitForURL("https://b.native.example.test/L3Byb2plY3RzL0I/session/ses-root")
       await popup.getByRole("heading", { name: "Controlled native entry fixture", exact: true }).waitFor()
+      assert.deepEqual(errors, [])
+    })
+
+    await t.test("stale collected metadata retains fresh scoped pending Q/permission and exact native navigation without task mutations", async () => {
+      snapshot.workers[1].freshness = "stale"
+      snapshot.workers[1].dataUpdatedAt = "2026-10-12T00:00:00Z"
+      snapshot.instances[1].freshness = "stale"
+      await page.goto(origin); await open("B")
+      const workspace = page.locator(".coordinator-workspace")
+      await workspace.getByText("Verify B", { exact: true }).waitFor()
+      await aggregateRow("B").getByText(/最後已知資料/).waitFor()
+      assert.equal(reads.some(read => read.id === "B" && read.generation === "gen/B" && read.path === "/api/v1/connectivity"), true)
+      assert.equal(reads.some(read => read.id === "B" && read.generation === "gen/B" && read.path === "/api/v1/overview"), true)
+      assert.deepEqual(await workspace.locator(".summary-grid strong").allTextContents(), ["1", "1", "2"])
+      assert.equal(await workspace.locator(".native-web-link").count(), 1, "stale aggregate metadata must not hide a freshly verified native entry")
+      assert.equal(await workspace.locator(".native-web-link").getAttribute("href"), "https://b.native.example.test/")
+      assert.equal(await workspace.getByRole("button", { name: "進入入口 Session", exact: true }).isEnabled(), true)
+      assert.equal(await workspace.getByRole("button", { name: "啟動 Instance", exact: true }).count(), 0)
+      assert.equal(await workspace.getByRole("button", { name: "New Session", exact: true }).isDisabled(), true)
+      await workspace.locator(".lifecycle-trigger").click()
+      for (const name of ["停止 Instance", "接續對話"]) {
+        const button = workspace.getByRole("button", { name, exact: true })
+        assert.equal(await button.isDisabled(), true)
+        await button.evaluate(node => node.click())
+      }
+      await workspace.locator(".advanced-sessions > summary").click()
+      await workspace.locator(".session-switch-button").waitFor()
+      assert.equal(await workspace.locator(".session-switch-button").isDisabled(), true)
+      assert.equal(await workspace.getByRole("button", { name: "在 OpenCode Web 開啟 Session", exact: true }).isEnabled(), true)
+      // 同一公開 client 契約的 read-only grant 不得漏放其他 POST；不只檢查 disabled 外觀。
+      const denied = await page.evaluate(async () => {
+        const { createManagerApi } = await import("/src/api.ts")
+        const api = createManagerApi("/api/v1/coordinator/workers/B/gen%2FB/proxy", () => false, () => true)
+        try {
+          const operations = [() => api.start("/workspace"), () => api.stop("same-id"), () => api.resume("same-id"), () => api.createSession("same-id"), () => api.selectPrimarySession("same-id", "ses-root")]
+          return await Promise.all(operations.map(async operation => {
+            try { await operation(); return "unexpected-success" } catch (cause) { return cause.code }
+          }))
+        } finally { api.dispose() }
+      })
+      assert.deepEqual(denied, Array(5).fill("COORDINATOR_WORKER_UNAVAILABLE"))
+      assert.deepEqual(mutations, [])
+      const rootPopupPromise = page.waitForEvent("popup")
+      await workspace.locator(".native-web-link").click()
+      const rootPopup = await rootPopupPromise
+      await rootPopup.waitForURL("https://b.native.example.test/")
+      await rootPopup.close()
+      const popupPromise = page.waitForEvent("popup")
+      await workspace.getByRole("button", { name: "進入入口 Session", exact: true }).click()
+      const popup = await popupPromise
+      await popup.waitForURL("https://b.native.example.test/L3Byb2plY3RzL0I/session/ses-root")
+      await popup.getByRole("heading", { name: "Controlled native entry fixture", exact: true }).waitFor()
+      await popup.close()
+      assert.deepEqual(mutations.map(({ id, generation, path, body, authorization }) => ({ id, generation, path, body, authorization })), [
+        { id: "B", generation: "gen/B", path: "/api/v1/instances/same-id/open-url", body: '{"sessionId":"ses-root"}', authorization: undefined },
+      ], "navigation must not approve, start, stop, create or bind")
+      const captures = process.env.OMW_COORDINATOR_CAPTURE
+      if (captures) {
+        await mkdir(captures, { recursive: true })
+        for (const [name, width, height] of [["desktop", 1440, 900], ["mobile", 390, 844]]) {
+          await page.setViewportSize({ width, height })
+          if (name === "mobile") await workspace.locator('.instance-row[data-instance-id="same-id"]').click()
+          await workspace.locator(".native-web-link").waitFor()
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true)
+          await page.screenshot({ path: path.join(captures, `${name}-stale-native-entry.png`), fullPage: true })
+        }
+      }
+      assert.deepEqual(errors, [])
+    })
+
+    await t.test("stale unbound Worker retains native root but cannot create or bind an entry Session", async () => {
+      snapshot.workers[1].freshness = "stale"; snapshot.instances[1].freshness = "stale"; scopedUnbound = true
+      await page.goto(origin)
+      await aggregateRow("B").getByRole("button", { name: "查看詳情" }).click()
+      const workspace = page.locator(".coordinator-workspace")
+      await workspace.locator(".worker-entry-actions").waitFor()
+      assert.equal(await workspace.locator(".native-web-link").count(), 1)
+      assert.equal(await workspace.locator(".native-web-link").getAttribute("href"), "https://b.native.example.test/")
+      assert.equal(await workspace.getByRole("button", { name: "建立入口 Session", exact: true }).isDisabled(), true)
+      assert.deepEqual(mutations, [])
+    })
+
+    await t.test("native entry rejects foreign or malformed origins and fresh reads lost to scoped connectivity or overview failure", async () => {
+      for (const nativeOrigin of ["https://a.native.example.test", "not-a-url", "https://fixture@b.native.example.test", "https://b.native.example.test/path"]) {
+        scopedNativeOrigin = nativeOrigin
+        await page.goto(origin); await open("B")
+        const workspace = page.locator(".coordinator-workspace")
+        await workspace.getByText("Verify B", { exact: true }).waitFor()
+        assert.equal(await workspace.locator(".native-web-link").count(), 0)
+        assert.equal(await workspace.getByRole("button", { name: "進入入口 Session", exact: true }).isDisabled(), true)
+      }
+      scopedNativeOrigin = null
+      await page.clock.install()
+      await page.goto(origin); await open("B")
+      await page.locator(".coordinator-workspace .native-web-link").waitFor()
+      scopedConnectivityFailure = true
+      await Promise.all([page.waitForResponse(response => response.url().endsWith("/proxy/api/v1/connectivity") && response.status() === 503), page.clock.fastForward(30_000)])
+      const workspace = page.locator(".coordinator-workspace")
+      await workspace.getByRole("button", { name: "進入入口 Session", exact: true }).waitFor()
+      assert.equal(await workspace.locator(".native-web-link").count(), 0)
+      assert.equal(await workspace.getByRole("button", { name: "進入入口 Session", exact: true }).isDisabled(), true)
+      scopedConnectivityFailure = false; scopedOverviewFailure = true
+      await Promise.all([page.waitForResponse(response => response.url().includes("/proxy/api/v1/overview") && response.status() === 503), page.clock.fastForward(30_000)])
+      assert.equal(await workspace.locator(".native-web-link").count(), 0)
+      assert.equal(await workspace.getByRole("button", { name: "進入入口 Session", exact: true }).isDisabled(), true)
+      assert.deepEqual(mutations, [])
+      assert.deepEqual(errors, [])
+    })
+
+    await t.test("backend offline or retired generation rejects native resolution before UI catches up", async () => {
+      for (const code of ["WORKER_OFFLINE", "WORKER_GENERATION_RETIRED"]) {
+        snapshot.workers[1].freshness = "stale"; snapshot.instances[1].freshness = "stale"
+        openUrlFailure = code
+        await page.goto(origin); await open("B")
+        const workspace = page.locator(".coordinator-workspace")
+        const popupPromise = page.waitForEvent("popup")
+        await workspace.getByRole("button", { name: "進入入口 Session", exact: true }).click()
+        const popup = await popupPromise
+        await workspace.locator(".toast-error").waitFor()
+        assert.equal(popup.isClosed(), true)
+        assert.equal(await page.getByText("secret must not render", { exact: true }).count(), 0)
+      }
+      assert.deepEqual(mutations.map(({ id, generation, path }) => ({ id, generation, path })), [
+        { id: "B", generation: "gen/B", path: "/api/v1/instances/same-id/open-url" },
+        { id: "B", generation: "gen/B", path: "/api/v1/instances/same-id/open-url" },
+      ])
+      assert.deepEqual(errors, [])
+    })
+
+    await t.test("generation replacement closes workspace and pending native popup without navigating late resolution", async () => {
+      await page.clock.install()
+      snapshot.workers[1].freshness = "stale"; snapshot.instances[1].freshness = "stale"
+      await page.goto(origin); await open("B")
+      const pending = hold(); openUrlHold = pending
+      const popupPromise = page.waitForEvent("popup")
+      await Promise.all([page.waitForRequest(request => request.url().endsWith("/open-url")), page.locator(".coordinator-workspace").getByRole("button", { name: "進入入口 Session", exact: true }).click()])
+      const popup = await popupPromise
+      snapshot.workers[1].generation = "replacement-B"; snapshot.instances[1].generation = "replacement-B"
+      await page.clock.fastForward(10_000)
+      await page.locator(".coordinator-workspace").waitFor({ state: "detached" })
+      pending.release()
+      await popup.waitForEvent("close").catch(error => { if (!popup.isClosed()) throw error })
+      assert.equal(popup.isClosed(), true)
+      assert.equal(await aggregateRow("B").getAttribute("data-generation"), "replacement-B")
+      assert.deepEqual(mutations.map(({ id, generation, path }) => ({ id, generation, path })), [{ id: "B", generation: "gen/B", path: "/api/v1/instances/same-id/open-url" }])
       assert.deepEqual(errors, [])
     })
 
@@ -241,6 +397,8 @@ test("Coordinator real Vue UI fences Worker executions and retains truthful coll
     await t.test("unstable allows history reads but denies all new operations; check is confirmed and not restart", async () => {
       await page.goto(origin); await open("unstable")
       await page.getByText(/目前不可安全執行新操作/).waitFor()
+      assert.equal(await page.locator(".coordinator-workspace .native-web-link").count(), 0)
+      assert.equal(await page.locator(".coordinator-workspace").getByRole("button", { name: "進入入口 Session", exact: true }).isDisabled(), true)
       assert.equal(await page.locator(".coordinator-workspace").getByRole("button", { name: "啟動 Instance", exact: true }).count(), 0)
       assert.equal(await page.locator(".coordinator-workspace").getByRole("button", { name: "New Session", exact: true }).isDisabled(), true)
       await Promise.all([page.waitForResponse(response => new URL(response.url()).pathname.includes("/instances/history")), page.locator(".coordinator-workspace .history-toggle").click()])
@@ -337,5 +495,8 @@ test("Coordinator real Vue UI fences Worker executions and retains truthful coll
     await server?.close()
     if (httpServer) await new Promise(resolve => { httpServer.close(resolve); httpServer.closeAllConnections() })
     await rm(profile, { recursive: true, force: true })
+    assert.equal(browser?.isConnected() ?? false, false)
+    assert.equal(httpServer?.listening ?? false, false)
+    t.diagnostic("Owned Chromium, Vite and ephemeral HTTP server closed in finally; isolated profile removed.")
   }
 })

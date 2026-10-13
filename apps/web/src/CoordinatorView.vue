@@ -41,6 +41,10 @@ function workerFor(row: CoordinatorInstance) { return workers.value.find(worker 
 function mutable(worker: CoordinatorWorker | null | undefined) {
   return Boolean(worker && worker.health === "online" && worker.freshness === "fresh" && !failed.value && !checking.value)
 }
+// 收集的 metadata 過期不等於原生入口失效；仍須是目前 generation 的在線 Worker。
+function nativeEntryAllowed(worker: CoordinatorWorker | null | undefined) {
+  return Boolean(worker && worker.health === "online" && !failed.value && !checking.value)
+}
 const startAllowed = computed(() => mutable(activeWorker.value) && activeWorker.value?.capacity?.state === "available")
 function time(value: string | null | undefined) {
   const parsed = value ? new Date(value) : null
@@ -107,6 +111,8 @@ async function openWorkspace(worker: CoordinatorWorker, initialInstanceId = "") 
   const id = worker.id, execution = worker.generation
   const client = createManagerApi(`/api/v1/coordinator/workers/${encodeURIComponent(id)}/${encodeURIComponent(execution)}/proxy`, () => {
     return !disposed && active.value?.api === client && mutable(workers.value.find(item => item.id === id && item.generation === execution))
+  }, () => {
+    return !disposed && active.value?.api === client && nativeEntryAllowed(workers.value.find(item => item.id === id && item.generation === execution))
   })
   active.value = { id, generation: execution, initialInstanceId, api: client, key: ++workspaceSequence }
   await nextTick()
@@ -207,7 +213,7 @@ onBeforeUnmount(() => { disposed = true; generation++; window.clearInterval(time
       </template>
       <section v-if="active && activeWorker" class="coordinator-workspace" :aria-label="t('coordinator.workerWorkspace', { name: activeWorker.name })">
         <header><Button variant="ghost" @click="closeWorkspace"><ChevronLeftIcon aria-hidden="true" />{{ t('coordinator.closeWorkspace') }}</Button><h2 ref="workspaceHeading" tabindex="-1">{{ t('coordinator.workerWorkspace', { name: activeWorker.name }) }}</h2><code>{{ activeWorker.generation }}</code></header>
-        <App :key="active.key" :api="active.api" embedded :initial-instance-id="active.initialInstanceId" :worker-context="{ name: activeWorker.name, id: activeWorker.id, generation: activeWorker.generation, nativeOrigin: activeWorker.nativeOrigin }" :mutation-allowed="mutable(activeWorker)" :start-allowed="startAllowed" />
+        <App :key="active.key" :api="active.api" embedded :initial-instance-id="active.initialInstanceId" :worker-context="{ name: activeWorker.name, id: activeWorker.id, generation: activeWorker.generation, nativeOrigin: activeWorker.nativeOrigin }" :native-entry-allowed="nativeEntryAllowed(activeWorker)" :mutation-allowed="mutable(activeWorker)" :start-allowed="startAllowed" />
       </section>
     </section>
     <section v-show="tab === 'workers'" id="coordinator-workers" role="tabpanel" aria-labelledby="coordinator-workers-tab" tabindex="0">
