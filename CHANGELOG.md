@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.9.0...v0.10.0) (2026-10-13)
+
+
+### Features
+
+* **coordinator:** 統一管理外部 Worker 與原生入口 ([#119](https://github.com/Sevenflanks/opencode-manager-web/issues/119)) ([076c2e6](https://github.com/Sevenflanks/opencode-manager-web/commit/076c2e65cd630d5202be64e5489250b4dec1a2ec))
+* **worker:** 對齊 OpenAI 模型並整合 plugins 與全域 skills ([#116](https://github.com/Sevenflanks/opencode-manager-web/issues/116)) ([b68600f](https://github.com/Sevenflanks/opencode-manager-web/commit/b68600fe92621a87556b412fedda2ea00a814a6c))
+
 ## [0.9.0](https://github.com/Sevenflanks/opencode-manager-web/compare/v0.8.0...v0.9.0) (2026-10-11)
 
 
