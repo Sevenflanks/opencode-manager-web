@@ -149,9 +149,9 @@ operator 在 private `job-a.json` 加入 `taskCommands`，格式 `{ "manager": [
 
 範例 Job 設 `restartPolicy=Never`、`backoffLimit=0`，選用 `ttlSecondsAfterFinished`；這是限制 Kubernetes 自動重試，**不是 exactly-once 保證**。Job controller／node failure／外部重送仍需外部 authority 判斷，Coordinator 不重派。resident 不需要 taskCommands，輸出 ordinary Deployment；它失聯只顯示 offline。
 
-## 6. Operator 操作：真 SLKE 全部 pending
+## 6. Operator 操作：當輪授權與實際觀察
 
-**以下僅供當輪已獲具體部署授權的 operator 手動執行；本次沒有執行任何 cluster mutation。** 每輪從核准管道取得 namespace-scoped credentials／context 與目標 namespace，不能沿用 PoC 或上一輪權限、不能把本票當作 SSO／shared infrastructure 操作授權。
+**所有 SLKE 操作都必須有當輪明確授權。** 每輪從核准管道取得 namespace-scoped credentials／context 與目標 namespace；不得沿用 PoC 或上一輪權限，也不得把本票當作 SSO／shared infrastructure 操作授權。下列命令是需重新 review 的操作範例，不是可直接重播的部署腳本；使用前須由 operator 核對當輪 scope、現況、輸入、資源 owner 與授權，並確認命令仍符合本輪目的。
 
 ### 6.1 核對本輪 identity 與能力
 
@@ -221,27 +221,39 @@ kubectl @K get ingress omw-job-example-a-code -o wide
 
 Ingress 與 Job 同 namespace，`ownerReferences` 精確指向已取得的 Job UID，backend 為既有 `omw-gateway:8080`。owner UID 正確性來自本輪外部 operator 的 create/get 與重新核對；離線 CLI 不替它查 Kubernetes，也不能僅憑 UUID 格式證明物件存在。Job 已完成且 TTL 到期或經授權精確刪除 Job 後，由 Kubernetes GC 回收 owner Ingress；Worker health offline **不觸發清理**。Job failure before ingress 也不重送 task；依當輪 ownership 查核結果處理。derived credential Secret 沒有自動 Job owner，保留後另獲授權處理，不能用寬泛清除。
 
-### 6.4 第三 Worker 與故障驗收
+### 6.4 本次觀察與後續操作界線
 
-以全新 id、獨立 Basic/control Secret、同式 derived key 重複 6.3；不要修改 OIDC client、class route 或 restart gateway。保存去敏 evidence：第三完整 host 命中第三 Pod，舊兩個 Workers 的 Instance／Session/credentials 不串台；非法 prefix、跨 dot、空 id、未知完整 host、錯誤 Bearer、錯誤 management identity、CIDR 外與 private/control ports 全拒絕。Coordinator restart 不停止 execution、不 replay mutations，registrations 重建後 registry/history 語意正確。
+本次在取得當輪授權後，於 SLKE 驗收了真實 Coordinator 與 A/B/C 三個 task Worker、Coordinator restart 與 A 故障恢復、三個原生 UI flow、SSE、generation replacement、Stop 與精確 cleanup。逐項實際結果、未覆蓋情形及證據界線見下方「證據範圍與 backend 對齊點」的 2026-10-13 記錄。
 
-task exit/Job TTL/Ingress GC 要由有權 external starter 驗證，與 offline/recovery 分開。health 短暫失敗、門檻、late generation fencing、pending permission、Start/Session/native assets、真 HTTP SSE 及實際 native WebSocket、手機／桌面 UI 與 admin/非admin SSO 仍須真環境驗收。
+再次執行部署、Job 建立／刪除或故障操作前，必須重新取得當輪授權並重新核對資源 incarnation；歷史驗收不授權重播。所有本次 SLKE Jobs 都是 task kind；沒有驗證 resident Deployment migration、真實 LLM pending-question flow，亦未觀察到原生 UI WebSocket frame。舊 generation 的 authenticated registration replay 因 harness GET allowlist 阻擋而未送出，該項仍待合適授權與驗收方式，不代表產品通過或失敗。
 
 ## 7. 證據範圍與 backend 對齊點
 
 | 證據 | 本輪可證明／仍 pending |
 | --- | --- |
-| 本機 renderer tests | 公開/private CLI offline、精確 Job owner/host/gateway、固定 ports/project peers、Downward API、credential mount 隔離、private/public 分離與角色 Rego artifact 沿用 |
-| 既有 main gateway mock | base renderer 的 Pomerium 0.33.4 array Rego／Basic／Host/Origin synthetic SSO syntax 已驗；本輪比對 policy 產物相同，不宣稱 Coordinator wildcard 真 SSO 已測 |
-| 歷史 Coordinator PoC | 兩個 cached 真 Worker pairs、本機 renewal/restart/health/management、32 秒真 SSE、synthetic echo WS；預先配置 IP/hosts；**不是第三個動態 Job、real SSO、native UI WS 或 Kubernetes 的證據** |
-| 真 SLKE／公司 SSO | **pending**：當輪 namespace credentials/能力、shared update 授權、CNI/TLS/DNS、第三 Worker dynamic admission、真 stream/WS、exit/GC；本輪沒有 cluster/SSO/DNS 操作 |
+| 本機 renderer tests | 離線 CLI、精確 Job owner/host/gateway、固定 ports/project peers、Downward API、credential mount 隔離、private/public 分離與角色 Rego artifact 沿用；不替代下列實機觀察 |
+| 歷史本機正式 integration | 10/10 check groups；synthetic identity provider／TLS 與 Docker，不是 SLKE 或公司 SSO 證據。完整當輪資料見 [本機正式 Coordinator integration 證據](coordinator-local-verification.md) 的原始歷史段落 |
+| SLKE／公司 SSO（2026-10-13） | 當輪核准環境的真實 Coordinator／task Jobs、A/B/C Start／空 Session、native UI、SSE、Coordinator restart、A fault/recovery、generation replacement、Stop 與 cleanup 均有新觀察，細節及界線見下方。真實 resident Deployment migration、native UI WebSocket、LLM pending question 與 authenticated old-registration replay 未驗證 |
 
 本機 PoC source 僅唯讀參考，正式產物不引用其未 commit worktree 為 remote dependency。
 
-主 integration 上線前須對齊：
+後續整合或重新操作時仍須對齊：
 
 1. backend 最終 env 名稱、Coordinator server/health bind 與讀檔 normalization；本 renderer 依本文確切 contract，不應偷偷 fallback。
 2. registration payload／Bearer HMAC 與 fixed management Host、Worker Basic identity 檢查；manager key 不傳 execution，allowed CIDRs/ports、strict registered native host 雙重驗證。
 3. Worker periodic idempotent re-register、新 Pod UID fencing、late probes、health counter 不因 renew 清零；registry file 的私密資料保護與 emptyDir/PVC restart 語意。
 4. image 必須包含 tini／rootless runtime 與正式 backend；external task command/exit authority 另行供應及測試，Coordinator renderer 不實作它。
-5. shared gateway 權威入口與既有 standalone declarations 整合；完成真 wildcard SSO／SSE／native WS／SLKE 驗收後，才可勾對應 #118 acceptance。
+5. shared gateway 權威入口與既有 standalone declarations 整合；以已記錄的實際觀察勾選對應 #118 acceptance，不把未驗證的 native UI WebSocket、resident migration 或 replay 測試推定為通過。
+
+### 2026-10-13 SLKE 驗收紀錄
+
+本次 source 為 `0e86d1abeffca09851d0d98ff61032864b446555`。正式 Worker image 已發布並核對 source revision；image index digest 為 `sha256:f50522d9162d64bd9674cd325b93756b30376d1b1742004098ef3ad14d2cef22`。本節只記觀察結果，不含內部 URL、private CIDR、node／帳號資訊、資源 UID 或 secret。
+
+- **與本機證據分開：**本機正式 integration 是 10/10；mock-browser Coordinator 測試是 11 項。兩者不是本次 SLKE UI 驗收，也不合併計數。
+- **登入與三個真實 UI flow：**操作者確認已完成公司 SSO；browser connectivity 與 Coordinator overview 回 200，沒有讀取 userinfo。A/B/C 各從真 Coordinator UI Start（201）並建立空 Session（201）；native Session 與 health 查詢 200、工作目錄為 `/workspace`、messages 為 0，composer 與原生 JS/CSS 載入。三個 flow 都以 `server/<encoded-server-origin>/session/<id>` 驗 scope；A 到 B instance 的 cross-scope 請求回 404。未送 prompt，沒有 model call。
+- **SSE／瀏覽器：**真實原生 SSE 回 200，觀察 34,003 ms、4 個事件並包含 `server.connected`。桌面 1280×800 與手機 390×844 檢查 tabs、filters、keyboard navigation 與無橫向溢位。沒有觀察到原生 UI WebSocket；本機 synthetic TCP echo 不算 SLKE UI WS 證據。歷史 rows 是 unknown／last-known count 1，不宣稱為 0。
+- **Cookie 分類：**以 Pomerium 0.33.4 官方預設精確比對辨識各 host 的一個 host-only、Secure、HttpOnly、SameSite=Lax session cookie。各 native host 另有一個 host-only、SameSite=Lax、Secure=false、HttpOnly=false 的 cookie，用途未知；因此不推論所有 cookie 都安全，也不推論發生 auth leak。未記錄名稱或值。
+- **Restart 與故障恢復：**Coordinator 僅 SIGTERM 一次；Pod UID 相同、restartCount 0→1，三個 execution container ID、PID、epoch、Instance 與 Session 保持。A 的 test NetworkPolicy selector label true→false 後，failure 1/2 為 unstable、3 為 offline，Task result unknown；finally 恢復 label 後 A online/fresh。故障期間沒有 Start／新 Session／prompt；B query 200，C 故障期間未做 scoped query，恢復後 A/B/C query 均 200。alpha/beta、gateway config 與正式 Secrets 保持未變。
+- **Generation 與 Stop/cleanup：**C public Stop 先回 200，再以同 logical C Job ID 建立 replacement generation；舊 generation Instance GET 回 `409 WORKER_GENERATION_RETIRED`。最後三個既有 Instance 各 Stop 200；原 C、replacement C、A、B 共四個 Job 以 UID 刪除，四個 owner Ingress 自然 GC，manual Ingress delete 為 0；六個 fixture Worker Secrets 移除，12 個 fixture names 回 404、selectors 無 Pod、unresolved cleanup 為 0。正式 Coordinator／gateway／class NetworkPolicy／三個 formal Secrets 保留；alpha/beta 未動。這不是把六個正式服務全部清除，也不代表所有歷史 Chrome process 都已清理。
+
+**未覆蓋事項：**所有實際 Jobs 均為 task kind，resident Deployment migration 與真實 LLM pending-question flow 未驗證。Authenticated old-registration replay 未送出，因 harness collection GET 被 allowlist 403 阻擋；不把此項列為通過。沒有讀取 provider/PAT/NFS 資料、送出 prompt 或執行 model call。

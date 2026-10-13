@@ -189,3 +189,32 @@ Pure helper 測試 **4 passed／0 failed**。Mutation 對應：
 | 放過 foreign outer 或 encoded server origin | `rejects a foreign outer origin and foreign encoded server origin` |
 | 放過錯 Session／Project／metadata status、缺少 metadata | `rejects wrong Session route or metadata, wrong Project, and missing canonical metadata` |
 | suffix-only scope／任意 prefix／URL credentials | `rejects arbitrary prefixes, trailing segments and URL credentials` |
+
+## 7. 2026-10-13 SLKE 驗收（獨立於本機 10/10）
+
+本節是 2026-10-13 在當輪授權的 SLKE 環境取得的新觀察；不改寫上方 2026-10-12 本機正式 integration 的結果。Source commit 為 `0e86d1abeffca09851d0d98ff61032864b446555`。正式 Worker image 已發布並核對 source revision；manifest/index digest 為 `sha256:f50522d9162d64bd9674cd325b93756b30376d1b1742004098ef3ad14d2cef22`。
+
+本紀錄刻意不包含內部 URL、private CIDR、node／帳號資訊、資源 UID、cookie 名稱或值、secret，亦不引用 private checkpoint。[實機圖片與範圍說明](https://github.com/Sevenflanks/opencode-manager-web/pull/119#issuecomment-6137736477) 已發布；以下圖片是同一批安全附件。
+
+### 真實 SLKE UI 與協定觀察
+
+- 操作者確認已完成人類公司 SSO 登入；browser connectivity 與 Coordinator overview 回 `200`，沒有讀取 userinfo。
+- A/B/C 各由真實 Coordinator UI 執行 Start `201`、建立空 Session `201`。Native Session／health 查詢 `200`、directory `/workspace`、messages `0`，composer 可見且原生 JS/CSS 載入。`server/<encoded-server-origin>/session/<id>` scope 核對通過；A 對 B Instance 的 cross-scope request 回 `404`。
+- SSE 回 `200`，觀察 **34,003 ms／4 個事件**，其中含 `server.connected`。原生 UI WebSocket frame 未觀察到；本機 synthetic TCP echo 不算 SLKE UI WS 證據。
+- Desktop `1280×800` 與 mobile `390×844` 檢查 tabs、filters、keyboard navigation 與無橫向溢位。歷史 rows 是 unknown／last-known count `1`，不是零。三個 flow 都沒有送 prompt，model calls 為 `0`。
+
+### Cookie 分類與故障／資源生命週期
+
+- 以 Pomerium `0.33.4` 官方 defaults 精確比對：每個 host 各有一個 host-only、Secure、HttpOnly、SameSite=Lax 的 Pomerium session cookie。每個 native host 另有一個 host-only、SameSite=Lax、Secure=false、HttpOnly=false 的 cookie，用途未知。未記錄 cookie 名稱或值；不推論所有 cookies 都安全，也不推論發生 auth leak。
+- Coordinator 僅 SIGTERM 一次；Pod UID 相同、restartCount `0→1`，三個 execution container ID／PID／epoch／Instance／Session 保持。A test NetworkPolicy selector label `true→false` 後，failure `1/2` 為 unstable、`3` 為 offline，Task result unknown；finally 復原 label 後 online/fresh。沒有在故障期間建立 Start／新 Session／prompt；B query `200`，C 故障期間未做 scoped query，復原後 A/B/C query 均 `200`。alpha/beta、gateway config 與正式 Secrets 未變。
+- C public Stop `200` 後以相同 logical Job ID 建立 replacement generation；舊 generation Instance GET 回 `409 WORKER_GENERATION_RETIRED`。三個 Instance 各 public Stop `200`。原 C、replacement C、A、B 共四個 Job 以 UID 刪除，四個 owner Ingress 自然 GC，manual Ingress delete `0`；六個 fixture Worker Secrets 移除，12 個 fixture names 回 `404`、selectors 無 Pod、unresolved cleanup `0`。Coordinator／gateway／class NetworkPolicy／三個 formal Secrets 保留；alpha/beta 未動。這不是清除全部正式服務或全部歷史 Chrome processes。
+
+![A 的原生 composer 顯示空 Session、載入資產且沒有訊息](https://github.com/user-attachments/assets/959f1b6c-90c3-455a-865a-e771872cccaa)
+
+![Desktop Coordinator 顯示三個 Worker 與完成的 tab/filter/keyboard 操作](https://github.com/user-attachments/assets/9ca209ef-5e94-41e8-87ea-786782cc3288)
+
+![Mobile Coordinator 在 390×844 顯示 Instances 分頁且沒有橫向溢位](https://github.com/user-attachments/assets/7e1e0335-1066-4a33-b6b5-38dc450e90b7)
+
+### 尚未觀察的項目
+
+本次 SLKE Jobs 均為 task kind，resident Deployment migration 與真實 LLM pending-question flow 未驗證。Authenticated old-registration replay 未送出：harness collection GET 被 allowlist `403` 阻擋；此項不列為通過。沒有觀察到原生 UI WebSocket frame，也沒有讀取 provider／PAT／NFS 資料、送出 prompt 或執行 model call。
